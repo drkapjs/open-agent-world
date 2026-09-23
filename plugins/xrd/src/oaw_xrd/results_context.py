@@ -155,12 +155,24 @@ def read_results_context(root, owner_id):
 
 
 def register_results_context(registration):
+    from .sql_history import AgentReport
+    async def report(context, capability, arguments):
+        return await context.node_resource_action(capability, 'history_report', arguments)
+    registration.register_capability(CapabilityDefinition(
+        kind='xrd.results.report', tool_name='xrd_submit_report',
+        description='Save a schema v1 XRD analysis report to the connected run database. '
+                    'Read results first; cite existing artifact filenames in evidence, include limitations. '
+                    'Run ID must belong to this workbench. Actor and record ID are assigned by the host.',
+        input_schema=AgentReport.model_json_schema()), report)
     async def read(context, capability, arguments):
         if arguments:
             raise ResourceValidationError('结果读取工具不接受运行编号、路径或其他参数。')
         root = Path(os.environ.get('OAW_XRD_ROOT', str(Path(__file__).resolve().parents[5] / 'XRD')))
         root = Path(os.environ.get('OAW_XRD_RUN_ROOT', str(root / 'runs')))
-        return await asyncio.to_thread(read_results_context, root, capability.target_id)
+        result = await asyncio.to_thread(read_results_context, root, capability.target_id)
+        from .sql_history import report_contract
+        result['output_contract'] = await asyncio.to_thread(report_contract, capability.target_id)
+        return result
     registration.register_capability(CapabilityDefinition(
         kind='xrd.results.read', tool_name='xrd_read_results',
         description='Read current experimental XRD search, single/multiphase fit evidence, lineage and uncertainty. '
@@ -171,6 +183,11 @@ def register_results_context(registration):
         description='分析员只读当前检索与拟合结果，不授予运行拟合权限',
         source_types=frozenset({'agent'}), target_types=frozenset({'xrd.match'}),
         capabilities=(CapabilityGrantDefinition(kind='xrd.results.read'),), templateable=True))
+    registration.register_relationship(RelationshipDefinition(
+        id='xrd.results-report', label='结果报告归档', short_label='报告',
+        description='只允许提交符合 XRD schema 的报告，不授予自由 SQL 写入权限',
+        source_types=frozenset({'agent'}), target_types=frozenset({'xrd.match'}),
+        capabilities=(CapabilityGrantDefinition(kind='xrd.results.read'), CapabilityGrantDefinition(kind='xrd.results.report')), templateable=True))
     registration.register_relationship(RelationshipDefinition(
         id='xrd.results-context', label='结果讨论', short_label='讨论',
         description='将结果讨论会话关联到检索与比对节点；本连接不授予工具',

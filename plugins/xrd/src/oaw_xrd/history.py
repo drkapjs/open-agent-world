@@ -37,6 +37,8 @@ def archive_review(directory, state):
     if source.is_dir():
         shutil.copytree(source, temporary / 'outputs', dirs_exist_ok=True)
     temporary.rename(target)
+    from .sql_history import capture
+    capture(directory, artifacts=True)
 
 
 def _root():
@@ -73,6 +75,14 @@ def list_runs(context, arguments):
     offset = arguments.get('offset', 0)
     if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
         raise ValueError('无效的历史分页')
+    from . import sql_history as sql
+    database = sql.database(context.node_id)
+    if database:
+        with sql.connection(database) as con:
+            sql.initialize(con)
+            rows = con.execute('SELECT manifest_json FROM xrd_runs WHERE owner_id=? ORDER BY created_at_ns DESC,run_id DESC LIMIT 50 OFFSET ?', (context.node_id, offset)).fetchall()
+            total = con.execute('SELECT count(*) FROM xrd_runs WHERE owner_id=?', (context.node_id,)).fetchone()[0]
+        return {'items': [_summary(json.loads(r[0])) for r in rows], 'total': total, 'offset': offset, 'storage': 'sqlite'}
     root = _root()
     items = []
     for path in root.glob('oaw-*/oaw.json'):
@@ -88,6 +98,20 @@ def list_runs(context, arguments):
 
 
 def inspect_run(context, arguments):
+    from . import sql_history as sql
+    database = sql.database(context.node_id)
+    if database:
+        with sql.connection(database) as con:
+            sql.initialize(con)
+            row = con.execute('SELECT manifest_json FROM xrd_runs WHERE owner_id=? AND run_id=?', (context.node_id, arguments.get('run_id'))).fetchone()
+            if not row:
+                raise ValueError('运行不存在或不属于此工作台')
+            manifest = json.loads(row[0])
+            files = [dict(r) for r in con.execute('SELECT name,size_bytes,sha256 FROM xrd_artifacts WHERE owner_id=? AND run_id=? ORDER BY name', (context.node_id, manifest['run_id']))]
+            row = con.execute("SELECT content FROM xrd_artifacts WHERE owner_id=? AND run_id=? AND name='input.json'", (context.node_id, manifest['run_id'])).fetchone()
+            parameters = {k:v for k,v in json.loads(row[0]).items() if k not in {'cif','intensity_csv'}} if row else {}
+            counts = dict(con.execute('SELECT kind,count(*) FROM xrd_records WHERE owner_id=? AND run_id=? GROUP BY kind', (context.node_id, manifest['run_id'])).fetchall())
+        return {'manifest': {**manifest, **_summary(manifest)}, 'parameters': parameters, 'files': files, 'record_counts': counts, 'storage': 'sqlite', 'schema_version': sql.VERSION}
     directory, manifest = _owned(_root(), context.node_id, arguments.get('run_id'))
     files = []
     for path in sorted(directory.rglob('*')):
@@ -103,6 +127,17 @@ def inspect_run(context, arguments):
 
 
 def read_file(context, arguments):
+    from . import sql_history as sql
+    database = sql.database(context.node_id)
+    if database:
+        with sql.connection(database) as con:
+            row = con.execute('SELECT size_bytes FROM xrd_artifacts WHERE owner_id=? AND run_id=? AND name=?', (context.node_id, arguments.get('run_id'), arguments.get('name'))).fetchone()
+            if not row:
+                raise ValueError('找不到归档文件')
+            if row[0] > MAX_FILE_BYTES:
+                raise ValueError('单个文件超过 30 MiB')
+            row = con.execute('SELECT content,sha256,size_bytes FROM xrd_artifacts WHERE owner_id=? AND run_id=? AND name=?', (context.node_id, arguments.get('run_id'), arguments.get('name'))).fetchone()
+        return {'name': arguments['name'], 'data': base64.b64encode(row[0]).decode(), 'sha256': row[1], 'size_bytes': row[2]}
     directory, _ = _owned(_root(), context.node_id, arguments.get('run_id'))
     name = arguments.get('name')
     if not isinstance(name, str) or not name or '\\' in name or ':' in name:
@@ -118,6 +153,10 @@ def read_file(context, arguments):
 
 
 def actions():
+    from .sql_history import migrate, submit_report, records
     return {'history_list': NodeResourceAction(list_runs),
             'history_inspect': NodeResourceAction(inspect_run),
-            'history_file': NodeResourceAction(read_file)}
+            'history_file': NodeResourceAction(read_file),
+            'history_migrate': NodeResourceAction(migrate),
+            'history_records': NodeResourceAction(records),
+            'history_report': NodeResourceAction(submit_report, capability_kind='xrd.results.report')}

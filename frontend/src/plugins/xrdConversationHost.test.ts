@@ -1,6 +1,6 @@
 import {beforeEach,expect,it,vi} from 'vitest';
 import type {WorldSnapshot} from '../types/world';
-const api=vi.hoisted(()=>Object.fromEntries(['getWorld','getCatalog','getModelConnections','createNode','createEdge','getConversation',
+const api=vi.hoisted(()=>Object.fromEntries(['getWorld','getCatalog','getModelConnections','createNode','createEdge','updateEdge','getConversation',
   'addConversationSessionParticipants','createConversationSession','updateNode','runAgent'].map(key=>[key,vi.fn()])));
 const refresh=vi.hoisted(()=>vi.fn());
 const openWorkspace=vi.hoisted(()=>vi.fn());
@@ -71,4 +71,15 @@ it('does not duplicate or move an existing discussion pane',()=>{
   const root={kind:'split' as const,axis:'vertical' as const,ratio:.4,first:{kind:'pane' as const,view:{card_id:'discussion'}},
     second:{kind:'pane' as const,view:{card_id:'owner'}}};
   expect(withResultsTab(root,'owner','discussion')).toBe(root);
+});
+
+
+it('upgrades an existing read edge rather than creating a duplicate report edge',async()=>{
+  await ensureXrdResultsConversation('owner');
+  const edge=world.edges.find(e=>e.relationship==='xrd.results-read')!;
+  api.createEdge.mockClear();
+  api.getCatalog.mockResolvedValue({relationships:[{id:'xrd.results-read'},{id:'xrd.results-context'},{id:'xrd.results-report'}]});
+  await ensureXrdResultsConversation('owner');
+  expect(api.updateEdge).toHaveBeenCalledWith(edge.id,expect.objectContaining({relationship:'xrd.results-report'}));
+  expect(api.createEdge).not.toHaveBeenCalled();
 });

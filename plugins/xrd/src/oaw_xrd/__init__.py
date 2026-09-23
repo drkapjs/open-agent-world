@@ -6,6 +6,7 @@ from open_agent_world.plugin_api import AgentNodeBehavior, NodeTypeDefinition, P
 from .templates import remap_config, XRDTemplateHandler
 from .runtime import XRDRuntime
 from .history import actions as history_actions
+from .sql_history import HistoryAgentBehavior
 from .multiphase_object import register_harness
 from .results_context import register_results_context
 from .documents import InputDocument, import_input, associate
@@ -106,6 +107,10 @@ class XRDPlugin:
         registration.register_runtime_provider("research.xrd",XRDRuntime)
         register_harness(registration)
         register_results_context(registration)
+        registration.register_relationship(RelationshipDefinition(
+            id='xrd.history-store', label='XRD 运行数据库', short_label='运行记录',
+            description='结构化保存运行、Jev 决策、评估、Agent 报告和结果文件；只连接一个 SQL database',
+            source_types=frozenset({'xrd.match', 'xrd.analysis'}), target_types=frozenset({'data.sqlite'})))
         for kind, label, icon in [('spectrum', 'XRD 谱画布', 'xrd-spectrum'), ('structure', 'XRD 结构画布', 'atom')]:
             registration.register_node_type(NodeTypeDefinition(id=f'xrd.{kind}-canvas', label=label, icon=icon, color='#c19875',
                 description='由检索与比对时间轴同步控制', deck_id='xrd', deck_label='XRD', deck_icon='xrd-spectrum',
@@ -131,13 +136,13 @@ class XRDPlugin:
             description="OAW_XRDfit whole-pattern fit from intensity CSV and candidate CIF",deck_id="xrd",deck_label="XRD",deck_icon="xrd-spectrum",
             default_name="XRD / OAW_XRDfit",default_size=(340,240),default_status="idle",statuses=frozenset({"idle","running","waiting","error"}),
             templateable=True, template_status="idle", template_handler=XRDTemplateHandler(), template_remap_config=remap_config, config_model=XRDConfig,traits=frozenset({"core.agent","ui.schema-agent.v1","ui.direct-run.v1"}),
-            lifecycle=AgentNodeBehavior(),resource_actions=history_actions(),frontend={"settings":"settings"},
+            lifecycle=HistoryAgentBehavior(),resource_actions=history_actions(),frontend={"settings":"settings"},
             surfaces={"preview":True,"inspector":True,"workspace":True}))
         registration.register_node_type(NodeTypeDefinition(id="xrd.match", label="XRD 检索与比对", icon="xrd-spectrum", color="#c19875",
             description="连接标准卡片进行比对，连接谱库进行全库检索；也可同时连接", deck_id="xrd", deck_label="XRD", deck_icon="xrd-spectrum",
             default_name="XRD / 检索与比对", default_size=(440, 380), default_status="idle",
             statuses=frozenset({"idle", "running", "waiting", "error"}), config_model=MatchConfig, templateable=True, template_status="idle", template_handler=XRDTemplateHandler(), template_remap_config=remap_config,
-            traits=frozenset({"core.agent", "ui.schema-agent.v1", "ui.direct-run.v1"}), lifecycle=AgentNodeBehavior(),
+            traits=frozenset({"core.agent", "ui.schema-agent.v1", "ui.direct-run.v1"}), lifecycle=HistoryAgentBehavior(),
             resource_actions=history_actions(), frontend={"settings": "settings"}, surfaces={"preview": True, "inspector": True, "workspace": True},
             document=NodeDocumentDefinition(model=MatchWorkspaceDocument, initial_value={'kind':'library','structure': None}, capture=lambda v: {'kind':'library','structure': None}, max_size_bytes=4*1024*1024,
                 actions={'configure':NodeDocumentAction(lambda v,a:{**configure_library(v,a), 'structure':v.get('structure')}), 'fetch_cod': NodeDocumentAction(apply_cod_structure, prepare=prepare_cod_structure)},

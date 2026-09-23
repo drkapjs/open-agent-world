@@ -176,6 +176,8 @@ class XRDRuntime(RuntimeProvider):
             return AgentEvent(config.agent_id,context.run_id,kind,payload,run_status=status)
         yield event(AgentEventType.MESSAGE,{"text":f"XRD {options.mode} started. Results: {run}"})
         try:
+            from .sql_history import capture
+            await asyncio.to_thread(capture, run)
             if pipeline_stage:
                 def progress(value):
                     temporary = run / 'progress.tmp'
@@ -193,6 +195,7 @@ class XRDRuntime(RuntimeProvider):
                     try:
                         await asyncio.wait_for(process.wait(),timeout=10)
                     except asyncio.TimeoutError:
+                        await asyncio.to_thread(capture, run)
                         yield event(AgentEventType.MESSAGE,{"text":f"XRD {options.mode} running…"})
             if process.returncode != 0:
                 tail=(run / "console.log").read_text(encoding="utf-8",errors="replace")[-5000:]
@@ -205,6 +208,8 @@ class XRDRuntime(RuntimeProvider):
             if pipeline_stage and result.get('status') == 'failed':
                 raise RuntimeError('本阶段所有候选处理失败；逐候选错误已保存，原始检索与之前结果已保留')
             manifest["status"]="completed"
+            (run / 'oaw.json').write_text(json.dumps(manifest), encoding='utf-8')
+            await asyncio.to_thread(capture, run, artifacts=True)
             report = result if options.mode == "fit" else ({'mode': 'pipeline', 'stage': result['stage'],
                 'match_run_id': result['match_run_id'], 'candidates': [
                     {key: candidate[key] for key in ('candidate_id', 'label', 'status', 'accepted', 'converged', 'metrics', 'error') if key in candidate}
@@ -229,3 +234,4 @@ class XRDRuntime(RuntimeProvider):
             ACTIVE_RUNS.discard(context.run_id)
             manifest["finished_at_ns"] = time.time_ns()
             (run / "oaw.json").write_text(json.dumps(manifest),encoding="utf-8")
+            await asyncio.to_thread(capture, run, artifacts=True)

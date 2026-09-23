@@ -151,6 +151,19 @@ def _persist(run, state):
     if state['status'] != 'running':
         manifest['finished_at_ns'] = time.time_ns()
     _save(run / 'oaw.json', manifest)
+    from .sql_history import capture
+    capture(run, artifacts=state['status'] != 'running')
+
+
+async def _persist_async(run, state):
+    # SQL artifact commits may be large. Keep them off the UI event loop, but
+    # finish the transaction before cancellation can mutate the same state.
+    task = asyncio.create_task(asyncio.to_thread(_persist, run, state))
+    try:
+        await asyncio.shield(task)
+    except asyncio.CancelledError:
+        await task
+        raise
 
 
 async def _decision_inputs(state):
@@ -181,7 +194,7 @@ async def _evaluate(run, state, candidate_ids, reason, arm='llm', proposal=None)
     combo, reason = validate_proposal({'candidate_ids': candidate_ids, 'reason': reason}, labels, options['max_phases'],
         [tuple(sorted(t['candidate_ids'])) for t in trials])
     state['progress']['stage'] = f'{"Agent" if arm == "llm" else "BO_baseline"} {"快速匹配" if state.get("screening_method") == "fixed_profile_nnls_v1" else "联合拟合"} {len(trials)+1}/{options["budget"]}'
-    _persist(run, state)
+    await _persist_async(run, state)
     started = time.perf_counter()
     try:
         value = await _rpc(state['run_id'], 'evaluate', arm=arm, candidate_ids=combo)
@@ -198,7 +211,7 @@ async def _evaluate(run, state, candidate_ids, reason, arm='llm', proposal=None)
     bucket['best_multiphase'] = max(multis, key=lambda t: t['score']) if multis else None
     bucket['evaluations'] = len(trials)
     state['progress']['completed'] += 1
-    _persist(run, state)
+    await _persist_async(run, state)
 
 
 async def prepare_start(value, args):
@@ -223,7 +236,7 @@ async def prepare_start(value, args):
         'created_at_ns': time.time_ns(), 'status': 'running', 'source_owner_node_id': options.owner_node_id,
         'workflow_match_run_id': options.source_match_run_id, 'controller': 'ordinary_agent_tools'})
     _save(run / 'input.json', options.model_dump())
-    _persist(run, state)
+    await _persist_async(run, state)
     try:
         def progress(stage, completed, total):
             state['progress']['stage'] = stage
@@ -252,7 +265,7 @@ async def prepare_start(value, args):
         _source_runs[source_key] = run_id
         state['common_initial_combinations'] = []
         state['progress']['stage'] = '计算完整候选参考峰，尚未拟合组合'
-        _persist(run, state)
+        await _persist_async(run, state)
         evidence = await _rpc(run_id, 'decision_evidence')
         _save(run / 'decision-evidence.json', evidence)
         _save(run / 'protocol.json', {'controller': 'ordinary OAW Agent + scientific harness object', 'same_pool': True,
@@ -262,7 +275,7 @@ async def prepare_start(value, args):
             'cloud_request_limit': state['cloud_request_limit'], 'cloud_request_accounting': 'durable pre-request reservations; cancelled reservations count; no automatic retries',
             'seed': options.seed, 'objective': OBJECTIVE, 'baseline': 'Matern52 Gaussian process / expected improvement'})
         state['progress']['stage'] = '等待 Agent 选择下一组候选'
-        _persist(run, state)
+        await _persist_async(run, state)
         return {'prepared': {**value, 'run_id': run_id, 'state': state}}
     except BaseException as exc:
         task = _review_tasks.get(run_id)
@@ -273,7 +286,7 @@ async def prepare_start(value, args):
         await _kill(run_id)
         state['status'] = 'cancelled' if isinstance(exc, asyncio.CancelledError) else 'failed'
         state['error'] = str(exc)
-        _persist(run, state)
+        await _persist_async(run, state)
         if isinstance(exc, asyncio.CancelledError):
             raise
         return {'prepared': {**value, 'run_id': run_id, 'state': state}}
@@ -312,7 +325,7 @@ async def _operate(value, args, action):
         for request in state.get('decision_requests', []):
             if request.get('status') == 'reserved':
                 request['status'] = reason
-        _persist(run, state)
+        await _persist_async(run, state)
         return {'prepared': {**value, 'state': state}}
     if action == 'finish' and 'review_recommendations' in args:
         if state['status'] == 'running' or args.get('run_id') != run_id:
@@ -327,7 +340,7 @@ async def _operate(value, args, action):
                 or (recommendation.get('status') == 'completed' and len(selected) != min(3, len(keys)))):
             raise ResourceValidationError('复核推荐必须是最多三个互不重复的成功实测组合。')
         state['review_recommendations'] = recommendation
-        _persist(run, state)
+        await _persist_async(run, state)
         return {'prepared': {**current, 'state': state}}
     if state['status'] != 'running':
         raise ResourceValidationError('此轮筛选已结束或中断，请重新开始。')
@@ -408,7 +421,7 @@ async def _operate(value, args, action):
             state['progress']['stage'] = '完成：保留得分最优的组合'
             _save(run / 'result.json', {'mode': 'multiphase', **state})
             await _kill(run_id)
-        _persist(run, state)
+        await _persist_async(run, state)
         return {'prepared': {**value, 'state': state}}
 
 
@@ -446,7 +459,7 @@ async def prepare_review(value, args):
     state['review_started_at_ns'] = time.time_ns()
     state['pywpem_review'] = {'status': 'running', 'reviews': [], 'selected_combinations': combinations}
     state['progress']['stage'] = 'PyWPEM 所选组合联合复核'
-    _persist(run, state)
+    await _persist_async(run, state)
 
     async def execute():
         try:
@@ -466,14 +479,14 @@ async def prepare_review(value, args):
                 state['progress']['stage'] = f'PyWPEM 联合复核 {index + 1} / {len(combinations)}'
                 (run / 'pywpem-review').mkdir(exist_ok=True)
                 _save(run / 'pywpem-review/progress.json', {'stage': '准备复核', 'candidate_ids': combo})
-                _persist(run, state)
+                await _persist_async(run, state)
                 result = await _rpc(run_id, 'pywpem_review', combinations=[combo], drop_one=False,
                     iterations=state['options'].get('pywpem_iterations', 20))
                 state['pywpem_review']['reviews'].extend(result.get('reviews', []))
                 state['pywpem_review']['scope'] = result.get('scope', '')
                 if result.get('status') == 'failed' and not result.get('reviews'):
                     raise RuntimeError(result.get('error') or '联合复核未返回有效结果。')
-                _persist(run, state)
+                await _persist_async(run, state)
             state['pywpem_review']['status'] = 'completed' if len(state['pywpem_review']['reviews']) == len(combinations) and all(r['full']['status'] == 'completed' for r in state['pywpem_review']['reviews']) else 'failed'
             state['status'] = 'completed'
             if state['pywpem_review'].get('status') == 'failed':
@@ -489,7 +502,7 @@ async def prepare_review(value, args):
             state['progress']['stage'] = '联合复核失败，可单独重试'
         finally:
             await _kill(run_id)
-            _persist(run, state)
+            await _persist_async(run, state)
             _save(run / 'result.json', {'mode': 'multiphase', **state})
             try:
                 await asyncio.to_thread(archive_review, run, state)

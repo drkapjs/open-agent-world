@@ -8,7 +8,7 @@ export const XRD_RESULTS_ANALYST_IDENTITY = `身份：XRD 结果分析员。你�
 解释单相与多相分支、主要峰和未解释峰、Jev 逐步选相与 BO 对照、PyWPEM 联合复核和逐相移除检验。历史 LLM 搜索按其原始运行来源解释，不重标为 Jev。明确区分匹配分数、搜索目标、全谱 Rwp/Rp、留出指标与收敛状态，不跨算法直接混合分数。
 可以讨论主相候选与杂相，但谱贡献最大不等于质量分数最高，不能仅凭低残差确认物相。主相判断应综合多条主要峰、删相/替换检验及化学合理性。已知主元素不能自动排除杂相；候选池可能漏掉真实相。
 未收敛、残差较大、候选缺失、历史来源或计算失败时，直接说明其对结论的限制。给出 COD 编号、相关实测数值和运行编号，提出用户可以检查的证据，避免编造物相、含量或统计置信度。
-你只读结果，不启动、修改、重跑或停止拟合，不替优化员选下一轮组合，不修改全局模型或工作区。用户要求计算时，解释应在检索与比对面板启动；没有测量结果时说明尚无结果。默认用简洁中文对话。`;
+你只读结果，不启动、修改、重跑或停止拟合，不替优化员选下一轮组合，不修改全局模型或工作区。用户要求计算时，解释应在检索与比对面板启动；没有测量结果时说明尚无结果。若 xrd_read_results 返回 output_contract.report_required，分析完成后必须调用 xrd_submit_report，按 schema_version=1 提交 run_id、summary、evidence、limitations、conclusion；证据只能引用返回的已归档文件名。工具成功后再用简洁中文给用户结论；提交失败要明确说明，不得宣称已归档。默认用简洁中文对话。`;
 
 const mounts = new Map<string, Promise<{conversationId:string;agentId:string}>>();
 async function exclusive<T>(ownerId:string, action:()=>Promise<T>):Promise<T> {
@@ -45,7 +45,7 @@ export async function ensureXrdResultsConversation(ownerId:string):Promise<{conv
     const conversations=world.nodes.filter(node=>node.type==='conversation'&&(contextIds.has(node.id)||node.config.xrd_results_owner_id===ownerId));
     if(conversations.length>1)throw Error('此检索节点关联了多个结果会话，请保留唯一的结果讨论入口');
     let conversation=conversations[0];
-    const readerIds=new Set(world.edges.filter(edge=>edge.relationship==='xrd.results-read'&&edge.target===ownerId).map(edge=>edge.source));
+    const readerIds=new Set(world.edges.filter(edge=>['xrd.results-read','xrd.results-report'].includes(edge.relationship)&&edge.target===ownerId).map(edge=>edge.source));
     const agents=world.nodes.filter(node=>node.type==='agent'&&node.config.xrd_results_owner_id===ownerId
       &&node.config.xrd_role==='results-analyst');
     if(agents.length>1)throw Error('此检索节点挂载了多个结果分析员，请保留唯一分析员');
@@ -68,10 +68,14 @@ export async function ensureXrdResultsConversation(ownerId:string):Promise<{conv
       config:{description:'与结果分析员讨论当前实验谱的单相及多相拟合。',xrd_results_owner_id:ownerId}});
     for(const edge of [
       {source:conversation.id,target:ownerId,relationship:'xrd.results-context'},
-      {source:analyst.id,target:ownerId,relationship:'xrd.results-read'},
+      {source:analyst.id,target:ownerId,relationship:catalog.relationships.some(relation=>relation.id==='xrd.results-report')?'xrd.results-report':'xrd.results-read'},
       {source:analyst.id,target:conversation.id,relationship:'participate'},
-    ])if(!world.edges.some(existing=>existing.source===edge.source&&existing.target===edge.target&&existing.relationship===edge.relationship))
-      await worldApi.createEdge({...edge,direction:'forward'});
+    ]) {
+      const existing=world.edges.find(item=>item.source===edge.source&&item.target===edge.target);
+      if(!existing)await worldApi.createEdge({...edge,direction:'forward'});
+      else if(existing.relationship==='xrd.results-read'&&edge.relationship==='xrd.results-report')
+        await worldApi.updateEdge(existing.id,{expected_revision:existing.revision,relationship:edge.relationship});
+    }
     const summary=await worldApi.getConversation(conversation.id);
     if(!summary.sessions.some(session=>session.participant_ids.includes(analyst.id))){
       const defaultSession=summary.sessions.find(session=>session.is_default);

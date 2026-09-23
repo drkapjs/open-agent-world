@@ -163,10 +163,12 @@ def test_manual_review_reuses_cancelled_search_without_rerunning_it(tmp_path, mo
     harness._persist(directory, state)
     (directory / 'multiphase-input.json').write_text('{}')
     calls = []
+    rpc_started = asyncio.Event()
     async def spawn(*args, **kwargs):
         return SimpleNamespace(returncode=0)
     async def rpc(run_id, command, **arguments):
         calls.append(command)
+        rpc_started.set()
         if outcome == 'cancelled':
             await asyncio.Event().wait()
         assert arguments['combinations'] == [['a', 'b']]
@@ -185,7 +187,7 @@ def test_manual_review_reuses_cancelled_search_without_rerunning_it(tmp_path, mo
         assert prepared['prepared']['state']['status'] == 'running'
         with pytest.raises(Exception, match='结束或停止'):
             await harness.prepare_review(value, {'run_id': 'test', 'combinations': [['a', 'b']]})
-        await asyncio.sleep(0)
+        await asyncio.wait_for(rpc_started.wait(), timeout=5)
         if outcome == 'cancelled':
             await harness._operate(value, {}, 'stop')
         else:
