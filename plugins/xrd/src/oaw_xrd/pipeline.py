@@ -90,7 +90,9 @@ async def build_pipeline_input(root, agent_id, options, *, progress=None):
     selected = options.selected_candidate_ids
     if not selected or len(selected) > 10 or len(set(selected)) != len(selected) or any(not isinstance(cid, str) or not cid for cid in selected):
         raise ValueError('请选择 1–10 个不重复的候选结构')
-    match_dir, _, match = read_owned_run(root, options.workflow_match_run_id, agent_id, stage='search')
+    match_dir, match_manifest, match = read_owned_run(root, options.workflow_match_run_id, agent_id, stage='search')
+    if match_manifest.get('created_at_ns', 0) / 1e6 < getattr(options, 'workflow_started_at_ms', 0):
+        raise ValueError('新流程需要重新检索，不能使用先前实验谱的候选')
     latest = latest_match_run(root, agent_id)
     if not latest or latest['manifest']['run_id'] != options.workflow_match_run_id:
         raise ValueError('候选属于旧检索，请从本次匹配结果重新选择')

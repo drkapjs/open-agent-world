@@ -83,3 +83,9 @@ downloads have a 30 MiB API limit; larger files remain stored in SQLite.
 
 This connection configures a specific Legion. SQLite database contents are not
 bundled in reusable XRD templates; each instantiated workbench binds its own card.
+
+### Starting a new workflow
+
+Dropping or selecting a spectrum on the workspace canvas opens a theme-aware confirmation dialog. Confirming imports the validated spectrum, preserves library/analysis settings, and persists a new workflow time boundary on the match card. Current search, single-phase frames, multiphase selection, and results-discussion evidence are scoped to that boundary; previous run files and SQL history remain available. Cancel leaves the current input untouched. Active calculations block replacement. A backend capability check prevents a newer frontend from silently resetting against an older backend. Reusable templates omit the workflow boundary.
+
+The XRD workspace follows the OAW light/dark theme, including parameter panels, spectrum canvases, popups, history, and PNG background/line colors.

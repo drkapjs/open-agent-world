@@ -7,6 +7,7 @@ def remap_config(value, ids):
     for key in ('workflow_match_run_id', 'workflow_preopt_run_id', 'intensity_csv', 'cif'):
         if key in result:
             result[key] = ''
+    result.pop('workflow_started_at_ms', None)
     if 'workflow_stage' in result:
         result['workflow_stage'] = 'search'
     if 'selected_candidate_ids' in result:

@@ -40,7 +40,7 @@ export function multiphaseHost(ownerId:string):Pick<PluginViewProps['host'],'get
     const agent=object ? world.nodes.find(n=>n.type==='agent'&&n.id===object.config.agent_node_id) : undefined;
     const owner=world.nodes.find(n=>n.id===ownerId);
     const agents=object&&owner?world.nodes.filter(n=>n.type==='agent'&&(n.parent_id??null)===(owner.parent_id??null)&&world.edges.some(e=>e.source===n.id&&e.target===object.id&&e.relationship==='xrd.multiphase-tools')):[];
-    return {world,object,agent,agents};
+    return {world,object,agent,agents,owner};
   };
   return {
     getMultiphaseFrame:async(selection)=>{
@@ -50,7 +50,7 @@ export function multiphaseHost(ownerId:string):Pick<PluginViewProps['host'],'get
     },
     getMultiphase:async()=>{
       const generation=cacheGeneration;
-      const {object,agent,agents}=await find();if(!object){invalidateCache();return {status:'idle'};}
+      const {object,agent,agents,owner}=await find();if(!object){invalidateCache();return {status:'idle'};}
       const models=await worldApi.getModelConnections();
       const selectableAgents=agents.filter(item=>jevModelForAgent(models,item)&&item.config.inherit_legion_model!==true);
       const agentInfo=(item:typeof agents[number])=>({agent_node_id:item.id,name:item.name,model:item.config.model});
@@ -66,6 +66,12 @@ export function multiphaseHost(ownerId:string):Pick<PluginViewProps['host'],'get
         state={...(document.value.state??{status:'idle'}),next_options:Object.keys(document.value.next_options as object??{}).length ? document.value.next_options : document.value.options} as XrdMultiphaseState;
         // Large completed trial plots are stable; live workers and resumable runs must stay fresh.
         if(canCache&&generation===cacheGeneration&&terminalStatuses.has(state.status))terminalCache={key,expiresAt:Date.now()+terminalCacheTtl,state};
+      }
+      const since=Number(owner?.config?.workflow_started_at_ms??0);
+      if(since && !state.source_match_run_id)return {status:'idle',...controls};
+      if(since && state.source_match_run_id){
+        const current=await worldApi.getAgentInfo(ownerId);
+        if((current.details?.workflow as {match_run_id?:string}|undefined)?.match_run_id!==state.source_match_run_id)return {status:'idle',...controls};
       }
       if(!agent)return {...state,...controls,status:'failed',error:'拟合 Object 挂载的 Agent 已不存在'};
       if(state.pywpem_review?.status==='running')return {...state,...controls};

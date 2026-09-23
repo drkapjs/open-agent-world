@@ -1,3 +1,4 @@
+import { startXrdWorkflow } from './xrdWorkflowImport';
 import { useCardStateSession } from "../state/cardState";
 import { t, useLocale } from "../i18n";
 import { Component, Suspense, useMemo, type ReactNode } from "react";
@@ -88,6 +89,7 @@ export function PluginSurface({ card, slot, level, children }: {
       await state.refreshWorld();
       useNodeSurfaceStore.getState().openWorkspace(target.id);
     },
+    startXrdWorkflow: file => startXrdWorkflow(source ?? card.id, card.id, file, sessionId ?? null),
     ensureXrdInput: async (kind) => {
       const state=useWorldStore.getState();
       const world=await worldApi.getWorld();

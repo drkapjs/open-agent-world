@@ -20,8 +20,10 @@ class XRDRuntime(RuntimeProvider):
         self.run_root = Path(os.environ.get("OAW_XRD_RUN_ROOT", str(self.root / "runs")))
 
     async def create_agent(self, config):
+        from .workflow import started_at_ms
+        started_at_ms[config.agent_id] = config.provider_config.get('workflow_started_at_ms', 0)
         engine = ("QualX3 + OAW" if config.provider_config.get('library_engine', 'qualx') == 'qualx' else "Peak matching") if config.provider_config.get("mode") == "match" else "OAW_XRDfit"
-        self.records[config.agent_id] = AgentInfo(config, AgentStatus.IDLE, f"xrd-{config.agent_id}", details={"engine":engine, "project":str(self.root)})
+        self.records[config.agent_id] = AgentInfo(config, AgentStatus.IDLE, f"xrd-{config.agent_id}", details={"engine":engine, "project":str(self.root), "workflow_reset_supported": True})
         return self.records[config.agent_id]
 
     async def update_agent(self, config):
@@ -32,7 +34,8 @@ class XRDRuntime(RuntimeProvider):
             raise AgentNotFoundError(agent_id)
         info = self.records[agent_id]
         from .pipeline import owned_runs
-        runs = owned_runs(self.run_root, agent_id)
+        runs = [run for run in owned_runs(self.run_root, agent_id)
+                if run['manifest'].get('created_at_ns', 0) / 1e6 >= info.config.provider_config.get('workflow_started_at_ms', 0)]
         if not runs:
             return info
         latest = runs[0]
@@ -101,6 +104,8 @@ class XRDRuntime(RuntimeProvider):
         return replace(info, details=details)
 
     async def delete_agent(self, agent_id):
+        from .workflow import started_at_ms
+        started_at_ms.pop(agent_id, None)
         self.records.pop(agent_id, None)
 
     async def stop(self, run_id):

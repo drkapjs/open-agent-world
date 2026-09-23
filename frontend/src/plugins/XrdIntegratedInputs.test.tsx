@@ -6,6 +6,8 @@ import {InputDock} from '../../../plugins/xrd/frontend/InputDock';
 import {integratedXrdInputs} from './integratedInputs';
 import type {PluginViewProps} from './sdk';
 vi.mock('../../../plugins/xrd/frontend/CandidateStructure',()=>({StructureCanvas:()=>null}));
+Object.defineProperty(HTMLDialogElement.prototype,'showModal',{value:function(this:HTMLDialogElement){this.setAttribute('open','');}});
+Object.defineProperty(HTMLDialogElement.prototype,'close',{value:vi.fn()});
 afterEach(cleanup);
 it('only folds connected workflow source cards, keeping unrelated input cards visible',()=>{
  const cards=[{id:'m',type:'xrd.match'},{id:'p',type:'xrd.pattern'},{id:'l',type:'xrd.library'},{id:'other',type:'xrd.pattern'}] as PluginViewProps['card'][];
@@ -55,6 +57,11 @@ it('accepts a spectrum dropped on an empty workspace canvas and imports into its
  const {container}=render(<FrameCanvas card={{id:'empty',type:'xrd.spectrum-canvas',config:{}} as PluginViewProps['card']} host={host} definition={{} as PluginViewProps['definition']} level="workspace"/>);
  const file=new File(['10 5\n20 9'],'drop.txt');Object.defineProperty(file,'arrayBuffer',{value:async()=>new TextEncoder().encode('10 5\n20 9').buffer});
  fireEvent.drop(container.querySelector('section')!,{dataTransfer:{files:[file],types:['Files']}});
+ expect(host.documentAction).not.toHaveBeenCalled();
+ fireEvent.click(screen.getByRole('button',{name:'否'}));
+ expect(host.documentAction).not.toHaveBeenCalled();
+ fireEvent.drop(container.querySelector('section')!,{dataTransfer:{files:[file],types:['Files']}});
+ fireEvent.click(screen.getByRole('button',{name:'是，开启新流程'}));
  await waitFor(()=>expect(host.documentAction).toHaveBeenCalledWith('import',expect.objectContaining({filename:'drop.txt'}),7,'pattern'));
  expect(host.ensureXrdInput).toHaveBeenCalledWith('pattern');
 });

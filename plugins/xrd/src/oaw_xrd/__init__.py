@@ -63,6 +63,7 @@ class XRDConfig(BaseModel):
     library_elements: str = Field(default='', max_length=300)
     library_engine: Literal['qualx', 'native'] = 'qualx'
     workflow_stage: Literal['search', 'preopt', 'fit'] = 'search'
+    workflow_started_at_ms: int = Field(default=0, ge=0)
     workflow_match_run_id: str = Field(default='', max_length=128)
     workflow_preopt_run_id: str = Field(default='', max_length=128)
     selected_candidate_ids: list[str] = Field(default_factory=list, max_length=10)

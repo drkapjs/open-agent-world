@@ -1,3 +1,4 @@
+import { NewWorkflowDialog } from './NewWorkflowDialog';
 import { createPortal } from 'react-dom';
 import {ScoreBars,ActionIcon} from './WorkflowVisuals';
 import { useEffect, useId, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
@@ -16,6 +17,7 @@ export type FrameSet = {run_id:string;stage:string;observed:number[][];frames:Sc
 type Cursor = {run:string;index:number;follow:boolean};
 const cursors = new Map<string, Cursor>();
 const datasets = new Map<string,FrameSet>();
+export function resetWorkflowCanvas(source:string){datasets.delete(source);cursors.delete(source);setParameterMode(source,true);listeners.forEach(fn=>fn());}
 const listeners = new Set<()=>void>();
 const parameterModes=new Map<string,boolean>();
 export function setParameterMode(source:string,value:boolean){if(parameterModes.get(source)===value)return;parameterModes.set(source,value);listeners.forEach(fn=>fn());}
@@ -67,10 +69,11 @@ export function SpectrumCanvas({observed,frame}:{observed:number[][];frame?:Scie
   const saveImage=async()=>{setSaveError('');let url='';try{
     const svg=svgRef.current;if(!svg)return;const copy=svg.cloneNode(true) as SVGSVGElement;
     copy.setAttribute('xmlns','http://www.w3.org/2000/svg');copy.setAttribute('width','1600');copy.setAttribute('height','640');copy.style.color=getComputedStyle(svg).color;
+    const originals=svg.querySelectorAll('*');copy.querySelectorAll('*').forEach((element,i)=>{const style=getComputedStyle(originals[i]);for(const key of ['stroke','fill','color'])element.setAttribute(key,style.getPropertyValue(key));});
     url=URL.createObjectURL(new Blob([new XMLSerializer().serializeToString(copy)],{type:'image/svg+xml;charset=utf-8'}));
     const image=new Image();image.src=url;await image.decode();
     const canvas=document.createElement('canvas');canvas.width=1600;canvas.height=640;const ctx=canvas.getContext('2d');if(!ctx)throw Error('无法生成图像');
-    ctx.fillStyle='#202d34';ctx.fillRect(0,0,1600,640);ctx.drawImage(image,0,0,1600,640);
+    ctx.fillStyle=getComputedStyle(svg.closest('.xrd-unified-spectrum')!).backgroundColor;ctx.fillRect(0,0,1600,640);ctx.drawImage(image,0,0,1600,640);
     const blob=await new Promise<Blob>((resolve,reject)=>canvas.toBlob(b=>b?resolve(b):reject(Error('图像导出失败')),'image/png'));
     const download=URL.createObjectURL(blob);const link=document.createElement('a');link.href=download;link.download='XRD-spectrum.png';document.body.appendChild(link);link.click();link.remove();setSaved(true);setTimeout(()=>URL.revokeObjectURL(download),1000);
   }catch(e){setSaveError(String(e));}finally{if(url)URL.revokeObjectURL(url);}};
@@ -82,7 +85,7 @@ export function SpectrumCanvas({observed,frame}:{observed:number[][];frame?:Scie
   const peaks=frame?.peaks??[];const peakMax=Math.max(1,...peaks.map(p=>p.intensity));
   const colors=['#95b39a','#c2a1d1','#dbba79','#89b8c8','#d69ca4','#a4b47d'];
   const near=hover==null?undefined:observed.reduce((a,b)=>Math.abs(a[0]-hover)<Math.abs(b[0]-hover)?a:b);
-  const series=[{id:'observed',label:'实验谱',color:'#b9d8dd'},...(frame?[{id:'calculated',label:frame.calculated?'联合计算谱':'参考峰',color:'#e99b71'}]:[]),...(frame?.contributions??[]).map((p,i)=>({id:p.candidate_id,label:p.label,color:p.color??colors[i%colors.length]}))];
+  const series=[{id:'observed',label:'实验谱',color:'var(--xrd-observed, #b9d8dd)'},...(frame?[{id:'calculated',label:frame.calculated?'联合计算谱':'参考峰',color:'var(--xrd-calculated, #e99b71)'}]:[]),...(frame?.contributions??[]).map((p,i)=>({id:p.candidate_id,label:p.label,color:p.color??colors[i%colors.length]}))];
   const content = <div className={`xrd-unified-spectrum nodrag nopan nowheel ${expanded?'is-expanded':''}`}><div className="xrd-spectrum-tools"><button type="button" onClick={()=>setRange(undefined)}>复位范围</button><span className="xrd-spectrum-tool-actions"><button type="button" aria-label="保存当前谱图" title={saved?'已生成 PNG · 再次保存当前谱图':'另存为当前谱图（PNG）'} onClick={()=>void saveImage()}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="M4 3h13l4 4v14H3V3Z M7 3v7h10V3 M7 21v-7h10v7"/></svg></button><button ref={expandButton} type="button" aria-label={expanded?'关闭放大谱图':'放大谱图'} title={expanded?'关闭放大谱图':'放大谱图'} onClick={()=>setExpanded(!expanded)}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d={expanded?'M6 6l12 12M6 18L18 6':'M8 3H3v5M16 3h5v5M3 16v5h5M21 16v5h-5'}/></svg></button></span></div>{saveError&&<p role="alert">{saveError}</p>}<div className="xrd-spectrum-layout"><aside className="xrd-spectrum-switches" aria-label="谱线显示">{series.map(item=><label key={item.id}><i style={{background:item.color}}/><span>{item.label}</span><input type="checkbox" role="switch" aria-label={item.label} checked={!hidden[item.id]} onChange={event=>setHidden({...hidden,[item.id]:!event.target.checked})}/></label>)}</aside><svg style={{cursor:panning?'grabbing':'grab'}} ref={svgRef} viewBox="0 0 800 320" role="img" aria-label="同步 XRD 谱画布" onDoubleClick={()=>setRange(undefined)}
     onWheel={e=>{e.stopPropagation();const width=Math.min(full[1]-full[0],Math.max(.2,(hi-lo)*(e.deltaY>0?1.2:.8)));const rect=e.currentTarget.getBoundingClientRect();const fraction=Math.max(0,Math.min(1,(e.clientX-rect.left)/rect.width));const center=lo+(hi-lo)*fraction;const left=Math.max(full[0],Math.min(full[1]-width,center-width*fraction));setRange([left,left+width]);}}
     onPointerDown={e=>{if(e.button!==0)return;e.preventDefault();e.stopPropagation();const rect=e.currentTarget.getBoundingClientRect();drag.current={id:e.pointerId,x:e.clientX,lo,hi,scale:800/(rect.width*710)};e.currentTarget.setPointerCapture(e.pointerId);setPanning(true);}}
@@ -91,10 +94,10 @@ export function SpectrumCanvas({observed,frame}:{observed:number[][];frame?:Scie
     onLostPointerCapture={()=>{drag.current=undefined;setPanning(false);}}
     onPointerMove={e=>{const d=drag.current;if(d&&d.id===e.pointerId){const shift=(e.clientX-d.x)*d.scale*(d.hi-d.lo);setRange([d.lo-shift,d.hi-shift]);setHover(undefined);return;}const rect=e.currentTarget.getBoundingClientRect();setHover(lo+((e.clientX-rect.left)/rect.width*800-45)/710*(hi-lo));}} onPointerLeave={()=>setHover(undefined)}>
 
-    {!hidden.observed&&<polyline points={line(observed)} fill="none" stroke="#b9d8dd" strokeWidth="1.4"/>}
-    {!hidden.calculated&&frame?.calculated&&<polyline points={line(frame.calculated)} fill="none" stroke="#e99b71" strokeWidth="1.3"/>}
+    {!hidden.observed&&<polyline points={line(observed)} fill="none" stroke="var(--xrd-observed, #b9d8dd)" strokeWidth="1.4"/>}
+    {!hidden.calculated&&frame?.calculated&&<polyline points={line(frame.calculated)} fill="none" stroke="var(--xrd-calculated, #e99b71)" strokeWidth="1.3"/>}
     {frame?.contributions?.map((phase,i)=>!hidden[phase.candidate_id]&&<polyline key={phase.candidate_id} points={line(phase.points)} fill="none" stroke={phase.color??colors[i%colors.length]} strokeWidth="1.1" opacity=".9" data-phase-id={phase.candidate_id}><title>{phase.label} · 物相贡献</title></polyline>)}
-    {!hidden.calculated&&peaks.filter(p=>p.two_theta>=lo&&p.two_theta<=hi).map((p,i)=><line key={i} x1={x(p.two_theta)} x2={x(p.two_theta)} y1={270} y2={270-p.intensity/peakMax*200} stroke="#e99b71"><title>{p.two_theta.toFixed(4)}° · {p.intensity}</title></line>)}
+    {!hidden.calculated&&peaks.filter(p=>p.two_theta>=lo&&p.two_theta<=hi).map((p,i)=><line key={i} x1={x(p.two_theta)} x2={x(p.two_theta)} y1={270} y2={270-p.intensity/peakMax*200} stroke="var(--xrd-calculated, #e99b71)"><title>{p.two_theta.toFixed(4)}° · {p.intensity}</title></line>)}
     {Array.from({length:6},(_,i)=>lo+(hi-lo)*i/5).map(v=><text key={v} x={x(v)} y="298" fill="currentColor" textAnchor="middle" fontSize="12">{v.toFixed(2)}</text>)}
     {near&&<><line x1={x(near[0])} x2={x(near[0])} y1="25" y2="270" stroke="#acb6b8" strokeDasharray="3 4"/><text x="50" y="20" fill="currentColor" fontSize="13">2θ {near[0].toFixed(4)}° · I {near[1].toFixed(2)}</text></>}
   </svg></div>{Boolean(frame?.contributions?.length)&&<div className="xrd-canvas-phase-legend">{frame!.contributions!.map((phase,i)=><span key={phase.candidate_id}><i style={{background:phase.color??colors[i%colors.length]}}/>{phase.label}</span>)}</div>}</div>;
@@ -144,6 +147,7 @@ export function FrameCanvas(props:PluginViewProps) {
 }
 
 function ActiveFrameCanvas({card,host}:PluginViewProps) {
+  const [pendingFile,setPendingFile]=useState<File>();const filePicker=useRef<HTMLInputElement>(null);
   const [importError,setImportError]=useState('');const importing=useRef(false);const [uploading,setUploading]=useState(false);const [dragging,setDragging]=useState(false);
   const importSpectrum=async(file:File)=>{
     if(importing.current)return;
@@ -151,11 +155,12 @@ function ActiveFrameCanvas({card,host}:PluginViewProps) {
     try{
       if(!/\.(txt|csv|ras)$/i.test(file.name))throw Error('请拖入 TXT、CSV 或 RAS 实验谱文件');
       if(file.size>8*1024*1024)throw Error('实验谱文件最大 8 MiB');
+      if(host.startXrdWorkflow){await host.startXrdWorkflow(file);setPendingFile(undefined);if(source)setParameterMode(source,true);return;}
       const id=await host.ensureXrdInput?.('pattern');if(!id)throw Error('无法创建实验谱输入');
       const doc=await host.readDocument(id);const bytes=new Uint8Array(await file.arrayBuffer());let binary='';
       for(let i=0;i<bytes.length;i+=32768)binary+=String.fromCharCode(...bytes.subarray(i,i+32768));
       await host.documentAction('import',{filename:file.name,source_base64:btoa(binary)},doc.revision,id);
-      if(source)setParameterMode(source,true);
+      if(source)setParameterMode(source,true);setPendingFile(undefined);
     }catch(e){setImportError(String(e));}finally{importing.current=false;setUploading(false);}
   };
   const source=String(card.config.source_node_id??'');const cursor=useCursor(source);
@@ -182,8 +187,10 @@ function ActiveFrameCanvas({card,host}:PluginViewProps) {
   return <section className={`xrd-independent-canvas nodrag nopan ${dragging?'is-dragging':''}`} aria-busy={uploading}
     onDragOver={e=>{if(card.type!=='xrd.spectrum-canvas'||!Array.from(e.dataTransfer.types).includes('Files'))return;e.preventDefault();e.stopPropagation();e.dataTransfer.dropEffect=uploading?'none':'copy';setDragging(true);}}
     onDragLeave={e=>{if(!e.currentTarget.contains(e.relatedTarget as Node|null))setDragging(false);}}
-    onDrop={e=>{if(card.type!=='xrd.spectrum-canvas')return;e.preventDefault();e.stopPropagation();setDragging(false);if(e.dataTransfer.files.length!==1){setError('每次请拖入一个实验谱文件');return;}void importSpectrum(e.dataTransfer.files[0]);}}>{!multiActive&&<header><strong>{raw&&card.type==='xrd.spectrum-canvas'?'实验谱':raw?'结构画布':frame?.label??'同步画布'}</strong><small>{raw?'参数设置':`${data?.stage??''} · ${data?.frames.length?`${index+1} / ${data.frames.length}`:'等待帧'}`}</small></header>}
-    {importError&&<p role="alert">{importError}</p>}{card.type==='xrd.spectrum-canvas'&&(!multiActive||uploading)&&<small role="status">{uploading?'正在导入实验谱…':'拖拽 TXT / CSV / RAS 实验谱到此画布'}</small>}
+    onDrop={e=>{if(card.type!=='xrd.spectrum-canvas')return;e.preventDefault();e.stopPropagation();setDragging(false);if(e.dataTransfer.files.length!==1){setError('每次请拖入一个实验谱文件');return;}const file=e.dataTransfer.files[0];if(!/\.(txt|csv|ras)$/i.test(file.name)||file.size>8*1024*1024){setImportError('请选择不超过 8 MiB 的 TXT、CSV 或 RAS 实验谱');return;}if(!uploading)setPendingFile(file);}}>{!multiActive&&<header><strong>{raw&&card.type==='xrd.spectrum-canvas'?'实验谱':raw?'结构画布':frame?.label??'同步画布'}</strong><small>{raw?'参数设置':`${data?.stage??''} · ${data?.frames.length?`${index+1} / ${data.frames.length}`:'等待帧'}`}</small></header>}
+    {card.type==='xrd.spectrum-canvas'&&<input ref={filePicker} type="file" hidden accept=".txt,.csv,.ras" onChange={event=>{const file=event.target.files?.[0];event.target.value='';if(file&&!uploading)setPendingFile(file);}}/>}
+    {pendingFile&&<NewWorkflowDialog file={pendingFile} busy={uploading} error={importError} onCancel={()=>{if(!uploading){setPendingFile(undefined);setImportError('');}}} onConfirm={()=>void importSpectrum(pendingFile)}/>}
+    {importError&&!pendingFile&&<p role="alert">{importError}</p>}{card.type==='xrd.spectrum-canvas'&&(!multiActive||uploading)&&<small role="status">{uploading?'正在导入实验谱…':<button type="button" className="xrd-spectrum-import" onClick={()=>filePicker.current?.click()}>拖拽或选择 TXT / CSV / RAS 实验谱</button>}</small>}
     {multiActive&&multi.connectionError&&<small role="alert">{multi.connectionError}</small>}
     <CanvasTransition source={source} identity={multiActive?JSON.stringify([source,'multi',multiDisplay?.lane,multiDisplay?.trialId,multiDisplay?.reviewIndex,multiDisplay?.iteration,multiDisplay?.status,multi.phaseId]):`${source}:${raw}:${data?.run_id}:${index}:${frame?.cif?.source_base64??''}`}>
       {ready => !source?<CanvasReady ready={ready}><p>从检索与比对节点打开同步画布。</p></CanvasReady>:multiActive?<MultiphaseCanvasContent source={source} structure={card.type==='xrd.structure-canvas'} display={multiDisplay} phaseId={multi.phaseId} stale={multiStale} onReady={ready}/>:card.type==='xrd.structure-canvas'&&!raw&&frame?.cif?<StructureCanvas structure={frame.cif} onReady={ready}/>:<CanvasReady ready={ready}>{card.type==='xrd.structure-canvas'?<p>{raw?'检索后显示当前候选的结构。':frame?.error??'本帧尚无结构；不会显示其他候选的 CIF。'}</p>:<ExperimentalSpectrum host={host} source={source} raw={raw} data={data} frame={frame}/>}</CanvasReady>}

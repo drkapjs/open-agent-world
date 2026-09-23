@@ -136,6 +136,7 @@ export interface PluginViewProps {
     deployment?: import('../workspace/WorkspaceAccess').PluginDeploymentAccess;
     getInputs?(nodeId?:string): Promise<{id:string;name:string;kind:string;ready:boolean;detail:string}[]>;
     ensureXrdInput?(kind:'pattern'|'library'): Promise<string>;
+    startXrdWorkflow?(file:File): Promise<void>;
     runAnalysis?(): Promise<void>;
     stopAnalysis?(): Promise<void>;
     saveMultiphaseOptions?(options: XrdMultiphaseOptions): Promise<unknown>;

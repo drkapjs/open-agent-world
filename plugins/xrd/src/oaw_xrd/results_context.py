@@ -54,11 +54,13 @@ def _trial(value, *, details=True):
 
 def read_results_context(root, owner_id):
     """No caller-selected paths/runs: provenance must match the connected owner and latest search."""
+    from .workflow import started_at_ms
+    since = started_at_ms.get(owner_id, 0)
     root = Path(root)
     records = []
     for path in root.glob('oaw-*/oaw.json'):
         manifest = _json(path)
-        if not isinstance(manifest, dict):
+        if not isinstance(manifest, dict) or manifest.get('created_at_ns', 0) / 1e6 < since:
             continue
         try:
             if run_directory(root, manifest.get('run_id')) != path.parent.resolve():

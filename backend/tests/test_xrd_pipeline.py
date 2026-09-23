@@ -285,3 +285,24 @@ def test_runtime_dispatches_pipeline_and_keeps_results_when_all_candidates_fail(
     details = asyncio.run(runtime.get_agent('owner')).details
     assert details['result']['mode'] == 'match'
     assert details['workflow']['preopt']['result']['candidates'][0]['status'] == worker_status
+
+def test_new_workflow_boundary_hides_old_results_without_removing_history(tmp_path):
+    from oaw_xrd.results_context import read_results_context
+    search(tmp_path)
+    runtime = XRDRuntime(None)
+    runtime.run_root = tmp_path
+    config = SimpleNamespace(agent_id='fresh-owner', provider_config={'mode': 'match', 'workflow_started_at_ms': 2})
+    write_run(tmp_path, 'prior', agent_id='fresh-owner', order=1_000_000, result={'mode':'match','candidates':[]})
+    asyncio.run(runtime.create_agent(config))
+    assert 'result' not in asyncio.run(runtime.get_agent('fresh-owner')).details
+    assert read_results_context(tmp_path, 'fresh-owner')['status'] == 'no_search'
+    assert len(pipeline.owned_runs(tmp_path, 'fresh-owner')) == 1
+    write_run(tmp_path, 'next', agent_id='fresh-owner', order=3_000_000, result={'mode':'match','candidates':[]})
+    assert asyncio.run(runtime.get_agent('fresh-owner')).details['workflow']['match_run_id'] == 'next'
+    asyncio.run(runtime.delete_agent('fresh-owner'))
+
+
+def test_new_workflow_rejects_previous_spectrum_preoptimization(tmp_path):
+    search(tmp_path)
+    with pytest.raises(ValueError, match='新流程需要重新检索'):
+        build(tmp_path, options(workflow_started_at_ms=1))

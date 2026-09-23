@@ -35,7 +35,7 @@ function Plot({points=[],peaks=[],unexplained=[],interactive=false}:{points?:num
   };
   return <svg onPointerMove={pointer} onPointerLeave={()=>{setHover(null);setPeakHover(null);}} className={`xrd-plot ${interactive?'is-interactive':''}`} viewBox="0 0 690 250" role="img" aria-label="实验谱与标准峰叠加图">
     <line x1="42" x2="662" y1="192" y2="192" stroke="currentColor" opacity=".4"/>
-    {!!points.length&&<polyline fill="none" stroke="#b9d8dd" strokeWidth="1.3" points={points.map(p=>`${x(p[0]).toFixed(2)},${192-p[1]/max*165}`).join(' ')}/>}
+    {!!points.length&&<polyline fill="none" stroke="var(--xrd-observed, #b9d8dd)" strokeWidth="1.3" points={points.map(p=>`${x(p[0]).toFixed(2)},${192-p[1]/max*165}`).join(' ')}/>}
     {peaks.filter(p=>p.two_theta>=lo&&p.two_theta<=hi).map((p,i)=><line key={i} x1={x(p.two_theta)} x2={x(p.two_theta)} y1="192" y2={192-p.intensity/peakMax*120} stroke="#e5aa76" strokeWidth="1.5" onPointerEnter={()=>{if(interactive){setHover(null);setPeakHover({peak:p,label:"标准峰"});}}} onPointerLeave={()=>setPeakHover(null)} style={{pointerEvents:"stroke",cursor:interactive?"crosshair":undefined}}><title>{p.two_theta.toFixed(3)}° · ({p.hkl?.join(' ')})</title></line>)}
     {unexplained.map((p,i)=><circle key={i} cx={x(p.two_theta)} cy="205" r="3" fill="#ea8c91" onPointerEnter={()=>{if(interactive){setHover(null);setPeakHover({peak:p,label:"未解释峰"});}}} onPointerLeave={()=>setPeakHover(null)}><title>未解释峰 {p.two_theta.toFixed(3)}°</title></circle>)}
     {Array.from({length:6},(_,i)=>lo+(hi-lo)*i/5).map(v=><text key={v} x={x(v)} y="225" textAnchor="middle" fill="currentColor" fontSize="12">{v.toFixed(1)}</text>)}
@@ -149,7 +149,7 @@ function RunParameters({result}:{result:Result}) {
 
 function Settings(props:PluginViewProps) {
   return props.level==='workspace'&&props.card.type==='xrd.match'
-    ? <PipelineWorkflow {...props} renderResult={result=><MatchResult result={result} host={props.host} sourceId={props.card.id}/>} renderParameters={result=><RunParameters result={result}/>}/>
+    ? <PipelineWorkflow key={String(props.card.config.workflow_started_at_ms??0)} {...props} renderResult={result=><MatchResult result={result} host={props.host} sourceId={props.card.id}/>} renderParameters={result=><RunParameters result={result}/>}/>
     : <LegacySettings {...props}/>;
 }
 function LegacySettings({card,host,level,definition}:PluginViewProps){
@@ -222,3 +222,5 @@ function LegacySettings({card,host,level,definition}:PluginViewProps){
   </section>;
 }
 export default {apiVersion:1,views:{settings:Settings,input:InputView,library:LibraryView,'frame-canvas':FrameCanvas}} satisfies FrontendPlugin;
+
+import "./light.css";
