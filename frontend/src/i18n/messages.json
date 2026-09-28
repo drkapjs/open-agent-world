@@ -1,4 +1,7 @@
 {
+  "Back to welcome": ["Back to welcome", "??????"],
+  "Place workspaces": ["Place workspaces", "??????"],
+  "Select one or more workspaces to place on your canvas.": ["Select one or more workspaces to place on your canvas.", "???????????????????"],
   "Finish": ["Finish", "印刷工艺"],
   "Normal": ["Normal", "普通"],
   "Foil": ["Foil", "闪箔"],

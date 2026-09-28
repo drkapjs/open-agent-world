@@ -373,9 +373,9 @@ interface WorldState {
   instantiateLegion: (
     id: string,
     anchor?: WorldPosition,
-    options?: LegionDeployOptions & { blueprint?: LegionSummary },
+    options?: LegionDeployOptions & { blueprint?: LegionSummary; silentSuccess?: boolean },
   ) => Promise<LegionInstantiation | undefined>;
-  dissolveContainer: (id: string) => Promise<void>;
+  dissolveContainer: (id: string, options?: { silentSuccess?: boolean }) => Promise<void>;
   deleteCard: (id: string) => Promise<void>;
   deleteCards: (ids: string[]) => Promise<void>;
   requestConnection: (source?: string | null, target?: string | null) => void;
@@ -1112,7 +1112,7 @@ export const useWorldStore = create<WorldState>()(persist((set, get) => ({
           }),
           redoStack: [],
         }));
-        get().pushToast({
+        if (!options.silentSuccess) get().pushToast({
           tone: "success",
           title: `${legion.name} deployed`,
           detail: `${instance.nodes.length} cards and ${instance.edges.length} links instantiated.`,
@@ -1128,7 +1128,7 @@ export const useWorldStore = create<WorldState>()(persist((set, get) => ({
     });
   },
 
-  dissolveContainer: (id) => withHistoryTransaction(async () => {
+  dissolveContainer: (id, options = {}) => withHistoryTransaction(async () => {
     const group = get().cards.find((c) => c.id === id && isContainer(c, get().catalog));
     if (!group) return;
     const members = get().cards.filter((c) => c.parent_id === id).map(copyCard);
@@ -1143,7 +1143,7 @@ export const useWorldStore = create<WorldState>()(persist((set, get) => ({
         edges: state.edges.filter((e) => e.source !== id && e.target !== id),
         selectedCardIds: members.map((c) => c.id), selectedEdgeId: undefined, selectionRevision: state.selectionRevision + 1,
         undoStack: appendHistory(state.undoStack, { id: ++historySequence, kind: "group-dissolved", label: "Dissolve container", group: snapshot, members, edges }), redoStack: [] }));
-      get().pushToast({ tone: "neutral", title: `${group.name} dissolved`, detail: "Members and their connections were kept. Ctrl+Z to restore the container." });
+      if (!options.silentSuccess) get().pushToast({ tone: "neutral", title: `${group.name} dissolved`, detail: "Members and their connections were kept. Ctrl+Z to restore the container." });
     } catch (error) { get().pushToast({ tone: "error", title: "Container was not dissolved", detail: apiErrorMessage(error) }); }
   }),
 
