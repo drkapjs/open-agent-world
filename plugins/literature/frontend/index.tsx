@@ -80,7 +80,7 @@ export function ResearchHub({scopeId,compact=false,cardId,initialTab='directory'
     </header>
     <nav className="research-hub-tabs" aria-label={t('研究中枢栏目')}><button aria-pressed={tab==='directory'} onClick={()=>setTab('directory')}>{t('目录与道路')}</button><button aria-pressed={tab==='settings'} onClick={()=>setTab('settings')}>{t('问题与预算')}</button><button aria-pressed={tab==='intake'} onClick={()=>setTab('intake')}>{t('文献整理')}</button></nav>
     {tab==='directory' ? <ExplorationPanel scopeId={scopeId} compact={compact} cardId={cardId} onSettings={()=>setTab('settings')}/> : tab==='intake' ? <PaperIntakeReview scopeId={scopeId} revision={doc?.revision} onChanged={reload} openPaper={setPaper}/> : <ScopePanel scopeId={scopeId} compact={compact} hub/>}
-    {paper && <PaperPortal paperId={paper} onClose={()=>setPaper(undefined)}/>} 
+    {paper && <PaperPortal paperId={paper} onClose={()=>setPaper(undefined)}/>}
     {error && <p role="alert">{error}</p>}
   </section>;
 }
