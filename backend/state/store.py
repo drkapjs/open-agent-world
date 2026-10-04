@@ -389,7 +389,7 @@ class StateStore:
             merged = self._merge(policy, previous, value, key)
             validated = definition.validate(merged, key=key)
             try:
-                encoded = json.dumps(validated, separators=(",", ":"), sort_keys=True)
+                encoded = json.dumps(validated, separators=(",", ":"), sort_keys=True, allow_nan=False)
             except (TypeError, ValueError) as exc:
                 raise ValueError(f"state field {key!r} is not JSON serializable") from exc
             revision = previous_revision + 1

@@ -174,7 +174,7 @@ def test_partial_runtime_grant_failure_revokes_and_never_launches(runtime_client
         granted.append(path)
         raise SandboxSecurityError("injected grant failure")
     monkeypatch.setattr(native, "grant_runtime_path", fail_after_grant)
-    with pytest.raises(SandboxSecurityError, match="injected grant failure"):
+    with pytest.raises(PermissionDeniedError, match="injected grant failure"):
         run(client, agent, sandbox, skill)
     assert native.last_argv == () and granted
     assert all(path in native.revocations for path in granted)
@@ -187,7 +187,7 @@ def test_runtime_native_failure_revokes_mount_access(runtime_client, monkeypatch
     def fail(*args, **kwargs):
         raise SandboxSecurityError("injected launch failure")
     monkeypatch.setattr(native, "run_appcontainer", fail)
-    with pytest.raises(SandboxSecurityError, match="injected launch failure"):
+    with pytest.raises(PermissionDeniedError, match="injected launch failure"):
         run(client, agent, sandbox, skill)
     script = backend._sandboxes_root / sandbox["id"] / ".oaw/skills" / skill["id"] / "scripts/check.py"
     assert (script, True) in native.grants and script in native.revocations

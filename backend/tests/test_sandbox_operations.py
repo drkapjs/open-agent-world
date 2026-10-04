@@ -83,10 +83,10 @@ def test_delayed_results_and_failures_remain_observable(runtime_client, monkeypa
         pending = await tools['execute_command'](sandbox=sandbox['id'], argv=['work'], wait_seconds=0)
         release.set()
         if outcome == 'security':
-            with pytest.raises(SandboxSecurityError):
-                await tools['wait_sandbox_operation'](sandbox=sandbox['id'], operation_id=pending['operation_id'], wait_seconds=1)
-            with pytest.raises(SandboxSecurityError):
-                await tools['wait_sandbox_operation'](sandbox=sandbox['id'], operation_id=pending['operation_id'], wait_seconds=0)
+            result = await tools['wait_sandbox_operation'](sandbox=sandbox['id'], operation_id=pending['operation_id'], wait_seconds=1)
+            assert result['ok'] is False and result['error']['code'] == 'permission_denied'
+            assert result['error']['message'] == 'isolation unavailable'
+            assert await tools['wait_sandbox_operation'](sandbox=sandbox['id'], operation_id=pending['operation_id'], wait_seconds=0) == result
         else:
             result = await tools['wait_sandbox_operation'](sandbox=sandbox['id'], operation_id=pending['operation_id'], wait_seconds=1)
             assert result.get('exit_code') == 7 if outcome != 'preparation' else result['error']['code'] == 'environment_preparation_failed'
@@ -136,7 +136,8 @@ def test_cancel_cleanup_timeout_returns_conflict_and_keeps_the_run_alive(runtime
         await release.wait()
         return CommandResult(sandbox_id, tuple(argv), 0, 'done', '', .01)
 
-    async def cleanup_deadline(operation, *, timeout_seconds):
+    async def cleanup_deadline(self, operation, *, timeout_seconds):
+        operation.close()
         raise TimeoutError('plugin lifecycle cleanup exceeded its deadline')
 
     monkeypatch.setattr(backend, 'execute', execute)
@@ -175,7 +176,7 @@ def test_inspect_reports_the_command_gate_and_error_recovery(runtime_client, mon
     services = client.app.state.services
     real = services.get_sandbox
 
-    async def errored(sandbox_id):
+    async def errored(self, sandbox_id):
         return replace(await real(sandbox_id), state=SandboxState.ERROR)
 
     monkeypatch.setattr(type(services), 'get_sandbox', errored)

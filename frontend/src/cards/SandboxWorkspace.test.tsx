@@ -245,6 +245,7 @@ describe("Sandbox workspace interaction", () => {
     await waitFor(() => expect(screen.getByRole("log").textContent).toContain("Command failed before dispatch"));
     fireEvent.click(screen.getByRole("tab", { name: "History" }));
     expect(screen.getAllByText("Command failed before dispatch").length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("tab", { name: "Terminal" }));
     expect(screen.getByRole("textbox", { name: "Command" })).toBeTruthy();
   });
 

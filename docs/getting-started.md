@@ -8,7 +8,7 @@
 
 Run all commands from the repository root after cloning it.
 
-- Python 3.11 or newer, uv, and Node.js 20 or newer.
+- Python 3.11 or newer, uv, and Node.js 24 or newer.
 - Windows 10/11, Linux (including WSL2), or macOS 13+ for local Sandbox execution.
 - macOS uses built-in Seatbelt; macOS 26+ on Apple Silicon can install Apple Container 0.6.0+ for the preferred VM runtime.
 

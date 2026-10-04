@@ -110,6 +110,7 @@ nav:
           - Workspace: sandbox-workspace.md
           - Execution configuration: execution-configuration.md
           - Networking: sandbox-networking.md
+          - Future macOS direct networking: macos-seatbelt-network-extension.md
           - Shared Python: shared-python-runtime.md
           - Security: security.md
       - Canvas and rendering:

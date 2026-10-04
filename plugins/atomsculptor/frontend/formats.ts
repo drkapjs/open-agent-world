@@ -80,9 +80,20 @@ export function exportStructure(structure: Structure, format: StructureFormat): 
 }
 
 function exportPoscar(structure: Structure): string {
-  const cell = structure.cell ?? [[1, 0, 0], [0, 1, 0], [0, 0, 1]]; const symbols = [...new Set(structure.atoms.map(atom => atom.symbol))]; const counts = symbols.map(symbol => structure.atoms.filter(atom => atom.symbol === symbol).length);
+  const cell = structure.cell ?? [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+  const groups = new Map<string, Atom[]>();
+  for (const atom of structure.atoms) {
+    const group = groups.get(atom.symbol) ?? [];
+    group.push(atom);
+    groups.set(atom.symbol, group);
+  }
+  const symbols = [...groups.keys()];
+  const counts = [...groups.values()].map(atoms => atoms.length);
+  // POSCAR assigns species by coordinate block, so carry each atom's
+  // constraints together with its coordinates when grouping by species.
+  const atoms = [...groups.values()].flat();
   const selective = structure.atoms.some(atom => atom.selective_dynamics);
-  return `${structure.source_name || "AtomSculptor"}\n1.0\n${cell.map(row => row.map(value => value.toFixed(8)).join(" ")).join("\n")}\n${symbols.join(" ")}\n${counts.join(" ")}\n${selective ? "Selective dynamics\n" : ""}Cartesian\n${structure.atoms.map(atom => `${atom.x.toFixed(8)} ${atom.y.toFixed(8)} ${atom.z.toFixed(8)}${selective ? ` ${(atom.selective_dynamics ?? [true, true, true]).map(value => value ? "T" : "F").join(" ")}` : ""}`).join("\n")}\n`;
+  return `${structure.source_name || "AtomSculptor"}\n1.0\n${cell.map(row => row.map(value => value.toFixed(8)).join(" ")).join("\n")}\n${symbols.join(" ")}\n${counts.join(" ")}\n${selective ? "Selective dynamics\n" : ""}Cartesian\n${atoms.map(atom => `${atom.x.toFixed(8)} ${atom.y.toFixed(8)} ${atom.z.toFixed(8)}${selective ? ` ${(atom.selective_dynamics ?? [true, true, true]).map(value => value ? "T" : "F").join(" ")}` : ""}`).join("\n")}\n`;
 }
 
 function exportPdb(structure: Structure): string {

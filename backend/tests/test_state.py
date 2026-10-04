@@ -347,3 +347,17 @@ async def test_run_scopes_are_automatic_independent_and_typed(tmp_path: Path) ->
         assert services.state.get_scope("run", first.run_id).scope_id == first_scope.scope_id
     finally:
         services.close()
+
+
+@pytest.mark.parametrize("invalid", [float("nan"), float("inf"), float("-inf")])
+def test_nonfinite_state_is_rejected_without_revision_or_event(state_store, invalid):
+    scope = state_store.ensure_scope("world", "default")
+    original = state_store.set(scope, "workspace", {"nested": [1.0]})
+    events = []
+    state_store.event_sink = events.append
+    with pytest.raises(ValueError, match="JSON serializable"):
+        state_store.set(scope, "workspace", {"nested": [invalid]}, expected_revision=original.revision)
+    current = state_store.get_record(scope, "workspace")
+    assert current.value == original.value
+    assert current.revision == original.revision
+    assert events == []

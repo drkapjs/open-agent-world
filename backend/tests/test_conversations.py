@@ -387,6 +387,9 @@ async def test_agent_requesting_own_turn_is_recoverable_and_does_not_recurse(
                 {"conversation": conversation.id, "agent_id": atlas.id, "message": "Continue"},
             )
 
+        from backend.runs import RunStore
+        RunStore(services.database).create(agent_id=atlas.id, run_id="test-run",
+            runtime_provider_id="core.mock", caller_kind="conversation", context_id=session.id)
         token = _current_invocation.set(InvocationContext(
             run_id="test-run",
             agent_id=atlas.id,

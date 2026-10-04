@@ -283,14 +283,14 @@ def test_agent_saves_source_in_authorized_sandbox_workspace(runtime_client):
                                       "argv": ["python", "build.py"]})
     assert result["exit_code"] == 0
     assert native.last_argv == ("python", "build.py")
-    with pytest.raises(OSError):
+    with pytest.raises(ResourceValidationError, match="already exists"):
         client.portal.call(provider.invoke_tool, agent["id"],
             "operation:write_sandbox_text_file", request)
     changed = {**request, "content": "print('updated')\n", "overwrite": True}
     client.portal.call(provider.invoke_tool, agent["id"],
         "operation:write_sandbox_text_file", changed)
     assert (root / "build.py").read_text() == changed["content"]
-    with pytest.raises(SandboxValidationError):
+    with pytest.raises(ResourceValidationError):
         client.portal.call(provider.invoke_tool, agent["id"],
             "operation:write_sandbox_text_file", {**request, "path": "../escape.py"})
     with pytest.raises(ResourceValidationError):
@@ -406,7 +406,7 @@ def test_network_enforcement_preserves_other_boundaries(tmp_path):
     assert "--share-net" not in offline
     for flag in ("--unshare-all", "--cap-drop", "--remount-ro", "--ro-bind"):
         assert flag in offline
-    command = service_command(offline, "oaw-sandbox-" + "a" * 32 + ".scope", SandboxLimits(), 60)
+    command = service_command(offline, "oaw-sandbox-" + "a" * 32 + ".scope", SandboxLimits(memory_bytes=536870912, active_process_limit=64), 60)
     assert "--property=TasksMax=64" in command and "--property=MemoryMax=536870912" in command
     compile(_SERVICE_GUARD, "guard", "exec")
 
@@ -637,7 +637,7 @@ def test_parallel_commands_dispatch_without_waiting(runtime_client, monkeypatch)
         write_document(services, sandbox['id'], {'variables': {'REGION': 'queued'}}, document['revision'])
         release.set()
         await asyncio.wait_for(asyncio.gather(first, second), 5)
-        assert calls == [(['cmd.exe', 'first'], 600), (['cmd.exe', 'second'], 3600)]
+        assert calls == [(['cmd.exe', 'first'], SandboxLimits().default_timeout_seconds), (['cmd.exe', 'second'], 3600)]
         assert native.last_environment.get('REGION') != 'queued'
         assert not any(r['sandbox_id'] == sandbox['id'] for r in services._sandbox_commands.values())
 

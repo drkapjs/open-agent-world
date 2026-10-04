@@ -1,6 +1,7 @@
 {
   "name": "open-agent-world-frontend",
   "private": true,
+  "engines": { "node": ">=24" },
   "overrides": {
     "matterviz": { "svelte-widgets": "1.6.1" }
   },

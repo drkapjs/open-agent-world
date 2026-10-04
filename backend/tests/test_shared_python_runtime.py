@@ -25,6 +25,7 @@ from backend.sandbox.python_runtime import (
 
 def test_timeout_preserves_live_progress_and_uses_package_deadline(tmp_path, monkeypatch):
     from backend.sandbox.python_runtime import PACKAGE_INSTALL_TIMEOUT
+    monkeypatch.setattr(sys, "platform", "linux")  # Exercise subprocess.run timeout handling.
     runtime = SharedPythonRuntime(tmp_path)
     runtime.root.mkdir(parents=True)
     def stalled(argv, **options):
@@ -68,6 +69,7 @@ def test_invocation_cannot_override_python_selection(name):
 
 
 def test_shared_mutations_and_bootstrap_receipts_are_serialized(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "platform", "linux")  # Fake interpreter represents the Linux layout.
     active = 0
     peak = 0
     calls = []
@@ -113,7 +115,7 @@ def test_linux_runtime_mount_is_readonly_and_workspace_is_separate(tmp_path):
 
 
 def test_darwin_managed_python_is_private_and_uv_provisioned(tmp_path, monkeypatch):
-    runtime = SharedPythonRuntime(tmp_path)
+    runtime = SharedPythonRuntime(tmp_path, darwin_store=tmp_path / "shared-python")
     monkeypatch.setattr(sys, "platform", "darwin")
     monkeypatch.setattr(runtime, "_ensure_uv", lambda: "/managed/uv")
     calls = []
@@ -121,11 +123,15 @@ def test_darwin_managed_python_is_private_and_uv_provisioned(tmp_path, monkeypat
     def run(argv):
         calls.append([str(value) for value in argv])
         if "install" in argv:
-            interpreter = (runtime.base /
+            destination = Path(argv[argv.index("--install-dir") + 1])
+            interpreter = (destination /
                 f"cpython-{DARWIN_MANAGED_PYTHON}-macos-aarch64-none" /
                 "bin" / f"python{DARWIN_MANAGED_PYTHON}")
             interpreter.parent.mkdir(parents=True)
             interpreter.touch()
+            stdlib = interpreter.parent.parent / "lib" / f"python{DARWIN_MANAGED_PYTHON}" / "os.py"
+            stdlib.parent.mkdir(parents=True)
+            stdlib.touch()
         else:
             runtime.bin.mkdir(parents=True)
             runtime.python.touch()
@@ -264,6 +270,7 @@ async def test_bootstrap_aggregates_all_owners_and_marks_them_failed_then_retrie
 
 
 def test_failed_preflight_never_mutates_working_packages(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "platform", "linux")  # Fake interpreter represents the Linux layout.
     runtime = SharedPythonRuntime(tmp_path)
     def ensure():
         runtime.bin.mkdir(parents=True, exist_ok=True)

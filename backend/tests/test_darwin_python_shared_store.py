@@ -20,6 +20,15 @@ def fake_python(root: Path) -> None:
 
 
 class DarwinSharedStoreTests(unittest.TestCase):
+    def test_versioned_distribution_is_found_without_uv_minor_alias(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fake_python(root / "base")
+            distribution = root / "base" / "cpython-3.12.14-macos-aarch64-none"
+            (root / "base" / "cpython-3.12-test").rename(distribution)
+            runtime = SharedPythonRuntime(root / "profile", darwin_store=root / "shared")
+            self.assertEqual(runtime._darwin_base_python(root / "base"), distribution / "bin" / "python3")
+
     def test_macos_wheels_use_the_shared_cache(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -126,6 +135,8 @@ class DarwinSharedStoreTests(unittest.TestCase):
             stdlib.unlink()
             try:
                 stdlib.symlink_to(os.path.relpath(external, stdlib.parent))
+                (store / "base" / "cpython-3.12-macos-alias").symlink_to(
+                    store / "base.partial" / "cpython-3.12-test", target_is_directory=True)
             except (OSError, NotImplementedError) as error:
                 self.skipTest(f"Symbolic links unavailable: {error}")
             runtime = SharedPythonRuntime(root / "checkout", darwin_store=store)

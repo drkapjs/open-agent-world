@@ -211,8 +211,22 @@ async def test_linux_failed_cleanup_preserves_scope_until_stop_verified(tmp_path
     await backend.create("box")
     record = await backend._record("box")
     record.state = SandboxState.READY
-    async def cannot_launch(*args: object, **kwargs: object) -> None:
-        raise OSError("launch failed")
+    class FailedLauncher:
+        # Scope cleanup is required only after a process has actually spawned.
+        returncode = None
+        stdout = asyncio.StreamReader()
+        stderr = asyncio.StreamReader()
+        stdout.feed_eof()
+        stderr.feed_eof()
+
+        def kill(self):
+            self.returncode = -9
+
+        async def wait(self):
+            raise OSError("launcher failed after spawn")
+
+    async def cannot_launch(*args: object, **kwargs: object):
+        return FailedLauncher()
     async def cannot_stop(unit: str) -> None:
         raise SandboxSecurityError("scope stop failed")
     monkeypatch.setattr(linux_module, "_host_control_environment", lambda: {})

@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class Atom(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
     id: int = Field(ge=0)
     symbol: str = Field(min_length=1, max_length=3, pattern=r"^[A-Z][a-z]?$" )
@@ -32,7 +32,7 @@ class Atom(BaseModel):
 class Bond(BaseModel):
     """An explicit connection imported from a chemistry format."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
     first_atom_id: int = Field(ge=0)
     second_atom_id: int = Field(ge=0)
@@ -41,7 +41,7 @@ class Bond(BaseModel):
 
 
 class Layer(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
     id: str = Field(min_length=1, max_length=120)
     name: str = Field(min_length=1, max_length=120)
@@ -59,7 +59,7 @@ class Layer(BaseModel):
 class InterfaceCandidate(BaseModel):
     """A selectable interface result backed by a Sandbox output file."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
     id: int = Field(ge=1, le=1000)
     file_name: str = Field(min_length=1, max_length=1_024)
@@ -73,7 +73,7 @@ class InterfaceCandidate(BaseModel):
 class StructureDocument(BaseModel):
     """The canonical editable model for one AtomSculptor Structure card."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
     format_version: Literal[1] = 1
     atoms: list[Atom] = Field(default_factory=list, max_length=20_000)
@@ -90,18 +90,20 @@ class StructureDocument(BaseModel):
     @model_validator(mode="after")
     def validate_structure(self) -> "StructureDocument":
         ids = [atom.id for atom in self.atoms]
-        if len(ids) != len(set(ids)):
+        atom_ids = set(ids)
+        if len(ids) != len(atom_ids):
             raise ValueError("atom ids must be unique")
         layer_ids = [layer.id for layer in self.layers]
-        if len(layer_ids) != len(set(layer_ids)):
+        declared_layers = set(layer_ids)
+        if len(layer_ids) != len(declared_layers):
             raise ValueError("layer ids must be unique")
-        if any(atom.layer_id not in layer_ids for atom in self.atoms):
+        if any(atom.layer_id not in declared_layers for atom in self.atoms):
             raise ValueError("every atom must belong to a declared layer")
-        if any(layer_id not in layer_ids for layer_id in self.active_layer_ids):
+        if any(layer_id not in declared_layers for layer_id in self.active_layer_ids):
             raise ValueError("active_layer_ids must refer to declared layers")
-        if any(atom_id not in set(ids) for atom_id in self.selected_atom_ids):
+        if any(atom_id not in atom_ids for atom_id in self.selected_atom_ids):
             raise ValueError("selected_atom_ids must refer to existing atoms")
-        if any(bond.first_atom_id not in set(ids) or bond.second_atom_id not in set(ids) or bond.first_atom_id == bond.second_atom_id for bond in self.bonds):
+        if any(bond.first_atom_id not in atom_ids or bond.second_atom_id not in atom_ids or bond.first_atom_id == bond.second_atom_id for bond in self.bonds):
             raise ValueError("every bond must connect two distinct existing atoms")
         if self.cell is not None and (len(self.cell) != 3 or any(len(row) != 3 for row in self.cell)):
             raise ValueError("cell must be a 3 by 3 matrix")

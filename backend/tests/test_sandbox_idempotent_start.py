@@ -81,7 +81,7 @@ async def test_wsl_running_start_and_unchanged_mount_are_noops(tmp_path, monkeyp
         await backend.attach_resource('shared', 'notes', mount.source, mount.relative_path, ResourceAccess.READ_ONLY)
 
 
-def test_agent_state_conflict_is_tool_feedback_and_security_errors_remain_terminal(runtime_client, monkeypatch):
+def test_agent_state_conflict_and_security_errors_return_distinct_tool_feedback(runtime_client, monkeypatch):
     client, _, _ = runtime_client
     agent, sandbox, _, _, edges = setup_skill(client)
     assert client.patch(f"/api/edges/{edges[0]['id']}", json={'relationship': 'execute_manage'}).status_code == 200
@@ -103,6 +103,7 @@ def test_agent_state_conflict_is_tool_feedback_and_security_errors_remain_termin
             raise SandboxSecurityError('native isolation failed')
         with monkeypatch.context() as patch:
             patch.setattr(type(services), '_start_sandbox_locked', unsafe)
-            with pytest.raises(SandboxSecurityError):
-                await tool(sandbox=sandbox['id'])
+            result = await tool(sandbox=sandbox['id'])
+            assert result['ok'] is False and result['error']['code'] == 'permission_denied'
+            assert result['error']['message'] == 'native isolation failed'
     client.portal.call(scenario)

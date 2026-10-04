@@ -528,12 +528,6 @@ class MacosContainerSandboxBackend(SandboxBackend):
             default_timeout_seconds=policy.get("command_timeout", self._limits.default_timeout_seconds))
         command = validate_argv(argv)
         environment = minimal_container_environment(env, invocation_env=invocation_env)
-        await self.python_runtime.prepare()
-        if execution.cancelled or execution.stop_requested:
-            return CommandResult(sandbox_id, command, -9, "", "", 0,
-                cancelled=True, command_id=execution.command_id)
-        self.python_runtime.environment(environment)
-        command = self.python_runtime.command(command)
         timeout = limits.default_timeout_seconds if timeout_seconds is None else float(timeout_seconds)
         if not math.isfinite(timeout) or timeout <= 0:
             raise SandboxValidationError("timeout_seconds must be finite and positive")
@@ -543,6 +537,13 @@ class MacosContainerSandboxBackend(SandboxBackend):
                 raise SandboxNetworkError("The macOS public-egress image is missing; prepare it and refresh runtimes")
             uid, gid = _host_identity()
             network_settings = await asyncio.to_thread(network_bootstrap_arguments, uid, gid)
+
+        await self.python_runtime.prepare()
+        if execution.cancelled or execution.stop_requested:
+            return CommandResult(sandbox_id, command, -9, "", "", 0,
+                cancelled=True, command_id=execution.command_id)
+        self.python_runtime.environment(environment)
+        command = self.python_runtime.command(command)
 
         async with owner.lock:
             if owner.deleted or owner.state != SandboxState.RUNNING:

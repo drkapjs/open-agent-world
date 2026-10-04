@@ -98,6 +98,14 @@ async def finish_thread(function, *args):
         raise
 
 
+def _ignore_dangling_links(directory: str, names: list[str]) -> set[str]:
+    # copytree's ignore_dangling_symlinks checks relative targets against the
+    # process cwd. Check the source path instead, so valid stdlib links survive
+    # while uv's absolute aliases left behind by a directory swap are skipped.
+    return {name for name in names
+            if (Path(directory) / name).is_symlink() and not (Path(directory) / name).exists()}
+
+
 class SharedPythonRuntime:
     kind = "python"
 
@@ -140,7 +148,13 @@ class SharedPythonRuntime:
             return None
         names = (f"python{DARWIN_MANAGED_PYTHON}", "python3", "python")
         for name in names:
-            candidates = sorted(root.glob(f"cpython-{DARWIN_MANAGED_PYTHON}-*/bin/{name}"))
+            # uv's versioned distribution includes the patch (3.12.14). Its
+            # minor-version alias can point at the old staging directory after
+            # a swap, so find the real distribution without relying on it.
+            candidates = sorted([
+                *root.glob(f"cpython-{DARWIN_MANAGED_PYTHON}-*/bin/{name}"),
+                *root.glob(f"cpython-{DARWIN_MANAGED_PYTHON}.*-*/bin/{name}"),
+            ])
             for candidate in candidates:
                 stdlib = candidate.parent.parent / "lib" / f"python{DARWIN_MANAGED_PYTHON}" / "os.py"
                 if candidate.is_file() and stdlib.is_file():
@@ -236,8 +250,7 @@ class SharedPythonRuntime:
                     # uv distributions can contain relative links which reach
                     # outside this tree. Preserve their contents, not link
                     # text that will break when copied to a new location.
-                    shutil.copytree(self.base, staging, symlinks=False,
-                                    ignore_dangling_symlinks=True)
+                    shutil.copytree(self.base, staging, symlinks=False, ignore=_ignore_dangling_links)
                 else:
                     if uv is None:
                         uv = self._ensure_uv()
@@ -281,8 +294,7 @@ class SharedPythonRuntime:
         staging = self.root / "base.partial"
         shutil.rmtree(staging, ignore_errors=True)
         try:
-            shutil.copytree(cached_base, staging, symlinks=False,
-                            ignore_dangling_symlinks=True)
+            shutil.copytree(cached_base, staging, symlinks=False, ignore=_ignore_dangling_links)
             if self._darwin_base_python(staging) is None:
                 raise SandboxPreparationError(
                     f"Cached CPython {DARWIN_MANAGED_PYTHON} is not usable below {staging}")

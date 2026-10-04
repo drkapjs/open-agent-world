@@ -292,35 +292,36 @@ class GoogleAdkAgentRuntime(RuntimeProvider):
                     run_config=RunConfig(streaming_mode=StreamingMode.SSE),
                 )
                 try:
-                    async for kind, item in multiplex_adk_events(stream, trace_queue, trace):
-                        if kind == "progress":
-                            yield AgentEvent(agent_id, run_id, AgentEventType.PROGRESS, item)
-                            continue
-                        if getattr(item, "partial", False):
-                            partial_content = getattr(item, "content", None)
-                            trace.note_activity("agent", partial_content)
-                            trace.observe_partial("agent", partial_content)
-                            continue
-                        if managed is not None:
-                            managed.observe(item)
-                        if item.is_final_response():
-                            final_response_seen = True
-                        async for translated in self._translate_event(record, run_id, item):
-                            if translated.type == AgentEventType.TOOL_STARTED:
-                                call_id = translated.payload.get("call_id")
-                                if isinstance(call_id, str) and call_id:
-                                    pending_call_ids.setdefault(str(translated.payload["name"]), []).append(call_id)
-                            elif translated.type == AgentEventType.TOOL_COMPLETED:
-                                completed_tool_count += 1
-                                candidates = pending_call_ids.get(str(translated.payload["name"]), [])
-                                call_id = translated.payload.get("call_id")
-                                if call_id in candidates:
-                                    candidates.remove(call_id)
-                                elif not call_id and candidates:
-                                    candidates.pop(0)
-                            elif translated.type == AgentEventType.MESSAGE:
-                                final_text = str(translated.payload.get("text", final_text))
-                            yield translated
+                    async with aclosing(multiplex_adk_events(stream, trace_queue, trace)) as events:
+                        async for kind, item in events:
+                            if kind == "progress":
+                                yield AgentEvent(agent_id, run_id, AgentEventType.PROGRESS, item)
+                                continue
+                            if getattr(item, "partial", False):
+                                partial_content = getattr(item, "content", None)
+                                trace.note_activity("agent", partial_content)
+                                trace.observe_partial("agent", partial_content)
+                                continue
+                            if managed is not None:
+                                managed.observe(item)
+                            if item.is_final_response():
+                                final_response_seen = True
+                            async for translated in self._translate_event(record, run_id, item):
+                                if translated.type == AgentEventType.TOOL_STARTED:
+                                    call_id = translated.payload.get("call_id")
+                                    if isinstance(call_id, str) and call_id:
+                                        pending_call_ids.setdefault(str(translated.payload["name"]), []).append(call_id)
+                                elif translated.type == AgentEventType.TOOL_COMPLETED:
+                                    completed_tool_count += 1
+                                    candidates = pending_call_ids.get(str(translated.payload["name"]), [])
+                                    call_id = translated.payload.get("call_id")
+                                    if call_id in candidates:
+                                        candidates.remove(call_id)
+                                    elif not call_id and candidates:
+                                        candidates.pop(0)
+                                elif translated.type == AgentEventType.MESSAGE:
+                                    final_text = str(translated.payload.get("text", final_text))
+                                yield translated
                 except Exception as exc:
                     waiting = trace.waiting()
                     exhausted = getattr(exc, "request_recovery_exhausted", False)

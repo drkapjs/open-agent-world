@@ -1,9 +1,11 @@
 // @vitest-environment jsdom
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { cleanup, act, fireEvent, render, screen, within } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { useLocale } from "../i18n";
 import type { RunActivityState } from "../state/runActivity";
 import { RunActivityDetails, RunActivityStream } from "./RunActivityStream";
+
+afterEach(cleanup);
 
 vi.mock("./MarkdownMessage", () => ({ MarkdownMessage: ({ content }: { content: string }) => <p>{content}</p> }));
 

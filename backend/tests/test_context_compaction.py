@@ -15,6 +15,7 @@ from backend.agents.context import ContextBudget, ContextStatus, ManagedContext,
 from backend.config import Settings
 from backend.conversations import ConversationSessionCreate, ConversationPost
 from backend.runs import InvocationCaller, InvocationContext, RuntimeInput
+from backend.runs.store import RunStore
 from backend.services import create_services
 from backend.security.model_connections import CatalogEdit
 from backend.world.models import CardCreate, EdgeCreate
@@ -80,7 +81,10 @@ async def setup_context(services, monkeypatch):
     return agent, peer, room, session, model, runtime, config
 
 
-def invocation(agent_id, session_id, run_id="run-1"):
+def invocation(services, agent_id, session_id, run_id="run-1"):
+    # Model checkpoints reference a real persisted Run, as they do in production.
+    RunStore(services.database).create(agent_id=agent_id, run_id=run_id, context_id=session_id,
+        runtime_provider_id="google.adk", caller_kind="test")
     return InvocationContext(run_id=run_id, agent_id=agent_id, parent_run_id=None,
         root_run_id=run_id, caller=InvocationCaller("test"), context_id=session_id,
         task_id=None, runtime_provider_id="google.adk")
@@ -90,7 +94,7 @@ def invocation(agent_id, session_id, run_id="run-1"):
 async def test_private_delegation_context_does_not_replay_parent_conversation(services, monkeypatch):
     agent, _, room, session, model, runtime, config = await setup_context(services, monkeypatch)
     add_history(services, room, session, count=2)
-    private = invocation(agent.id, "summon:isolated-task")
+    private = invocation(services, agent.id, "summon:isolated-task")
     result = [event async for event in runtime.execute(config, private, RuntimeInput("Inspect only the assigned file"))]
     assert result
     assert "cobalt-731" not in model._requests[-1]
@@ -107,7 +111,7 @@ async def test_saved_limits_drive_pressure_output_and_next_run_compaction(servic
     draft = runtime.model_connections.read().model_dump()
     draft["connections"][0]["models"][0].update(context_window=128000, max_output_tokens=16384)
     runtime.model_connections.save(CatalogEdit.model_validate(draft))
-    result = [event async for event in runtime.execute(config, invocation(agent.id, session.id), RuntimeInput("Continue"))]
+    result = [event async for event in runtime.execute(config, invocation(services, agent.id, session.id), RuntimeInput("Continue"))]
     assert result[-1].run_status == "succeeded"
     assert model._output_limits[-1] == 16384  # Not silently capped to the former 8K policy.
     assert not model._summaries
@@ -116,7 +120,7 @@ async def test_saved_limits_drive_pressure_output_and_next_run_compaction(servic
     draft = runtime.model_connections.read().model_dump()
     draft["connections"][0]["models"][0].update(context_window=8192, max_output_tokens=2048)
     runtime.model_connections.save(CatalogEdit.model_validate(draft))
-    result = [event async for event in runtime.execute(config, invocation(agent.id, session.id, "next"), RuntimeInput("Continue"))]
+    result = [event async for event in runtime.execute(config, invocation(services, agent.id, session.id, "next"), RuntimeInput("Continue"))]
     assert result[-1].run_status == "succeeded"
     assert model._output_limits[-1] == 2048
     assert services.contexts.statuses(room.id)[session.id][agent.id].context_limit == 8192
@@ -136,7 +140,7 @@ async def test_real_adk_long_conversation_compacts_and_continues_without_losing_
     add_history(services, room, session)
     before = services.conversations.list_messages(room.id, session.id, limit=100)
     async with services.events.subscribe() as queue:
-        result = [event async for event in runtime.execute(config, invocation(agent.id, session.id), RuntimeInput("What is the confirmed code?"))]
+        result = [event async for event in runtime.execute(config, invocation(services, agent.id, session.id), RuntimeInput("What is the confirmed code?"))]
         statuses = []
         while not queue.empty():
             event = queue.get_nowait()
@@ -154,7 +158,7 @@ async def test_real_adk_long_conversation_compacts_and_continues_without_losing_
     assert services.contexts.load(peer.id, session.id).compaction_count == 0
     assert services.contexts.load(agent.id, "other-session").compaction_count == 0
     # The next run ingests only new canonical messages, never replaying 40 messages.
-    result = [event async for event in runtime.execute(config, invocation(agent.id, session.id, "run-2"), RuntimeInput("Repeat the code."))]
+    result = [event async for event in runtime.execute(config, invocation(services, agent.id, session.id, "run-2"), RuntimeInput("Repeat the code."))]
     assert result[-1].payload["text"] == "The confirmed code is cobalt-731."
     assert model._requests[-1].count("Entry 64") == 1
 
@@ -163,7 +167,7 @@ async def test_real_adk_long_conversation_compacts_and_continues_without_losing_
 async def test_real_adk_long_tool_run_compacts_repeatedly_and_preserves_pairs(services, monkeypatch):
     agent, _, _, session, model, runtime, config = await setup_context(services, monkeypatch)
     model._tool_rounds = 3
-    result = [event async for event in runtime.execute(config, invocation(agent.id, session.id), RuntimeInput("Use the notes and finish the analysis."))]
+    result = [event async for event in runtime.execute(config, invocation(services, agent.id, session.id), RuntimeInput("Use the notes and finish the analysis."))]
     assert result[-1].payload["text"] == "The confirmed code is cobalt-731."
     assert len(runtime._provider.invocations) == 3
     assert services.contexts.load(agent.id, session.id).compaction_count >= 2
@@ -175,7 +179,7 @@ async def test_real_adk_long_tool_run_compacts_repeatedly_and_preserves_pairs(se
 async def test_restart_restores_checkpoint_tail_count_and_session_projection(data_root, services, monkeypatch):
     agent, peer, room, session, model, runtime, config = await setup_context(services, monkeypatch)
     add_history(services, room, session)
-    _ = [event async for event in runtime.execute(config, invocation(agent.id, session.id), RuntimeInput("What is the code?"))]
+    _ = [event async for event in runtime.execute(config, invocation(services, agent.id, session.id), RuntimeInput("What is the code?"))]
     before = services.contexts.load(agent.id, session.id)
     # Separate service container/SQLite connection models a backend restart.
     restored = create_services(Settings.for_data_root(data_root), default_runtime_provider_id="google.adk")
@@ -185,7 +189,7 @@ async def test_restart_restores_checkpoint_tail_count_and_session_projection(dat
         new_runtime = GoogleAdkAgentRuntime(MutableCapabilityProvider(), context_store=restored.contexts)
         monkeypatch.setattr(new_runtime, "_adk_model", lambda model_id: model)
         await new_runtime.create_agent(config)
-        result = [event async for event in new_runtime.execute(config, invocation(agent.id, session.id, "after-restart"), RuntimeInput("Repeat the code."))]
+        result = [event async for event in new_runtime.execute(config, invocation(restored, agent.id, session.id, "after-restart"), RuntimeInput("Repeat the code."))]
         assert result[-1].payload["text"] == "The confirmed code is cobalt-731."
         assert len(restored.conversations.list_messages(room.id, session.id, limit=100)) == 65
     finally:
@@ -307,7 +311,7 @@ async def test_fresh_conversation_with_large_tool_catalog_uses_real_model_window
     # Real ADK runner assembles a schema-heavy request (~16K estimated input).
     runtime._provider.definition = replace(runtime._provider.definition,
         description="Available resource instructions. " * 1000)
-    result = [event async for event in runtime.execute(config, invocation(agent.id, fresh.id), RuntimeInput("Hello"))]
+    result = [event async for event in runtime.execute(config, invocation(services, agent.id, fresh.id), RuntimeInput("Hello"))]
     assert result[-1].run_status == "succeeded"
     assert not model._summaries
     assert "cobalt-731" not in model._requests[-1]
@@ -572,7 +576,7 @@ async def test_scope_lock_serializes_same_pair_without_blocking_other_sessions(s
     add_history(services, room, session)
     model._block = asyncio.Event()
     async def execute(scope, run):
-        return [event async for event in runtime.execute(config, invocation(agent.id, scope, run), RuntimeInput("Continue"))]
+        return [event async for event in runtime.execute(config, invocation(services, agent.id, scope, run), RuntimeInput("Continue"))]
     first = asyncio.create_task(execute(session.id, "run-1"))
     for _ in range(100):
         if model._summaries:
@@ -600,13 +604,32 @@ async def test_oversized_current_input_fails_explicitly_without_destroying_histo
 async def test_closing_adk_stream_releases_scope_and_does_not_replay_interrupted_tool(services, monkeypatch):
     agent, _, _, session, model, runtime, config = await setup_context(services, monkeypatch)
     model._tool_rounds = 1
-    stream = runtime.execute(config, invocation(agent.id, session.id), RuntimeInput("Inspect notes"))
-    started = await anext(stream)
+    entered, cancelled = asyncio.Event(), asyncio.Event()
+    original_invoke = runtime._provider.invoke_tool
+
+    async def unfinished_tool(*args, **kwargs):
+        # ADK can dispatch ahead of the event consumer. Keep this tool in flight
+        # so Stop deterministically interrupts it before the simulated write.
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+        return await original_invoke(*args, **kwargs)
+
+    monkeypatch.setattr(runtime._provider, "invoke_tool", unfinished_tool)
+    stream = runtime.execute(config, invocation(services, agent.id, session.id), RuntimeInput("Inspect notes"))
+    async for started in stream:
+        if started.type == "tool_started":
+            break
     assert started.type == "tool_started"
+    await asyncio.wait_for(entered.wait(), timeout=2)
     await stream.aclose()
+    assert cancelled.is_set()
     assert not services.contexts.lock(agent.id, session.id).locked()
     assert not runtime._provider.invocations
-    result = [event async for event in runtime.execute(config, invocation(agent.id, session.id, "after-stop"), RuntimeInput("Continue after Stop"))]
+    result = [event async for event in runtime.execute(config, invocation(services, agent.id, session.id, "after-stop"), RuntimeInput("Continue after Stop"))]
     assert result[-1].run_status == "succeeded"
     assert "Outcome is unknown" in model._requests[-1]
     assert not runtime._provider.invocations

@@ -786,74 +786,75 @@ class AtomSculptorRuntime(RuntimeProvider):
             async def consume(stream: AsyncIterator[Any]) -> AsyncIterator[AgentEvent]:
                 """Drive one ADK stream to completion, surfacing its events."""
                 nonlocal final_text, final_response_seen, last_author, completed_tool_count
-                async for kind, item in multiplex_adk_events(
+                async with aclosing(multiplex_adk_events(
                     stream, trace_queue, model_trace, stopped,
                     stop_message="AtomSculptor Run was stopped",
-                ):
-                    if stopped.is_set():
-                        raise AgentRuntimeError("AtomSculptor Run was stopped")
-                    if kind == "progress":
-                        yield event(AgentEventType.PROGRESS, item)
-                        continue
-                    author = getattr(item, "author", "")
-                    if getattr(item, "partial", False):
-                        partial_content = getattr(item, "content", None)
-                        model_trace.note_activity(author, partial_content)
-                        model_trace.observe_partial(author, partial_content)
-                        # ADK emits the same tool calls and text again in its
-                        # committed aggregate. Never execute or display a
-                        # partial function call as if it were complete.
-                        continue
-                    if author in managed:
-                        managed[author].observe(item)
-                    if author == "atom_sculptor" and item.is_final_response():
-                        final_response_seen = True
-                    if author in {"atom_sculptor", "planner", "structure_builder", "materials_project"} and author != last_author:
-                        last_author = author
-                        yield event(AgentEventType.PROGRESS, {
-                            "kind": "status", "role": author,
-                            "text": f"AtomSculptor · {author.replace('_', ' ')}",
-                        })
-                    for part in getattr(getattr(item, "content", None), "parts", None) or []:
-                        function_call = getattr(part, "function_call", None)
-                        if function_call is not None:
-                            call_id = getattr(function_call, "id", None)
-                            if isinstance(call_id, str) and call_id:
-                                pending_call_ids.setdefault(function_call.name, []).append(call_id)
-                            yield event(AgentEventType.TOOL_STARTED, {
-                                "role": author,
-                                "name": function_call.name,
-                                "call_id": call_id,
-                                "arguments": _trace_value(getattr(function_call, "args", {})),
+                )) as events:
+                    async for kind, item in events:
+                        if stopped.is_set():
+                            raise AgentRuntimeError("AtomSculptor Run was stopped")
+                        if kind == "progress":
+                            yield event(AgentEventType.PROGRESS, item)
+                            continue
+                        author = getattr(item, "author", "")
+                        if getattr(item, "partial", False):
+                            partial_content = getattr(item, "content", None)
+                            model_trace.note_activity(author, partial_content)
+                            model_trace.observe_partial(author, partial_content)
+                            # ADK emits the same tool calls and text again in its
+                            # committed aggregate. Never execute or display a
+                            # partial function call as if it were complete.
+                            continue
+                        if author in managed:
+                            managed[author].observe(item)
+                        if author == "atom_sculptor" and item.is_final_response():
+                            final_response_seen = True
+                        if author in {"atom_sculptor", "planner", "structure_builder", "materials_project"} and author != last_author:
+                            last_author = author
+                            yield event(AgentEventType.PROGRESS, {
+                                "kind": "status", "role": author,
+                                "text": f"AtomSculptor · {author.replace('_', ' ')}",
                             })
-                        function_response = getattr(part, "function_response", None)
-                        if function_response is not None:
-                            completed_tool_count += 1
-                            response_id = getattr(function_response, "id", None)
-                            candidates = pending_call_ids.get(function_response.name, [])
-                            if not response_id:
-                                if candidates:
-                                    response_id = candidates.pop(0)
-                                    try:
-                                        function_response.id = response_id
-                                    except (AttributeError, TypeError, ValueError):
-                                        # The trace remains useful if an SDK
-                                        # update makes response objects frozen.
-                                        pass
-                            elif response_id in candidates:
-                                candidates.remove(response_id)
-                            yield event(AgentEventType.TOOL_COMPLETED, {
-                                "role": author,
-                                "name": function_response.name,
-                                "call_id": response_id,
-                                "response": _trace_value(getattr(function_response, "response", {})),
-                            })
-                        text = getattr(part, "text", None)
-                        if text and not bool(getattr(part, "thought", False)):
-                            if author == "atom_sculptor":
-                                final_text = text
-                                is_final = bool(item.is_final_response())
-                                yield event(AgentEventType.MESSAGE, {"text": text, "final": is_final})
+                        for part in getattr(getattr(item, "content", None), "parts", None) or []:
+                            function_call = getattr(part, "function_call", None)
+                            if function_call is not None:
+                                call_id = getattr(function_call, "id", None)
+                                if isinstance(call_id, str) and call_id:
+                                    pending_call_ids.setdefault(function_call.name, []).append(call_id)
+                                yield event(AgentEventType.TOOL_STARTED, {
+                                    "role": author,
+                                    "name": function_call.name,
+                                    "call_id": call_id,
+                                    "arguments": _trace_value(getattr(function_call, "args", {})),
+                                })
+                            function_response = getattr(part, "function_response", None)
+                            if function_response is not None:
+                                completed_tool_count += 1
+                                response_id = getattr(function_response, "id", None)
+                                candidates = pending_call_ids.get(function_response.name, [])
+                                if not response_id:
+                                    if candidates:
+                                        response_id = candidates.pop(0)
+                                        try:
+                                            function_response.id = response_id
+                                        except (AttributeError, TypeError, ValueError):
+                                            # The trace remains useful if an SDK
+                                            # update makes response objects frozen.
+                                            pass
+                                elif response_id in candidates:
+                                    candidates.remove(response_id)
+                                yield event(AgentEventType.TOOL_COMPLETED, {
+                                    "role": author,
+                                    "name": function_response.name,
+                                    "call_id": response_id,
+                                    "response": _trace_value(getattr(function_response, "response", {})),
+                                })
+                            text = getattr(part, "text", None)
+                            if text and not bool(getattr(part, "thought", False)):
+                                if author == "atom_sculptor":
+                                    final_text = text
+                                    is_final = bool(item.is_final_response())
+                                    yield event(AgentEventType.MESSAGE, {"text": text, "final": is_final})
 
             async with bindings.Runner(app=app, session_service=sessions) as runner:
                 from google.adk.agents.run_config import RunConfig, StreamingMode
@@ -864,8 +865,9 @@ class AtomSculptorRuntime(RuntimeProvider):
                     new_message=message, run_config=run_config,
                 )
                 try:
-                    async for outcome in consume(stream):
-                        yield outcome
+                    async with aclosing(consume(stream)) as outcomes:
+                        async for outcome in outcomes:
+                            yield outcome
                 except Exception as exc:
                     waiting = model_trace.waiting()
                     exhausted = getattr(exc, "request_recovery_exhausted", False)
