@@ -77,6 +77,8 @@ nav:
       - Cards and connections: user-guide/canvas.md
       - Packs and cards: user-guide/plugins.md
       - Create and share Packs: creator-packs.md
+      - Card Factory: card-factory.md
+      - Card Factory (Chinese): card-factory.zh-CN.md
       - Troubleshooting: user-guide/troubleshooting.md
   - Build plugins:
       - developers/index.md
@@ -95,6 +97,7 @@ nav:
           - Card state: card-state.md
           - Lifecycle and artifacts: lifecycle-artifacts.md
           - Work-source execution: execution.md
+          - Tool execution boundary: tool-execution.md
           - Node effects: node-effects.md
           - Plugin deployment: plugin-deployment.md
       - Application behavior:
@@ -114,6 +117,7 @@ nav:
           - Shared Python: shared-python-runtime.md
           - Security: security.md
       - Canvas and rendering:
+          - Card design: developers/card-design.md
           - Canvas control: canvas-control.md
           - Canvas placement: layout.md
           - Canvas performance: canvas-performance.md

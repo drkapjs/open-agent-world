@@ -41,6 +41,8 @@ function subscribeToDocumentChanges(listener: (change: PluginDocumentChange) => 
   });
 }
 
+import { PrintedCardView } from '../factory/PrintedCardView';
+
 class PluginBoundary extends Component<{ children: ReactNode }, { error: string | null }> {
   state: { error: string | null } = { error: null };
   static getDerivedStateFromError(error: unknown) { return { error: error instanceof Error ? error.message : String(error) }; }
@@ -212,7 +214,8 @@ export function PluginSurface({ card, slot, level, children }: {
   const reference = definition?.frontend?.[slot];
   if (covered && !inWorkspace && card.type.startsWith('xrd.')) return null;
   if (!reference || !definition) return <>{children}</>;
-  const View = pluginView(definition.plugin_id, reference, runtime);
+  const View = definition.traits.includes('ui.factory-card.v1') && reference === 'factory-card'
+    ? PrintedCardView : pluginView(definition.plugin_id, reference, runtime);
   return <PluginBoundary key={`${card.id}:${definition.plugin_id}:${runtime?.version}:${reference}:${card.state_scope}:${sessionId ?? ""}`}>
     <Suspense fallback={<p role="status">{t("Loading Pack view...")}</p>}>
       <View card={viewCard} definition={definition} level={level} host={host} />

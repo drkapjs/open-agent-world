@@ -3,6 +3,10 @@ import type { PluginVisualCapture, PluginVisualCaptureRequest, PluginVisualCaptu
 import type { NodeSurfaceLevel, NodeTypeCatalogItem, WorldCard } from "../types/world";
 export type { NodePresentation, NodeSurfaceLevel, PluginStateSpec } from "../types/world";
 export { SchemaFields } from "./SchemaFields";
+export { CardFace, CardStock } from '../components/CardFace';
+export type { CardFaceProps } from '../components/CardFace';
+export { CARD_FACE_VARIANTS, CARD_FACE_TONES, cardFaceDesign } from '../components/cardFaceDesign';
+export type { CardFaceDesign, CardFaceVariant, CardFaceTone } from '../components/cardFaceDesign';
 export { t, useLocale } from "../i18n";
 export { useNestedFlowGestures } from "../canvas/useNestedFlowGestures";
 export { useFileViewer } from "../state/openFiles";
@@ -171,7 +175,7 @@ export interface PluginViewProps {
     getAgentCapabilities?(nodeId: string): Promise<{ kind: string; target_id?: string }[]>;
     openLinkedCanvas?(type: string, name: string): Promise<void>;
     documentAction(action: string, arguments_: Record<string, unknown>, expectedRevision?: number, nodeId?:string): Promise<{ value: unknown; revision: number }>;
-    delegationAction(action: 'collect' | 'wait' | 'stop', arguments_: Record<string, unknown>): Promise<Record<string, unknown>>;
+    delegationAction(action: 'collect' | 'wait' | 'inspect' | 'stop' | 'cancel_defer', arguments_: Record<string, unknown>): Promise<Record<string, unknown>>;
     resourceAction(action: string, arguments_: Record<string, unknown>, confirm?: boolean): Promise<Record<string, unknown>>;
     listCards(traits?: string[]): Promise<WorldCard[]>;
     readDocument(nodeId?: string): Promise<{ value: unknown; revision: number }>;

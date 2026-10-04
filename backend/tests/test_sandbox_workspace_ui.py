@@ -586,7 +586,7 @@ def test_agent_observes_live_output_and_cancels_only_matching_command(runtime_cl
         task = asyncio.create_task(services.execute_sandbox(sandbox["id"], ["installer"], agent_id=agent["id"]))
         await started.wait()
         try:
-            info = await provider.invoke_tool(agent["id"], "operation:inspect_sandbox", {"sandbox": sandbox["id"]})
+            info = await provider.invoke_tool(agent["id"], "operation:inspect_sandbox", {"sandbox": sandbox["id"], "include_output": True})
             assert info["recent_commands"][-1]["stdout"] == "install progress"
             from backend.errors import ConflictError
             with pytest.raises(ConflictError):
@@ -637,7 +637,7 @@ def test_parallel_commands_dispatch_without_waiting(runtime_client, monkeypatch)
         write_document(services, sandbox['id'], {'variables': {'REGION': 'queued'}}, document['revision'])
         release.set()
         await asyncio.wait_for(asyncio.gather(first, second), 5)
-        assert calls == [(['cmd.exe', 'first'], SandboxLimits().default_timeout_seconds), (['cmd.exe', 'second'], 3600)]
+        assert calls == [(['cmd.exe', 'first'], sandbox['config']['command_timeout']), (['cmd.exe', 'second'], 3600)]
         assert native.last_environment.get('REGION') != 'queued'
         assert not any(r['sandbox_id'] == sandbox['id'] for r in services._sandbox_commands.values())
 

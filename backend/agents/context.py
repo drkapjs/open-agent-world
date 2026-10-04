@@ -300,6 +300,10 @@ class ManagedContext:
                 context_id,
                 max_sequence=int(limit) if isinstance(limit, int) else None,
             ))
+            # A host work notification has no user message in the conversation
+            # ledger. Include that invocation input as well as the normal delta.
+            if lifecycle.get("work_continuation") and (not run_id or self.checkpoint.input_run_id != run_id):
+                self.checkpoint.contents.append(text_content(prompt))
         elif not run_id or self.checkpoint.input_run_id != run_id:
             self.checkpoint.contents.append(text_content(prompt))
         # Retries of one invocation are not new user turns. Do not deduplicate

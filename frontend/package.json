@@ -3,7 +3,9 @@
   "private": true,
   "engines": { "node": ">=24" },
   "overrides": {
-    "matterviz": { "svelte-widgets": "1.6.1" }
+    "matterviz": {
+      "svelte-widgets": "1.6.1"
+    }
   },
   "version": "0.1.0",
   "type": "module",
@@ -15,6 +17,7 @@
     "test:e2e": "node scripts/run-e2e.mjs",
     "test:e2e:packs": "node scripts/run-pack-e2e.mjs",
     "test:e2e:deployment": "playwright test -c playwright.deployment.config.ts",
+    "test:e2e:ui": "playwright test -c playwright.ui.config.ts",
     "test:e2e:minister": "node scripts/run-e2e.mjs --minister"
   },
   "dependencies": {
@@ -40,6 +43,7 @@
     "@types/react-dom": "^18.3.5",
     "@types/three": "0.185.4",
     "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "10.4.21",
     "jsdom": "^25.0.1",
     "typescript": "^5.7.2",
     "vite": "^6.0.5",

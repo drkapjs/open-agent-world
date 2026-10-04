@@ -16,7 +16,9 @@ import { memo, type ComponentType, type CSSProperties, type PointerEvent as Reac
 import { ConnectionHoverHint, clearConnectionHoverHint, updateConnectionHoverHint } from "./ConnectionHoverHint";
 import { CardName } from "./CardName";
 import { IconButton } from "../components/IconButton";
-import { NODE_SURFACE_RADIUS, collapsedSurface, nodePresentation, nodeSurfaceSupport, surfaceLevelForNode, useNodeSurfaceStore, type NodeSurfaceLevel } from "../state/nodeSurfaces";
+import { NODE_SURFACE_RADIUS, collapsedSurface, cardPresentation, nodeSurfaceSupport, surfaceLevelForNode, useNodeSurfaceStore, type NodeSurfaceLevel } from "../state/nodeSurfaces";
+import { cardStudio } from '../factory/faceDesign';
+import { DesignedCard } from '../factory/PrintedCardView';
 import { useWorldStore } from "../state/worldStore";
 import { useConversationView } from "../state/conversationView";
 import { type CardType, type WorldCard } from "../types/world";
@@ -119,7 +121,7 @@ const WorldCardNodeComponent = memo(function WorldCardNodeComponent({ data, sele
   const pointerStart = useRef<{ x: number; y: number; moved: boolean }>();
   const visualLevel = level;
   const finishQuality = visualLevel === "preview" ? "standard" : "thumbnail";
-  const material = useCardFinish(card.finish, finishQuality);
+  const material = useCardFinish(visualLevel === "node" || visualLevel === "preview" ? card.finish : "normal", finishQuality);
   // Preview cards do not need editors, plugin bodies or their subscriptions.
   // Unknown plugin bodies may still own local drafts. Host editors retain drafts
   // outside their mounts, so their hidden DOM and subscriptions can be released.
@@ -135,7 +137,8 @@ const WorldCardNodeComponent = memo(function WorldCardNodeComponent({ data, sele
   const promotion = useMinisterRole(s => s.promotions[card.id]);
 
   const support = nodeSurfaceSupport(card.type, catalog);
-  const presentation = nodePresentation(card.type, catalog);
+  const presentation = cardPresentation(card, catalog);
+  const customFace = Boolean(cardStudio(card, catalog)) && !isMissingCard(card, catalog);
   const base = useNodeSurfaceStore(state => state.baseLevels[card.id]);
   const canCollapseInspector = collapsedSurface(presentation, "inspector", base) !== "inspector";
 
@@ -161,7 +164,7 @@ const WorldCardNodeComponent = memo(function WorldCardNodeComponent({ data, sele
   return (<>
     <article
       ref={cardRef}
-      className={`world-card node-surface card-finish-surface world-card--${card.type} is-${visualLevel} ${selected ? "is-selected" : ""} ${card.status === "running" ? "is-running" : ""} ${card.status === "error" ? "is-error" : ""} ${card.ephemeral ? "is-ephemeral" : ""}`}
+      className={`world-card node-surface card-finish-surface world-card--${card.type} is-${visualLevel} ${customFace ? 'factory-custom-surface' : ''} ${selected ? "is-selected" : ""} ${card.status === "running" ? "is-running" : ""} ${card.status === "error" ? "is-error" : ""} ${card.ephemeral ? "is-ephemeral" : ""}`}
       style={{ "--card-kind": definition?.color, borderRadius: NODE_SURFACE_RADIUS[visualLevel] } as CSSProperties}
       aria-label={`${label} ${card.name}`}
       data-missing={isMissingCard(card, catalog) || undefined}
@@ -222,7 +225,7 @@ const WorldCardNodeComponent = memo(function WorldCardNodeComponent({ data, sele
       )) : null}
 
       {visualLevel !== "inspector" && <EquipmentToggle card={card} />}
-      {visualLevel === "workspace" ? <WorkspaceSurface card={card} /> : <>
+      {customFace ? <DesignedCard card={card} level={level} /> : visualLevel === "workspace" ? <WorkspaceSurface card={card} /> : <>
         <header className={`card-header node-surface-header node-drag-region ${visualLevel === "inspector" ? "card-finish-surface" : ""}`}>
           <div className="card-kind-icon" aria-hidden="true"><CatalogIcon definition={definition} size={18} /></div>
           <div className="card-title-group">
@@ -247,7 +250,7 @@ const WorldCardNodeComponent = memo(function WorldCardNodeComponent({ data, sele
           ) : null}
           {visualLevel === 'inspector' && canCollapseInspector && <IconButton icon={X} size="sm" quiet className="node-surface-close"
             onClick={() => closeInspector(card.id)} label={t("Close {v0} inspector", { v0: String(card.name) })} />}
-          {visualLevel === 'inspector' && <CardFinishLayer finish={card.finish} quality="thumbnail" />}
+          {visualLevel === 'inspector' && <CardFinishLayer finish={card.finish} quality="thumbnail" surface="chrome" />}
         </header>
 
         <div className="node-preview-content" aria-hidden={visualLevel !== "preview"}>
@@ -278,7 +281,7 @@ const WorldCardNodeComponent = memo(function WorldCardNodeComponent({ data, sele
           </div>
         </footer>}
       </>}
-      {(visualLevel === "node" || visualLevel === "preview") && <CardFinishLayer finish={card.finish} quality={finishQuality} />}
+      {!customFace && (visualLevel === "node" || visualLevel === "preview") && <CardFinishLayer finish={card.finish} quality={finishQuality} />}
     </article>
     {card.minister && !isMissingCard(card, catalog) && <MinisterAgent card={card} nodeHovered={ministerNodeHovered && level === 'node'} />}
   </>);
