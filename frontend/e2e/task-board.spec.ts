@@ -50,7 +50,7 @@ test("task board edits dependencies, rejects cycles, stays live and restores aft
     await expect(board.getByRole("button", { name: "Edit task Write report", exact: true })).toBeVisible();
     await board.getByRole("button", { name: "Close workspace", exact: true }).click();
     card = page.locator(`[data-card-id="${node.id}"]`);
-    await card.locator(".card-kind-icon").click();
+    await card.locator('.content-surface-menu > summary').click();
     await card.getByRole("button", { name: "Remove Research plan", exact: true }).click();
     await expect(card).toHaveCount(0);
     await page.keyboard.press("Control+z");
@@ -95,7 +95,7 @@ test("optional execution settings dispatch connected agents and show durable res
     await board.getByLabel("Task executor", { exact: true }).selectOption(second.id);
     await board.getByRole("button", { name: "Save task", exact: true }).click();
     await board.getByRole("button", { name: "Run ready work", exact: true }).click();
-    await expect(board.getByRole("heading", { name: "3 / 3 complete", exact: true })).toBeVisible();
+    await expect(board.getByRole("status").filter({ hasText: "3 / 3 complete" })).toBeVisible();
     await board.locator(".execution-history summary").click();
     await expect(board.locator(".execution-history li")).toHaveCount(3);
     await board.locator(".execution-history summary").click();
@@ -106,7 +106,7 @@ test("optional execution settings dispatch connected agents and show durable res
     await page.screenshot({ path: "../.open-agent-world/task-execution-dark.png" });
     await page.getByRole("button", { name: "Use light theme" }).click();
     await page.reload();
-    await expect(page.getByRole("dialog", { name: "Executable plan workspace", exact: true }).getByRole("heading", { name: "3 / 3 complete", exact: true })).toBeVisible();
+    await expect(page.getByRole("dialog", { name: "Executable plan workspace", exact: true }).getByRole("status").filter({ hasText: "3 / 3 complete" })).toBeVisible();
     const state = await (await request.get(url + "/execution")).json();
     expect(state.attempts.map((attempt: { item_id: string }) => attempt.item_id)).toEqual(["a", "b", "c"]);
   } finally {

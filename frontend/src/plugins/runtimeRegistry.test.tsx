@@ -6,7 +6,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { createViewRegistry, loadRuntimePlugin } from './registry';
 import { providePackRuntime } from './sharedRuntime';
 import type { FrontendPlugin, PluginViewProps } from './sdk';
-import { NetworkMap } from './sdk';
+import { NetworkMap, ApplicationSurface, WorkspaceEmptyState, WorkspacePanel, WorkspaceToolbar, composeWorkspace } from './sdk';
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 const runtime = { api_version: 1, version: '0.1.0', url: '/api/packs/test.greeter/versions/0.1.0/frontend/index.js' };
@@ -18,10 +18,15 @@ class Boundary extends Component<{ children: React.ReactNode }, { failed: boolea
 }
 
 it('loads installed frontend with the exact host React and SDK, cached by immutable version', async () => {
-  const host = providePackRuntime() as { react: typeof React; sdk: { t: unknown; NetworkMap: unknown } };
+  const host = providePackRuntime() as { react: typeof React; sdk: typeof import('./sdk') };
   expect(host.react.useState).toBe(useState);
   expect(typeof host.sdk.t).toBe('function');
   expect(host.sdk.NetworkMap).toBe(NetworkMap);
+  expect(host.sdk.ApplicationSurface).toBe(ApplicationSurface);
+  expect(host.sdk.WorkspaceEmptyState).toBe(WorkspaceEmptyState);
+  expect(host.sdk.WorkspacePanel).toBe(WorkspacePanel);
+  expect(host.sdk.WorkspaceToolbar).toBe(WorkspaceToolbar);
+  expect(host.sdk.composeWorkspace).toBe(composeWorkspace);
   const Greeting = () => { const [count, setCount] = host.react.useState(0); return <button onClick={() => setCount(count + 1)}>Greetings {count}</button>; };
   const load = vi.fn().mockResolvedValue({ default: { apiVersion: 1, views: { greeting: Greeting } } satisfies FrontendPlugin });
   const registry = createViewRegistry(new Map(), load);

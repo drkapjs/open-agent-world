@@ -1,4 +1,4 @@
-import { NetworkMap, type NetworkData } from "@oaw/plugin-api";
+import { NetworkMap, WorkspaceEmptyState, type NetworkData } from "@oaw/plugin-api";
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocale, type DataSchema, type Dataset, type FrontendPlugin, type PluginViewProps } from '@oaw/plugin-api';
 import { ChartCanvas } from './ChartCanvas';
@@ -19,6 +19,7 @@ export function Visualization({card, host}: PluginViewProps) {
   const [schemas, setSchemas] = useState<DataSchema[]>([]), [data,setData] = useState<Dataset | null>(null);
   const [error,setError] = useState(''), [loading,setLoading] = useState(false), [saving,setSaving] = useState(false), [revision,refresh] = useState(0);
   const [schemaBusy,setSchemaBusy] = useState(false), [schemaSource,setSchemaSource] = useState('');
+  const [fieldsOpen, setFieldsOpen] = useState<boolean | null>(null);
   const request = useRef(0), schemaRequest = useRef(0), sourceRequest = useRef(0);
   const api = host.dataSources;
   const sourceId = config.source_id || (sources.length === 1 ? sources[0].id : '');
@@ -103,10 +104,12 @@ export function Visualization({card, host}: PluginViewProps) {
         {config.schema_id&&!schemas.some(s=>s.id===config.schema_id)&&<option value={config.schema_id}>{config.schema_id} ({label('unavailable','不可用')})</option>}
         {schemas.filter(s=>kind==='graph'||s.kind==='table').map(s=><option key={s.id} value={s.id}>{s.label}</option>)}
       </select></label>
+      {schema && <button className="viz-config-toggle" aria-expanded={fieldsOpen ?? !configured} onClick={()=>setFieldsOpen(!(fieldsOpen ?? !configured))}>{label('Fields & filters','字段与筛选')}</button>}
       <button title={label('Refresh data','刷新数据')} aria-label={label('Refresh data','刷新数据')} disabled={saving||loading||schemaBusy} onClick={()=>void reloadSources()}>↻</button>
       {!connected&&sourceId&&available.some(s=>s.id===sourceId)&&<button disabled={saving} onClick={()=>void pickSource(sourceId)}>{label('Reconnect','重新连接')}</button>}
     </div>
-    {schema?.kind==='table'&&<div className="viz-fields">
+    {schema && (fieldsOpen ?? !configured) && <div className="viz-configuration" onFocusCapture={()=>setFieldsOpen(true)} onChangeCapture={()=>setFieldsOpen(true)}>
+    {schema.kind==='table'&&<div className="viz-fields">
       {kind!=='histogram'&&select('x',kind==='graph'?label('From','起点'):'X')}
       {config.aggregate!=='count'&&select('y',kind==='graph'?label('To','终点'):kind==='histogram'?label('Value','数值'):'Y')}
       {kind!=='histogram'&&config.aggregate==='none'&&select('series',kind==='graph'?label('Relation','关系'):label('Series','分组'))}
@@ -114,19 +117,22 @@ export function Visualization({card, host}: PluginViewProps) {
         {(['none','count','sum','mean','min','max'] as const).map((v,i)=><option key={v} value={v}>{label(['Raw rows','Count','Sum','Mean','Minimum','Maximum'][i],['原始数据','计数','求和','平均','最小','最大'][i])}</option>)}
       </select></label>}
     </div>}
-    {schema?.kind==='graph'&&<div className="viz-fields">
+    {schema.kind==='graph'&&<div className="viz-fields">
       <label><span>{label('Entity type','实体类型')}</span><input aria-label={label('Entity type','实体类型')} key={`entity:${config.schema_id}:${sourceId}`} placeholder={label('All','全部')} defaultValue={config.entity_type} onBlur={e=>{if(e.target.value!==config.entity_type)void save({entity_type:e.target.value});}} /></label>
       <label><span>{label('Relation type','关系类型')}</span><input aria-label={label('Relation type','关系类型')} key={`relation:${config.schema_id}:${sourceId}`} placeholder={label('All','全部')} defaultValue={config.relation_type} onBlur={e=>{if(e.target.value!==config.relation_type)void save({relation_type:e.target.value});}} /></label>
     </div>}
+    <label className="viz-limit">{label('Row limit','数据上限')} <select aria-label={label('Row limit','数据上限')} value={config.limit} disabled={saving} onChange={e=>void save({limit:Number(e.target.value)})}>{[500,2000,10000].map(n=><option key={n} value={n}>{n.toLocaleString()}</option>)}</select></label>
+    </div>}
     <div className="viz-stage">
-      {error?<div className="viz-empty" role="alert">{error}<button onClick={()=>void reloadSources()}>{label('Retry','重试')}</button></div>:
-        loading||schemaBusy?<div className="viz-empty" role="status">{label('Loading data…','读取数据中…')}</div>:
+      {error?<div className="viz-empty" role="alert"><WorkspaceEmptyState title={label('Unable to load data','无法读取数据')} description={error} actions={<button onClick={()=>void reloadSources()}>{label('Retry','重试')}</button>} /></div>:
+        loading||schemaBusy?<WorkspaceEmptyState className="viz-empty" busy title={label('Loading data…','读取数据中…')} />:
         plot&&(plot.points.length||plot.nodes.length)?kind==='graph'?<NetworkMap graphKey={`visualization:${card.id}`} data={network} label="Graph visualization" />:<ChartCanvas plot={plot} kind={kind} xLabel={kind==='histogram'?config.y:config.x} yLabel={kind==='histogram'?label('Count','数量'):config.aggregate==='count'?label('Count','数量'):config.y}/>:
-        <div className="viz-empty"><span className="viz-empty-icon">{kind==='graph'?'⌘':'▥'}</span>{!connected?label('Connect a data source to begin','连接数据源，开始可视化'):!schema?label('Choose a schema to visualize','选择需要展示的 schema'):!configured?label('Choose fields to plot','选择需要绘制的字段'):label('No plottable data','暂无可绘制的数据')}</div>}
+        <WorkspaceEmptyState className="viz-empty" title={!connected?label('Connect a data source to begin','连接数据源，开始可视化'):!schema?label('Choose a schema to visualize','选择需要展示的 schema'):!configured?label('Choose fields to plot','选择需要绘制的字段'):label('No plottable data','暂无可绘制的数据')}
+          description={!connected?label('Choose a database or knowledge source above.','从上方选择数据库或知识源。'):!schema?label('Choose the table or graph you want to explore.','选择要查看的数据表或图谱。'):label('Adjust fields and filters to explore this dataset.','调整字段与筛选条件以查看数据。')}
+          actions={schema ? <button onClick={()=>setFieldsOpen(true)}>{label('Fields & filters','字段与筛选')}</button> : undefined} />}
     </div>
     <footer className="viz-status"><span role="status">{data?data.kind==='graph'?`${data.nodes?.length??0} ${label('nodes','节点')} · ${data.edges?.length??0} ${label('edges','关系')}`:`${data.rows?.length??0} ${label('rows','行')}${data.scope==='full'?` · ${label('Full-data aggregate','全量统计')}`:''}`:label('Read-only','只读')}
       {data?.truncated&&<strong> · {label('Partial data','部分数据')}</strong>}{plot?.skipped?` · ${plot.skipped} ${label('empty / invalid skipped','空值或无效值已跳过')}`:''}</span>
-      <label>{label('Limit','上限')} <select aria-label={label('Row limit','数据上限')} value={config.limit} disabled={saving} onChange={e=>void save({limit:Number(e.target.value)})}>{[500,2000,10000].map(n=><option key={n} value={n}>{n.toLocaleString()}</option>)}</select></label>
     </footer>
   </section>;
 }

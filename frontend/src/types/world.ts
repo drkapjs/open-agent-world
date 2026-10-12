@@ -9,6 +9,8 @@ export interface NodePresentation {
   initial: NodeSurfaceLevel;
   open: NodeSurfaceLevel;
   sizes?: Partial<Record<NodeSurfaceLevel, { width: number; height: number }>>;
+  /** Optional content sizing hints for one-shot workspace composition. */
+  workspace_layout?: import('../workspace/workspaceLayoutMetadata').WorkspaceLayoutMetadata;
 }
 
 export type AgentStatus = "idle" | "running" | "waiting" | "error";

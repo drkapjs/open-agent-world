@@ -46,7 +46,7 @@ function useSandboxRuntime(card: WorldCard) {
   };
 }
 
-export function SandboxRuntimeControls({ card, disabled = false }: { card: WorldCard; disabled?: boolean }) {
+export function SandboxRuntimeControls({ card, disabled = false, compact = false }: { card: WorldCard; disabled?: boolean; compact?: boolean }) {
   useLocale();
   const startSandbox = useWorldStore((state) => state.startSandbox);
   const stopSandbox = useWorldStore((state) => state.stopSandbox);
@@ -56,7 +56,7 @@ export function SandboxRuntimeControls({ card, disabled = false }: { card: World
   const supported = (network?.supported_network_modes ?? selectedRuntime?.supported_network_modes)?.includes("enabled");
   const retry = enabled && supported && (!network?.network_available || network.network_status === "setup_failed");
   return <div className="sandbox-status-panel">
-    <div className="instrument-gauge" data-active={ready && info?.available === true} aria-hidden="true"><i /><i /><i /></div>
+    {!compact && <div className="instrument-gauge" data-active={ready && info?.available === true} aria-hidden="true"><i /><i /><i /></div>}
     <div><span>{runtimeLabel}</span><strong role="status">{statusLabel}</strong></div>
     <button type="button" className={canStop ? "secondary-button" : "primary-button"}
       disabled={canStop ? !!busy && busy !== "executing"

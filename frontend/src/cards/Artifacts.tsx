@@ -4,6 +4,8 @@ import { apiErrorMessage, worldApi } from "../api/client";
 import { useWorldStore } from "../state/worldStore";
 import { useNodeSurfaceStore } from "../state/nodeSurfaces";
 import type { WorldCard } from "../types/world";
+import { Modal } from '../components/Modal';
+import { WorkspaceEmptyState, WorkspaceToolbar } from '../workspace/WorkspacePrimitives';
 
 export interface ArtifactVersion {
   version_id: string; artifact_id: string; name: string; state: string; size_bytes: number;
@@ -21,13 +23,14 @@ export function PublishedReferences({ references }: { references?: ArtifactRefer
     {ref.collection_id && <button className="secondary-button" onClick={() => useNodeSurfaceStore.getState().openWorkspace(ref.collection_id!)}>{t("Inspect artifact")}</button>}</p>)}</>;
 }
 
-export function PublishFiles({ card, paths, children }: { card: WorldCard; paths: string[]; children?: ReactNode }) {
+export function PublishFiles({ card, paths, children, compact = false }: { card: WorldCard; paths: string[]; children?: ReactNode; compact?: boolean }) {
   useLocale();
   const cards = useWorldStore(s => s.cards);
   const [collection, setCollection] = useState("");
   const [finalized, setFinalized] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const [publishOpen, setPublishOpen] = useState(false);
   const request = useRef<{ fingerprint: string; key: string }>();
   async function publish() {
     setBusy(true); setMessage("");
@@ -42,8 +45,7 @@ export function PublishFiles({ card, paths, children }: { card: WorldCard; paths
     } catch (error) { setMessage(apiErrorMessage(error)); }
     finally { setBusy(false); }
   }
-  return <details className="artifact-publish">
-    <summary>{t("Publish selected files (")}{paths.length})</summary>
+  const content = <div className="artifact-publish-content">
     {children}
     <p>{paths.join(", ") || t("Select files or directories in the file tree.")}</p>
     <label>{t("Collection")} <select aria-label={t("Publication collection")} value={collection} onChange={e => setCollection(e.target.value)}>
@@ -52,9 +54,14 @@ export function PublishFiles({ card, paths, children }: { card: WorldCard; paths
     <button className="secondary-button" disabled={busy} onClick={() => void useWorldStore.getState().createCard("core.artifact-collection", { x: card.position.x + 360, y: card.position.y }).then(c => { if (c) setCollection(c.id); })}>{t("New collection")}</button>
     <label><input type="checkbox" checked={finalized} onChange={e => setFinalized(e.target.checked)} />{t("Files are finalized; external writers are paused")}</label>
     <button className="primary-button" disabled={busy || !collection || !finalized || !paths.length} onClick={() => void publish()}>{busy ? t("Publishing…") : t("Publish retained version")}</button>
-    {collection && <button className="secondary-button" onClick={() => useNodeSurfaceStore.getState().openWorkspace(collection)}>{t("Inspect collection")}</button>}
+    {collection && <button className="secondary-button" onClick={() => { useNodeSurfaceStore.getState().openWorkspace(collection); if (compact) setPublishOpen(false); }}>{t("Inspect collection")}</button>}
     {message && <p role="status">{message}</p>}
-  </details>;
+    </div>;
+  const title = `${t('Publish selected files (')}${paths.length})`;
+  return compact ? <>
+    <button type="button" className="sandbox-publish-button" aria-label={title} onClick={() => setPublishOpen(true)}>{t('Publish')}{paths.length > 0 && <span>{paths.length}</span>}</button>
+    {publishOpen && <Modal title={title} busy={busy} onClose={() => setPublishOpen(false)} className="artifact-publish-dialog">{content}</Modal>}
+  </> : <details className="artifact-publish"><summary>{title}</summary>{content}</details>;
 }
 
 export function ArtifactCollection({ card }: { card: WorldCard }) {
@@ -63,6 +70,7 @@ export function ArtifactCollection({ card }: { card: WorldCard }) {
   const event = useWorldStore(s => s.events.find(e => e.type === "artifact_updated" && e.node_id === card.id)?.id);
   const cards = useWorldStore(s => s.cards);
   const [versions, setVersions] = useState<ArtifactVersion[]>([]);
+  const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState("");
   const [preview, setPreview] = useState("");
   const [sandbox, setSandbox] = useState("");
@@ -72,7 +80,7 @@ export function ArtifactCollection({ card }: { card: WorldCard }) {
   const [busy, setBusy] = useState(false);
   async function refresh() { setVersions(await worldApi.artifacts<ArtifactVersion[]>(card.id)); }
   useEffect(() => { let live = true;
-    void worldApi.artifacts<ArtifactVersion[]>(card.id).then(value => { if (live) setVersions(value); }).catch(e => { if (live) setError(apiErrorMessage(e)); });
+    void worldApi.artifacts<ArtifactVersion[]>(card.id).then(value => { if (live) setVersions(value); }).catch(e => { if (live) setError(apiErrorMessage(e)); }).finally(() => { if (live) setLoaded(true); });
     return () => { live = false; };
   }, [card.id, socket, event]);
   useEffect(() => {
@@ -87,16 +95,21 @@ export function ArtifactCollection({ card }: { card: WorldCard }) {
     finally { setBusy(false); }
   }
   return <div className="artifact-collection nowheel">
-    <header><h3>{t("Published versions")}</h3><button className="secondary-button" onClick={() => void action(refresh)}>{t("Refresh")}</button></header>
-    <p>{t("Retained independently of producers. Removing a reference preserves its stored content.")}</p>
+    <WorkspaceToolbar label={t("Published versions")}><strong>{t("Published versions")} · {versions.length}</strong><button className="secondary-button" disabled={busy} onClick={() => void action(refresh)}>{t("Refresh")}</button></WorkspaceToolbar>
     {error && <p role="alert">{error}</p>}
+    {!versions.length && !error && <WorkspaceEmptyState busy={!loaded} title={loaded ? t("No published files yet") : t("Loading…")}
+      description={loaded ? t("Publish selected files from a Sandbox to keep a version here.") : undefined} />}
+    {!!versions.length && <details className="artifact-copy-settings"><summary>{t("Copy into Sandbox")}</summary>
     <label>{t("Copy into Sandbox")} <select value={sandbox} onChange={e => setSandbox(e.target.value)}><option value="">{t("Choose workspace")}</option>{cards.filter(c => c.type === "sandbox").map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></label>
     <label>{t("New destination directory")} <input value={destination} onChange={e => setDestination(e.target.value)} /></label>
+    </details>}
     {versions.map(v => <article key={v.version_id}>
-      <h4>{v.name} · {v.state}</h4><p>{v.size_bytes.toLocaleString(useLocale.getState().locale)} {t("bytes ·")} {v.created_at}</p>
+      <header><h4>{v.name}</h4><span>{v.state}</span></header><p className="artifact-version-meta">{v.size_bytes.toLocaleString(useLocale.getState().locale)} {t("bytes ·")} {v.created_at}</p>
+      <details><summary>{t("Version details")}</summary>
       <p>{t("Version")} {v.version_id}<br />{t("Artifact")} {v.artifact_id}</p>
       <p>{t("Produced by")} {v.provenance.agent_name ?? t("User")} {t("in")} {v.provenance.sandbox_name}{v.provenance.run_id ? t(" · Run {v0}", { v0: String(v.provenance.run_id) }) : ""}</p>
       <p>{t("Retention:")} {v.retention.retained ? v.retention.reason : "released"} · {v.retention.owner}</p>
+      </details>
       {(v.error || v.cleanup_error) && <p role="alert">{v.error ?? v.cleanup_error}</p>}
       <details><summary>{t("Content manifest (")}{v.manifest.length})</summary><ul>{v.manifest.map(file => <li key={file.path}>
         {file.path}{file.directory ? "/" : t(" · {v0} bytes", { v0: String(file.size) })}
@@ -110,9 +123,12 @@ export function ArtifactCollection({ card }: { card: WorldCard }) {
         </>}
       </li>)}</ul></details>
       <button className="secondary-button" disabled={busy || !sandbox || !destination || v.state !== "ready"} onClick={() => void action(() => worldApi.artifacts(card.id, `versions/${v.version_id}/materialize`, { sandbox_id: sandbox, destination }))}>{t("Copy version to workspace")}</button>
+      <details><summary>{t("Manage version")}</summary>
+      <p>{t("Retained independently of producers. Removing a reference preserves its stored content.")}</p>
       <button className="secondary-button" disabled={busy} onClick={() => void action(() => worldApi.artifacts(card.id, `references/${v.version_id}`, undefined, "DELETE"))}>{t("Remove reference")}</button>
       {confirm === v.version_id ? <button className="danger-button" disabled={busy} onClick={() => void action(() => worldApi.artifacts(card.id, `versions/${v.version_id}`, undefined, "DELETE"))}>{t("Confirm release and delete stored content")}</button>
         : <button className="secondary-button" disabled={busy || v.state === "deleted"} onClick={() => setConfirm(v.version_id)}>{t("Release retained content…")}</button>}
+      </details>
     </article>)}
     {preview && <pre className="artifact-preview">{preview}</pre>}
     <details><summary>{t("Restore retained references")}</summary>

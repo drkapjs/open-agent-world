@@ -12,16 +12,7 @@ export function ScoreBars({frames,index,onSelect,phases,loading=false}:{loading?
    {phases&&<span className="xrd-score-phase">{phases[f.candidate_id]||'未提供物相'}</span>}<span className="xrd-score-well"><span className="xrd-score-column" style={{height:q===undefined?'28px':`${q*116}px`,'--xrd-score-hue':q===undefined?undefined:q*120} as CSSProperties}/></span><span className="xrd-score-number">{String(i+1).padStart(2,'0')}</span><span className="xrd-score-tooltip" role="tooltip">{description}</span>
  </button>;})}</div>;
 }
-export function wavePath(time:number,amplitude:number){return Array.from({length:81},(_,i)=>{const x=i/80;const envelope=Math.sin(Math.PI*x)**2;const wave=Math.sin(x*(8+.6*Math.sin(time*.45))*Math.PI-time*3)+.25*Math.sin(x*19*Math.PI+time*1.7);return `${i?'L':'M'}${(x*240).toFixed(2)},${(16+amplitude*envelope*wave).toFixed(3)}`;}).join(' ');}
-export function ActivityLine({active,status,label}:{active:boolean;status:string;label:string}){
- const path=useRef<SVGPathElement>(null);const amp=useRef(0);
- useEffect(()=>{const reduced=window.matchMedia('(prefers-reduced-motion: reduce)');let raf=0;let start:number|undefined;let initial=amp.current;
-   const tick=(now:number)=>{start??=now;const p=Math.min(1,(now-start)/320),ease=p*p*(3-2*p);amp.current=initial+((active?7:0)-initial)*ease;
-     path.current?.setAttribute('d',wavePath(now/1000,amp.current));if(active||p<1)raf=requestAnimationFrame(tick);
-   };
-   const reset=()=>{cancelAnimationFrame(raf);start=undefined;initial=amp.current;if(reduced.matches){amp.current=0;path.current?.setAttribute('d',wavePath(0,0));}else raf=requestAnimationFrame(tick);};
-   reset();reduced.addEventListener('change',reset);return()=>{cancelAnimationFrame(raf);reduced.removeEventListener('change',reset);};
- },[active]);
+export function ActivityStatus({active,status,label}:{active:boolean;status:string;label:string}){
  const text=active?'运行中':status==='failed'?'失败':status==='cancelled'?'已取消':status==='completed'||status==='succeeded'?'已完成':'待运行';
- return <span className={`xrd-activity-line ${active?'is-active':''}`} data-state={active?'running':status} role="status" aria-label={`${label}：${text}（任务活动指示）`} title={`${label}：${text}`}><svg viewBox="0 0 240 32" preserveAspectRatio="none" aria-hidden="true"><path ref={path} d={wavePath(0,0)}/></svg>{(active||status==='failed'||status==='cancelled'||status==='completed'||status==='succeeded')&&<small>{text}</small>}</span>;
+ return <span className="xrd-step-status" data-state={active?'running':status} role="status" aria-label={`${label}：${text}（任务活动指示）`} title={`${label}：${text}`}>{text==='待运行'?null:text}</span>;
 }

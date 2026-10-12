@@ -23,15 +23,13 @@ function CodexSettings({ card, definition, host }: PluginViewProps) {
   const extra = Object.keys(properties).filter(key => ![...main, ...advanced].includes(key));
   return <div className="codex-settings">
     <section className="codex-settings-section">
-      <div className="codex-settings-heading"><span>{t("Project folder")}</span>
-        {!String(card.config.workspace_path ?? "").trim() && <small>{t("Uses default workspace")}</small>}
-      </div>
       <label className="field-label codex-project-field">
         <span>{t("Project folder")}</span>
         <input key={String(card.config.workspace_path ?? "")} defaultValue={String(card.config.workspace_path ?? "")}
           placeholder={t("Default Workspace location / codex-workspace")}
           onBlur={(event) => void save("workspace_path", event.target.value.trim())} />
       </label>
+      {!String(card.config.workspace_path ?? "").trim() && <small>{t("Uses default workspace")}</small>}
       <p className="codex-settings-help">{t("Leave blank to share codex-workspace under Default Workspace location, created on first run. Or enter an existing absolute project folder.")}</p>
     </section>
     <section className="codex-settings-section">

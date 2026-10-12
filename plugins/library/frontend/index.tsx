@@ -1,4 +1,4 @@
-import { t, useLocale } from "@oaw/plugin-api";
+import { WorkspaceEmptyState, t, useLocale } from "@oaw/plugin-api";
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { FrontendPlugin, PluginViewProps } from "@oaw/plugin-api";
@@ -52,15 +52,19 @@ function PaperMagazine(props:PluginViewProps) {
   useEffect(()=>{const el=root.current?.closest(".world-card");const expand=()=>setOpen(true);el?.addEventListener("oaw:expand-reader",expand);return()=>el?.removeEventListener("oaw:expand-reader",expand);},[]);
   const annotations=summary?.value.annotations??[];
   return <div ref={root} className="library-magazine nodrag nopan nowheel">
-    <h3>{card.name}</h3>
     {error&&<p role="alert">{error}</p>}
     <div className="library-magazine-summary">
-      <div>{summary?.value.thumbnail?<img src={summary.value.thumbnail} alt={t("论文封面快照")} draggable={false}/>:<p>{t("尚未导入 PDF")}</p>}<small>{summary?.value.pages??0} {t("页 · 封面快照")}</small></div>
-      <div className="library-magazine-stats">{[[agents,t("连接 Agent")],[annotations.length,t("批注")],[annotations.filter(a=>a.learning).length,t("学习卡片")]].map(([n,label])=><div key={label}><strong>{n}</strong><small>{label}</small></div>)}</div>
+      {summary?.value.thumbnail&&<button className="library-magazine-cover" aria-label={t("打开阅读器")} onClick={()=>setOpen(true)}><img src={summary.value.thumbnail} alt={t("论文封面快照")} draggable={false}/></button>}
+      <div className="library-magazine-intro">
+        <p className="library-magazine-byline">{[card.config.authors,card.config.year].filter(Boolean).join(' · ')}</p>
+        <strong>{summary?.value.pages ? `${t("Page {page}", {page:summary.value.page || 1})} / ${summary.value.pages}` : t("尚未导入 PDF")}</strong>
+        <button className="primary-button" onClick={()=>setOpen(true)}>{t(summary?.value.pages ? "打开阅读器" : "导入 PDF")}</button>
+        <div className="library-magazine-stats">{[[agents,t("连接 Agent")],[annotations.filter(a=>a.learning).length,t("学习卡片")]].map(([n,label])=><span key={label}><b>{n}</b> {label}</span>)}</div>
+      </div>
     </div>
-    <h4>{t("批注 ·")} {annotations.length}</h4>
+    <h4>{t("批注 ·")} <span>{annotations.length}</span></h4>
     <div className="library-magazine-notes nowheel" tabIndex={0} aria-label={t("批注列表")} onWheel={e=>e.stopPropagation()}>
-      {annotations.length?annotations.map(a=><article key={a.id}><small>{t("Page {page}", { page: a.page })}{a.title?` · ${a.title}`:""}</small>{a.image&&<img src={a.image} alt={t("截图批注")}/>}{a.text&&<blockquote>{a.text}</blockquote>}{a.translation&&<p>{a.translation}</p>}{a.comment&&<p>{a.comment}</p>}</article>):<p>{t("暂无批注")}</p>}
+      {annotations.length?annotations.map(a=><article key={a.id}><small>{t("Page {page}", { page: a.page })}{a.title?` · ${a.title}`:""}</small>{a.image&&<img src={a.image} alt={t("截图批注")}/>}{a.text&&<blockquote>{a.text}</blockquote>}{a.translation&&<p>{a.translation}</p>}{a.comment&&<p>{a.comment}</p>}</article>):<WorkspaceEmptyState title={t("暂无批注")} description={t("写下想法，留空则仅保存高亮")} />}
     </div>
     {open&&<ActiveReader key={attempt} {...props} onRetry={()=>setAttempt(n=>n+1)} onClose={()=>setOpen(false)}/>}
   </div>;

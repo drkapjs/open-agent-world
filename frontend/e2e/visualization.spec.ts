@@ -1,4 +1,11 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Locator } from '@playwright/test';
+
+async function openFields(surface:Locator){
+  const toggle=surface.locator('.viz-toolbar').getByRole('button',{name:'Fields & filters',exact:true});
+  await expect(toggle).toBeVisible();
+  if(await toggle.getAttribute('aria-expanded')==='false')await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-expanded','true');
+}
 
 test('connects SQL, chooses schema, plots dense data and retains config after reload', async ({page,request})=>{
   test.setTimeout(60000);
@@ -44,6 +51,7 @@ test('connects SQL, chooses schema, plots dense data and retains config after re
     await dialog.getByRole('button',{name:'Connect',exact:true}).click();
     await expect(dialog).not.toBeVisible();
     await expect(surface.getByLabel('Schema')).toHaveValue('readings');
+    await openFields(surface);
     await surface.getByLabel('X',{exact:true}).selectOption('step');
     await surface.getByLabel('Y',{exact:true}).selectOption('temperature');
     await surface.getByLabel('Row limit').selectOption('10000');
@@ -56,6 +64,7 @@ test('connects SQL, chooses schema, plots dense data and retains config after re
     await page.screenshot({path:'../.outputs/visualization-line.png'});
     await page.reload();
     await expect(surface.getByRole('img',{name:'line chart: 3500 points'})).toBeVisible();
+    await openFields(surface);
     await expect(surface.getByLabel('X',{exact:true})).toHaveValue('step');
     await expect(surface.getByLabel('Y',{exact:true})).toHaveValue('temperature');
     await page.evaluate(()=>document.documentElement.dataset.theme='dark');
@@ -100,6 +109,7 @@ test('MKB nullable schemas are selected before connecting and expose numeric fie
     await dialog.getByRole('button',{name:'Connect',exact:true}).click();
     await expect(dialog).not.toBeVisible();
     await expect(surface.getByLabel('Schema')).toHaveValue(`experiments:${schema.id}`);
+    await openFields(surface);
     await surface.getByLabel('X',{exact:true}).selectOption('step');
     await surface.getByLabel('Y',{exact:true}).selectOption('temperature');
     await expect(surface.getByRole('alert')).toHaveCount(0);

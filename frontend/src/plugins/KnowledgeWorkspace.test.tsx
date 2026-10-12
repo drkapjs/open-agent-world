@@ -5,18 +5,25 @@ import type { ReactNode } from "react";
 import type { PluginViewProps } from "./sdk";
 import { useWorldStore } from "../state/worldStore";
 import type { WorldCard, WorldEdge } from "../types/world";
+import { WorkspaceSectionProvider, type WorkspaceSectionProps, type WorkspaceSectionRegistration } from "../workspace/WorkspaceSection";
+import { WorkspaceAccess } from "../workspace/WorkspaceAccess";
 import plugin from "../../../plugins/knowledge_base/frontend";
 
-vi.mock("@oaw/plugin-api", () => ({
+vi.mock("@oaw/plugin-api", async () => {
+  const sections = await import("../workspace/WorkspaceSection");
+  return ({
+  WorkspaceEmptyState: (await import("../workspace/WorkspacePrimitives")).WorkspaceEmptyState,
+  WorkspaceToolbar: (await import("../workspace/WorkspacePrimitives")).WorkspaceToolbar,
   t: (value: string, params?: Record<string, unknown>) => params
     ? value.replace(/\{(v\d+)\}/g, (_, key: string) => String(params[key]))
     : value,
   useLocale: () => undefined,
   NetworkMap: () => <div aria-label="Knowledge graph map" />,
-  useWorkspaceSections: () => ({ isInline: () => true }),
-  WorkspaceSection: ({ title, children }: { title: string; children: ReactNode }) =>
-    <section aria-label={title}>{children}</section>,
-}));
+  useWorkspaceSections: sections.useWorkspaceSections,
+  WorkspaceSection: ({ title, children, ...props }: WorkspaceSectionProps) =>
+    <sections.WorkspaceSection {...props} title={title}><section aria-label={title}>{children}</section></sections.WorkspaceSection>,
+  });
+});
 
 const SOURCE = { id: "source-1", filename: "sintering.md", media_type: "text/markdown", size: 2048,
   created_at: "2026-09-23T00:00:00Z", markdown: null, record_id: null, projections: 0 };
@@ -51,13 +58,15 @@ type Action = (name: string, args: Record<string, unknown>, confirm?: boolean) =
   Promise<Record<string, unknown> | undefined>;
 
 /** Renders the workspace over a stub card, answering whatever the test leaves out. */
-const open = (handler: Action, overrides: { card?: Record<string, unknown>; host?: Record<string, unknown> } = {}) => {
+const open = (handler: Action, overrides: { card?: Record<string, unknown>; host?: Record<string, unknown>;
+  wrapper?: (children: ReactNode) => ReactNode } = {}) => {
   const action = vi.fn(async (name: string, args: Record<string, unknown>, confirm?: boolean) =>
     await handler(name, args, confirm) ?? (name === "overview" ? overview() : EMPTY[name] ?? {}));
   const Workspace = plugin.views.workspace;
   const props = { card: { id: "card-1", name: "Knowledge", config: { default_model: "" }, ...overrides.card },
     host: { resourceAction: action, ...overrides.host } };
-  render(<Workspace {...props as unknown as PluginViewProps} />);
+  const workspace = <Workspace {...props as unknown as PluginViewProps} />;
+  render(overrides.wrapper ? overrides.wrapper(workspace) : workspace);
   return action;
 };
 
@@ -129,6 +138,72 @@ afterEach(() => {
   // section's "Connected agents" picker; every other test expects the real,
   // empty-by-default world, so put it back.
   useWorldStore.setState({ edges: [], cards: [], updateCard: ORIGINAL_UPDATE_CARD });
+});
+
+it("keeps a detached reader and its draft mounted while another section opens", async () => {
+  const destination = document.createElement("div");
+  document.body.append(destination);
+  const register = (section: WorkspaceSectionRegistration) => {
+    if (section.id === "sources") destination.append(section.host);
+    return () => section.host.remove();
+  };
+  try {
+    open(async name => name === "sources" ? { sources: [CONVERTED] }
+      : name === "markdown" ? DOCUMENT : undefined, {
+      wrapper: children => <WorkspaceSectionProvider cardId="card-1" editing={false}
+        detachedSectionIds={new Set(["sources"])} hiddenSectionIds={new Set()} register={register}
+        onSelect={() => {}} onDragStart={() => {}} onHide={() => {}}>{children}</WorkspaceSectionProvider>,
+    });
+    await screen.findByText("Continue alongside this section");
+    fireEvent.click(await within(destination).findByRole("button", { name: /sintering\.md/ }));
+    await within(destination).findByRole("heading", { name: "Sintering of Si3N4" });
+    const reader = destination.querySelector(".knowledge-reader");
+    const search = within(destination).getByLabelText("Search converted documents") as HTMLInputElement;
+    fireEvent.change(search, { target: { value: "unsent query" } });
+    fireEvent.click(screen.getByRole("button", { name: "Schemas" }));
+    expect(await screen.findByRole("button", { name: "New schema" })).toBeTruthy();
+    expect(destination.querySelector(".knowledge-reader")).toBe(reader);
+    expect(within(destination).getByLabelText("Search converted documents")).toBe(search);
+    expect(search.value).toBe("unsent query");
+    expect(within(destination).getByRole("heading", { name: "Sintering of Si3N4" })).toBeTruthy();
+  } finally {
+    cleanup();
+    destination.remove();
+  }
+});
+
+it("searches published entities through the collection controls and restores the full graph", async () => {
+  const entity = { id: "entity-1", type: "material", name: "Si3N4", properties: { topic: "ceramics" } };
+  const action = open(async (name, args) => name === "graph"
+    ? { entities: args.name_contains ? [] : [entity], relations: [], truncated: false } : undefined);
+  fireEvent.click(screen.getByRole("tab", { name: "Graph" }));
+  await screen.findByRole("button", { name: /Si3N4/ });
+  fireEvent.click(screen.getByText("Search collection", { selector: "summary" }));
+  const input = screen.getByLabelText("Filter by name");
+  fireEvent.change(input, { target: { value: "missing material" } });
+  fireEvent.submit(input.closest("form")!);
+  await waitFor(() => expect(action).toHaveBeenCalledWith("graph", expect.objectContaining({ name_contains: "missing material" }), undefined));
+  await screen.findByText("No matches");
+  fireEvent.click(screen.getByRole("button", { name: "Show everything" }));
+  expect(await screen.findByRole("button", { name: /Si3N4/ })).toBeTruthy();
+  expect((input as HTMLInputElement).value).toBe("");
+});
+
+it("does not mount a detached section excluded by the deployment grants", async () => {
+  const register = vi.fn((_section: WorkspaceSectionRegistration) => () => {});
+  open(async name => name === "sources" ? { sources: [CONVERTED] } : undefined, {
+    host: { deployment: {} },
+    wrapper: children => <WorkspaceAccess.Provider value={{ deployed: true, permissions: { "card-1": ["sources"] },
+      plugin_access: { "card-1": { config_fields: [], document_fields: [], summary_fields: [], document_actions: [], downloads: [], resource_actions: {}, execution: false } } }}>
+      <WorkspaceSectionProvider cardId="card-1" editing={false} detachedSectionIds={new Set(["schemas", "settings"])}
+        hiddenSectionIds={new Set()} register={register} onSelect={() => {}} onDragStart={() => {}} onHide={() => {}}>{children}</WorkspaceSectionProvider>
+    </WorkspaceAccess.Provider>,
+  });
+  await screen.findByRole("button", { name: /sintering\.md/ });
+  expect(register.mock.calls.map(([section]) => section.id)).toEqual(["sources"]);
+  expect(screen.queryByRole("button", { name: "New schema" })).toBeNull();
+  expect(screen.queryByLabelText("MinerU token")).toBeNull();
+  expect(fetch).not.toHaveBeenCalled();
 });
 
 it("still shows sources and groups when an older release has not published \"experiments\"", async () => {
@@ -254,6 +329,7 @@ it("projects the selected document through the host bridge, never the plugin", a
 
   fireEvent.click(await screen.findByRole("button", { name: /sintering\.md/ }));
   await screen.findByRole("heading", { name: "Sintering of Si3N4" });
+  fireEvent.click(screen.getByText("Project to JSON", { selector: "summary" }));
   fireEvent.change(screen.getByLabelText("Extraction schema"), { target: { value: "schema-1" } });
   expect((screen.getByLabelText("Model") as HTMLSelectElement).value).toBe("oaw:model:model-1");
   fireEvent.click(screen.getByRole("button", { name: "Project to JSON" }));
@@ -418,6 +494,7 @@ it("hides engineering settings and posts through the deployment bridge when depl
 
   fireEvent.click(await screen.findByRole("button", { name: /sintering\.md/ }));
   await screen.findByRole("heading", { name: "Sintering of Si3N4" });
+  fireEvent.click(screen.getByText("Project to JSON", { selector: "summary" }));
   // No live picker either: the deployment shows the model fixed at publish time.
   expect(screen.queryByLabelText("Model")).toBeNull();
   expect(await screen.findByText("Model: oaw:model:model-1")).toBeTruthy();

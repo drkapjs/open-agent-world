@@ -39,7 +39,7 @@ test("saved networking retries stale broker discovery without reloading (mock AP
   await page.goto("/");
   const panel = page.locator(`[data-card-id="${card.id}"]`);
   await expect(panel).toHaveAttribute("data-surface-level", "workspace");
-  await panel.getByRole("tab", { name: "Settings", exact: true }).click();
+  await panel.getByRole("button", { name: "Settings", exact: true }).click();
   await expect(panel).toContainText("Broker unavailable");
   await panel.getByRole("button", { name: "Retry / Recheck" }).click();
   await expect(panel).toContainText("Broker authorization check failed");
@@ -128,7 +128,7 @@ test("sandbox window keeps files, preview and terminal together with separate se
   const sidebar = window.getByLabel("Sandbox files");
   const preview = window.locator(".sandbox-preview");
   const terminal = window.locator(".sandbox-terminal");
-  await expect(window.getByRole("tab", { name: "Workspace", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(window.getByRole("region", { name: "Workspace", exact: true })).toBeVisible();
   await expect(sidebar).toBeVisible();
   await expect(preview).toBeVisible();
   await expect(terminal).toBeVisible();
@@ -148,7 +148,7 @@ test("sandbox window keeps files, preview and terminal together with separate se
   await expect(window.getByLabel("Command", { exact: true })).not.toBeEditable();
   expect(executions).toBe(0);
 
-  await window.getByRole("tab", { name: /^Settings/ }).click();
+  await window.getByRole("button", { name: /^Settings/ }).click();
   await expect(sidebar).toBeHidden();
   await expect(window.getByLabel("Working folder", { exact: true })).toBeVisible();
   await expect(window.getByRole("button", { name: "Check execution environment" })).toBeHidden();
@@ -161,12 +161,12 @@ test("sandbox window keeps files, preview and terminal together with separate se
   await expect(window.getByText("Unsaved changes", { exact: true })).toBeVisible();
   expect(card.config.workspace_path).toBeNull();
 
-  await window.getByRole("tab", { name: "Workspace", exact: true }).click();
+  await window.getByRole("button", { name: "Back to workspace", exact: true }).click();
   await expect(preview.locator("pre")).toHaveText("hello");
   await expect(terminal).toBeVisible();
   await expect(window.getByLabel("Command", { exact: true })).toHaveValue("");
   await expect(window.getByRole("button", { name: "Start", exact: true })).toBeDisabled();
-  await window.getByRole("tab", { name: /^Settings/ }).click();
+  await window.getByRole("button", { name: /^Settings/ }).click();
   await expect(window.getByLabel("Working folder", { exact: true })).toHaveValue("D:\\projects\\demo");
   rejectSave = false;
   await window.getByRole("button", { name: "Save", exact: true }).click();
@@ -183,9 +183,9 @@ test("sandbox window keeps files, preview and terminal together with separate se
   await window.locator("summary").filter({ hasText: /^Diagnostics$/ }).click();
   await window.getByRole("button", { name: "Check execution environment" }).click();
   await expect(window).toContainText("python3: available");
-  await expect(window.getByRole("tab", { name: "Settings", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(window.getByRole("button", { name: "Back to workspace", exact: true })).toHaveAttribute("aria-expanded", "true");
   await window.screenshot({ path: testInfo.outputPath("sandbox-settings.png") });
-  await window.getByRole("tab", { name: "Workspace", exact: true }).click();
+  await window.getByRole("button", { name: "Back to workspace", exact: true }).click();
   await expect(preview).toContainText("Select a file");
   await sidebar.getByRole("button", { name: "result.txt", exact: true }).click();
   await expect(preview.locator("pre")).toHaveText("hello");
@@ -259,9 +259,9 @@ test("sandbox window keeps files, preview and terminal together with separate se
       .filter(animation => animation.effect?.getTiming().iterations !== Infinity)
       .map(animation => animation.finished.catch(() => {})));
   });
-  await window.getByRole("tab", { name: "Settings", exact: true }).click();
-  await expect(window.getByRole("tab", { name: "Settings", exact: true })).toHaveAttribute("aria-selected", "true");
-  await window.getByRole("tab", { name: "Workspace", exact: true }).click();
+  await window.getByRole("button", { name: "Settings", exact: true }).click();
+  await expect(window.getByRole("button", { name: "Back to workspace", exact: true })).toHaveAttribute("aria-expanded", "true");
+  await window.getByRole("button", { name: "Back to workspace", exact: true }).click();
   await expect(window.getByLabel("Command", { exact: true })).toHaveValue("printf 'next'");
   await window.getByRole("tab", { name: "History", exact: true }).click();
   await expect(window.locator(".sandbox-history")).toContainText("user · finished");

@@ -15,6 +15,49 @@ const defaults = {
 const OwnerContext = createContext('missing');
 
 describe('workspace sections', () => {
+  it('reports detached presentation only for visible, permitted sections', () => {
+    function Probe() {
+      const sections = useWorkspaceSections();
+      return <output>{JSON.stringify({ inline: sections.isInline('files'), detached: sections.isDetached('files') })}</output>;
+    }
+    const content = (allowed: boolean, hidden: boolean) => <WorkspaceAccess.Provider value={{ deployed: true,
+      permissions: allowed ? { 'card-one': ['files'] } : {}, plugin_access: {
+        'card-one': { config_fields: [], document_fields: [], summary_fields: [], document_actions: [], downloads: [], resource_actions: {}, execution: false },
+      } }}><WorkspaceSectionProvider {...defaults} detachedSectionIds={new Set(['files'])}
+        hiddenSectionIds={hidden ? new Set(['files']) : empty}><Probe /></WorkspaceSectionProvider></WorkspaceAccess.Provider>;
+    const view = render(content(false, false));
+    expect(screen.getByRole('status').textContent).toBe('{"inline":false,"detached":false}');
+    view.rerender(content(true, false));
+    expect(screen.getByRole('status').textContent).toBe('{"inline":false,"detached":true}');
+    view.rerender(content(true, true));
+    expect(screen.getByRole('status').textContent).toBe('{"inline":false,"detached":false}');
+  });
+
+  it('does not advertise denied plugin content as inline when permissions are missing', () => {
+    function Probe() {
+      const { isInline, isDetached } = useWorkspaceSections();
+      return <output>{String(isInline('files') || isDetached('files'))}</output>;
+    }
+    render(<WorkspaceAccess.Provider value={{ deployed: true, permissions: {}, plugin_access: {
+      'card-one': { config_fields: [], document_fields: [], summary_fields: [], document_actions: [], downloads: [], resource_actions: {}, execution: false },
+    } }}><WorkspaceSectionProvider {...defaults}><Probe /></WorkspaceSectionProvider></WorkspaceAccess.Provider>);
+    expect(screen.getByRole('status').textContent).toBe('false');
+  });
+
+  it('registers optional sizing without replacing its host on owner updates', () => {
+    const register = vi.fn(() => () => {});
+    const content = (width: number) => <WorkspaceSectionProvider {...defaults} register={register}>
+      <WorkspaceSection id="files" title="Files" layout={{ min_width: width, ideal_width: 640 }}><input aria-label="Sizing draft" /></WorkspaceSection>
+    </WorkspaceSectionProvider>;
+    const view = render(content(280));
+    const input = screen.getByLabelText('Sizing draft');
+    view.rerender(content(280));
+    expect(register).toHaveBeenCalledTimes(1);
+    expect(register).toHaveBeenLastCalledWith(expect.objectContaining({ layout: expect.objectContaining({ min_width: 280, ideal_width: 640 }) }));
+    view.rerender(content(320));
+    expect(register).toHaveBeenCalledTimes(2);
+    expect(screen.getByLabelText('Sizing draft')).toBe(input);
+  });
   it('does not mount undeclared or hidden plugin sections in a deployment', () => {
     const mounted = vi.fn();
     function PrivateContent() { useEffect(mounted, []); return <p>Private controls</p>; }

@@ -17,6 +17,9 @@ async function setup(page:Page,delay=0,broken=false){
     return route.fulfill({json:{}});
   });
   await page.addInitScript(()=>{
+    // This isolated development entry does not hydrate the application profile.
+    // Keep its reader copy deterministic alongside the Chinese harness controls.
+    localStorage.setItem("oaw.locale","zh-CN");
     const state={longTasks:[] as number[],phases:[] as {phase:string;t:number;visibility?:string}[]};(window as unknown as {readerMetrics:typeof state}).readerMetrics=state;
     new PerformanceObserver(list=>{state.longTasks.push(...list.getEntries().map(e=>e.duration));}).observe({type:"longtask",buffered:true});
     new MutationObserver(()=>{const p=document.querySelector("dialog.library-reader")?.getAttribute("data-entrance-phase");const content=document.querySelector(".library-reader-content");if(p&&p!==state.phases.at(-1)?.phase)state.phases.push({phase:p,t:performance.now(),visibility:content?getComputedStyle(content).visibility:undefined});}).observe(document,{subtree:true,attributes:true,childList:true,attributeFilter:["data-entrance-phase"]});
@@ -30,7 +33,7 @@ test("real rendering, final layout, zoom and repeated opening",async({page},info
   await expect(dialog.locator(".textLayer")).toContainText("Selectable text");
   await expect(dialog.locator(".library-reader-glass")).toHaveCount(0);
   const canvas=dialog.locator("canvas"),width=await canvas.getAttribute("width");
-  await dialog.getByRole("button",{name:"＋",exact:true}).click();await expect(canvas).not.toHaveAttribute("width",width!);
+  await dialog.getByRole("button",{name:"放大",exact:true}).click();await expect(canvas).not.toHaveAttribute("width",width!);
   await dialog.getByRole("button",{name:"批注模式",exact:true}).click();await expect(dialog.locator(".is-annotating")).toHaveCount(1);
   await expect(dialog.getByRole("button",{name:"划词",exact:true})).toBeVisible();
   const scroll=dialog.locator(".library-page-scroll");const scrollBox=await scroll.boundingBox();
@@ -75,8 +78,8 @@ test("reduced motion still requires actual rendering",async({page})=>{
   await page.emulateMedia({reducedMotion:"reduce"});await setup(page,700);await page.getByRole("button",{name:"打开阅读器",exact:true}).click();
   await expect(page.locator("dialog.library-reader")).toHaveAttribute("data-entrance-phase","complete");
 });
-test("DPR two and resize keep the rendered page at the target dimensions",async({browser})=>{
-  const context=await browser.newContext({deviceScaleFactor:2,viewport:{width:1205,height:900},baseURL:"http://127.0.0.1:5173"});const page=await context.newPage();
+test("DPR two and resize keep the rendered page at the target dimensions",async({browser,baseURL})=>{
+  const context=await browser.newContext({deviceScaleFactor:2,viewport:{width:1205,height:900},baseURL});const page=await context.newPage();
   try{await setup(page,700);await page.getByRole("button",{name:"打开阅读器",exact:true}).click();
     await page.waitForFunction(()=>document.querySelector("dialog.library-reader")?.getAttribute("data-entrance-phase")==="revealing",undefined,{polling:"raf"});await page.setViewportSize({width:1000,height:800});
     await expect(page.locator("dialog.library-reader")).toHaveAttribute("data-entrance-phase","complete");

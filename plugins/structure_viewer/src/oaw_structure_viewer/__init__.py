@@ -17,7 +17,7 @@ class StructureViewerPlugin:
             icon="atom", color="#67a69b", deck_id="science", deck_label="Science", deck_icon="atom",
             default_name="Structure viewer", default_size=(340, 240), default_status="ready", statuses=frozenset({"ready"}),
             state=StatelessStateSpec(), tutorials=TUTORIALS,
-            config_model=ViewerConfig, traits=frozenset({"core.file-viewer"}), templateable=True,
+            config_model=ViewerConfig, traits=frozenset({"core.file-viewer", "ui.content-surface.v1"}), templateable=True,
             frontend={"preview": "preview", "body": "viewer", "workspace": "viewer"},
             surfaces={"preview": True, "inspector": True, "workspace": True},
         ))

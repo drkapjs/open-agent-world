@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState, type ReactNode } from 'react';
 import { t, useLocale } from '../i18n';
 import { MapEngine } from './MapEngine';
 import { describeNode, nodeColor } from './model';
@@ -16,6 +16,8 @@ export interface NetworkMapProps {
   label?: string;
   /** Server-backed search stays in the Pack; local search remains useful for large loaded maps. */
   search?: boolean;
+  /** Packs can provide an actionable empty state while keeping the map mounted. */
+  emptyState?: ReactNode;
 }
 
 const NetworkMapImpl = forwardRef<NetworkMapHandle, NetworkMapProps>((props, ref) => {
@@ -70,7 +72,7 @@ const NetworkMapImpl = forwardRef<NetworkMapHandle, NetworkMapProps>((props, ref
     onPointerDown={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}
     onDoubleClick={e => e.stopPropagation()} onWheel={e => e.stopPropagation()} onKeyDown={e => e.stopPropagation()}>
     <div className="network-map-stage" ref={canvas} tabIndex={0} role="application" aria-label={t('Interactive relationship map')} />
-    <div className="network-map-tools">
+    <div className="network-map-tools" role="group" aria-label={t('Map filters')}>
       <button type="button" aria-label={t('Back to previous focus')} disabled={!back} onClick={() => engine.current?.back()}>←</button>
       {props.search !== false && <input type="search" aria-label={t('Find in map')} placeholder={t('Find in map')} value={query} onChange={e => setQuery(e.target.value)} />}
       <select aria-label={t('Filter map by type')} value={kind} onChange={e => setKind(e.target.value)}><option value="">{t('All types')}</option>{kinds.map(k => <option key={k}>{k}</option>)}</select>
@@ -86,7 +88,7 @@ const NetworkMapImpl = forwardRef<NetworkMapHandle, NetworkMapProps>((props, ref
     </div>}
     {busy && <div className="network-map-status" role="status">{t('Arranging knowledge…')}</div>}
     {error && <div className="network-map-error" role="alert"><p>{error}</p><button type="button" onClick={() => engine.current ? engine.current.arrange() : setRetry(n => n + 1)}>{t('Retry layout')}</button></div>}
-    {!busy && !props.data.nodes.length && <div className="network-map-status">{t('No knowledge to display')}</div>}
+    {!busy && !props.data.nodes.length && <div className="network-map-empty">{props.emptyState ?? <div className="network-map-status">{t('No knowledge to display')}</div>}</div>}
     {active && <div className="network-map-caption"><i style={{ background: nodeColor(active.kind) }} /><span>{describeNode(active)}</span>
       {props.onExpand && focused?.id === active.id && <button type="button" onClick={() => props.onExpand?.(active.id)}>{t('Expand neighborhood')}</button>}</div>}
     {focused && !props.onSelect && <aside className="network-map-details" aria-label={t('Relationships')}><strong>{focused.label}</strong>

@@ -45,6 +45,18 @@ it('shares a concurrent inspector read with another inspector and preview', asyn
   expect(worldApi.getNodeDocumentSummary).not.toHaveBeenCalled();
 });
 
+it('keeps execution history available after its executor disconnects', async () => {
+  vi.mocked(worldApi.getNodeExecution).mockResolvedValue({
+    status: 'succeeded', active: false, error: null, executors: [], items: [],
+    attempts: [{ item_id: 'a', agent_id: 'disconnected-agent', run_id: 'retained-run', status: 'succeeded', error: null }],
+  });
+  render(<TaskBoardBody card={card} />);
+  const history = await screen.findByText('Execution history (1)');
+  fireEvent.click(history);
+  expect(screen.getByText('succeeded · Previous executor')).toBeVisible();
+  expect(screen.getByText('Run: retained-run')).toBeVisible();
+});
+
 it('retains the task draft and original revision after unmount and remote changes', async () => {
   const save = vi.spyOn(worldApi, 'nodeDocumentAction').mockResolvedValue(document(3));
   const view = render(<TaskBoardBody card={card} />);

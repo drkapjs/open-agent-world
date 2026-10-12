@@ -4,7 +4,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 from open_agent_world.plugin_api import (
     NodeDataConsumer, NodePresentation, NodeTypeDefinition, PackDefinition, PluginDescriptor,
-    RelationshipDefinition, StatelessStateSpec,
+    RelationshipDefinition, StatelessStateSpec, WorkspaceLayoutMetadata,
 )
 from .icons import assets
 from .tutorials import CARD_TUTORIALS, PACK_TUTORIALS
@@ -26,7 +26,7 @@ class ChartConfig(BaseModel):
 
 
 class VisualizationPlugin:
-    descriptor = PluginDescriptor(id=PREFIX, version="0.1.0", plugin_api_version="1.27",
+    descriptor = PluginDescriptor(id=PREFIX, version="0.1.0", plugin_api_version="1.28",
                                   name="Data visualization")
 
     def register(self, registration):
@@ -43,6 +43,7 @@ class VisualizationPlugin:
                 data_consumer=NodeDataConsumer(source_field="source_id", schema_field="schema_id",
                     kinds=("table", "graph") if kind == "graph" else ("table",)),
                 presentation=NodePresentation(states=("node", "preview", "inspector", "workspace"),
+                    workspace_layout=WorkspaceLayoutMetadata(min_width=280, min_height=240, ideal_width=640, ideal_height=480),
                     initial="inspector", open="inspector", sizes={"inspector": {"width": 680 if kind == "graph" else 720, "height": 600 if kind == "graph" else 480}}),
                 frontend={"preview": "preview", "body": "chart", "workspace": "chart"},
                 templateable=True,

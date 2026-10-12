@@ -24,7 +24,7 @@ test('knowledge documents, groups and private token survive real HTTP save and r
     await openWorkspace();
     const workspace = page.getByRole('dialog', { name: 'Knowledge research workspace mode' });
     const app = workspace.locator('.knowledge-app');
-    await expect(app.getByRole('heading', { name: /Documents/ })).toBeVisible();
+    await expect(app.getByRole('tab', { name: 'Sources', exact: true })).toHaveAttribute('aria-selected', 'true');
     await expect(app.getByLabel('Group', { exact: true })).toHaveCount(1);
     await expect(app.getByText('Add your first document')).toBeVisible();
     await app.getByLabel('Add documents', { exact: true }).setInputFiles({
@@ -32,8 +32,9 @@ test('knowledge documents, groups and private token survive real HTTP save and r
         '# Lithium-ion transport in solid electrolytes\n\n## Results\n\nConductivity increased with temperature in the measured samples.\n\n| Sample | Temperature | Conductivity |\n| --- | --- | --- |\n| Li6PS5Cl | 300 K | 1.2 mS/cm |\n| Li6PS5Br | 300 K | 0.8 mS/cm |\n\n## Method\n\nImpedance spectroscopy was used to measure the pellets. Each result is linked to its source document.\n\n## Notes\n\nThese observations are awaiting review.'),
     });
     await app.getByRole('button', { name: 'Process all pending (1)', exact: true }).click();
-    const document = app.getByRole('button', { name: /Lithium-ion transport.*Ready/ });
-    await expect(document).toBeVisible({ timeout: 30_000 });
+    const document = app.getByRole('button', { name: /Lithium-ion transport/ });
+    await expect(document).toBeVisible();
+    await expect(document.locator('small')).toContainText('Ready', { timeout: 30_000 });
     await document.click();
     await expect(app.locator('.knowledge-prose table')).toBeVisible();
     await expect(app.getByText('0 projections')).toHaveCount(0);
@@ -75,7 +76,8 @@ test('knowledge documents, groups and private token survive real HTTP save and r
     const groups = await (await request.post(`/api/nodes/${ids.knowledge}/resource/groups`, { data: { arguments: {} } })).json();
     expect(groups.groups.map((group: { name: string }) => group.name)).toEqual(expect.arrayContaining(['Knowledge base', 'Transport studies']));
     await app.getByLabel('Group', { exact: true }).selectOption('');
-    await app.getByRole('button', { name: /Lithium-ion transport.*Ready/ }).click();
+    await expect(document.locator('small')).toContainText('Ready');
+    await document.click();
     await page.setViewportSize({ width: 1000, height: 850 });
     await expect(app.locator('.knowledge-prose table')).toBeVisible();
     const size = await app.evaluate(element => ({ width: element.clientWidth, scroll: element.scrollWidth }));

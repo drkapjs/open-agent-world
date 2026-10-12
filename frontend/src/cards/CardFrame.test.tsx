@@ -15,6 +15,26 @@ vi.mock('./NodeWorkspace', () => ({ WorkspaceSurface: () => <div>Agent workspace
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); useEquipmentPanel.setState({ openIds: [] }); });
 
+it('lets a card opt out of expanded title/footer bars while retaining its collectible face and actions', () => {
+  vi.stubGlobal('IntersectionObserver', class { observe() {} disconnect() {} });
+  const card: WorldCard = { id: 'content', type: 'agent', name: 'Content first', status: 'idle', config: {}, finish: 'starlight',
+    position: { x: 0, y: 0 }, size: { width: 360, height: 240 }, expanded: false };
+  const catalog = { ...TEST_CATALOG, node_types: TEST_CATALOG.node_types.map(item => item.id === 'agent'
+    ? { ...item, traits: [...item.traits, 'ui.content-surface.v1'] } : item) };
+  useWorldStore.setState({ cards: [card], edges: [], events: [], catalog });
+  useNodeSurfaceStore.getState().syncCards([card], catalog);
+  useNodeSurfaceStore.setState({ surfaceLevels: { [card.id]: 'inspector' }, baseLevels: { [card.id]: 'preview' } });
+  const props = { id: card.id, data: { card }, selected: false, dragging: false } as ComponentProps<typeof WorldCardNode>;
+  const { container } = render(<ReactFlowProvider><WorldCardNode {...props} /></ReactFlowProvider>);
+  expect(container.querySelector('.node-surface-header, .node-inspector-footer')).toBeNull();
+  expect(container.querySelector('.content-surface-grip.node-drag-region')).not.toBeNull();
+  expect(screen.getByRole('button', { name: 'Open workspace' })).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Close Content first inspector' }));
+  expect(container.querySelector('.content-surface-controls')).toBeNull();
+  expect(container.querySelector('.node-surface-header')).not.toBeNull();
+  expect(container.querySelector('.world-card')?.getAttribute('data-finish')).toBe('starlight');
+});
+
 it('shows a missing placeholder instead of dispatching a same-named installed implementation', () => {
   const card: WorldCard = { id: 'lost', type: 'agent', name: 'Old agent', status: 'idle', config: {},
     position: { x: 0, y: 0 }, size: { width: 300, height: 190 }, expanded: false,

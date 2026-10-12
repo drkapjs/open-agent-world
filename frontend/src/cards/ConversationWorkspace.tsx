@@ -13,7 +13,7 @@ import { ConversationActions } from "./ConversationActions";
 import { ConversationGroupMenu } from "./ConversationGroupMenu";
 import { ContextAvatar } from "./ContextAvatar";
 import { ArrowDown, Bot, Check, Info, LoaderCircle, MessageSquare, Paperclip, Pencil, Plus, Send, Trash2, UserMinus, UserRound, Users, X } from "lucide-react";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type SetStateAction } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type SetStateAction } from "react";
 import { apiErrorMessage, worldApi } from "../api/client";
 import {
   appendMention,
@@ -29,6 +29,7 @@ import { useOpenFiles } from "../state/openFiles";
 import type { ContextStatus, ConversationAgent, ConversationAttachment, ConversationMessage, ConversationSession, WorldCard } from "../types/world";
 import { reportInteraction } from '../state/interactions';
 import { WorkspaceSection, useWorkspaceSections } from '../workspace/WorkspaceSection';
+import { WorkspaceEmptyState } from '../workspace/WorkspacePrimitives';
 import './conversationWorkspace.css';
 
 type OutgoingMessage = { message: ConversationMessage; status: "sending" | "confirmed" | "unconfirmed"; error?: string };
@@ -50,11 +51,12 @@ export function ConversationWorkspace({ card }: { card: WorldCard }) {
   const sessionsInline = sections.isInline("sessions");
   const conversationInline = sections.isInline("conversation");
   const participantsInline = sections.isInline("participants");
-  const columns = [
-    sessionsInline && (conversationInline ? "minmax(0, min(24%, 210px))" : "minmax(0, 1fr)"),
-    conversationInline && "minmax(0, 1fr)",
-    participantsInline && (conversationInline ? "minmax(0, min(24%, 220px))" : "minmax(0, 1fr)"),
-  ].filter(Boolean).join(" ");
+  const hasRail = sessionsInline || participantsInline;
+  const columns = conversationInline && hasRail ? "minmax(160px, min(27%, 240px)) minmax(0, 1fr)"
+    : !conversationInline && sessionsInline && participantsInline ? "repeat(2, minmax(0, 1fr))" : "minmax(0, 1fr)";
+  const [compactView, setCompactView] = useState('conversation');
+  const inlineViews = [sessionsInline && 'sessions', conversationInline && 'conversation', participantsInline && 'participants'].filter(Boolean) as string[];
+  const visibleView = inlineViews.includes(compactView) ? compactView : inlineViews[0];
   const runtimeEvents = useWorldStore((state) => state.events);
   const accessEvent = useWorldStore((state) => state.events.find((event) => {
     if (event.type !== "permission_changed") return false;
@@ -99,7 +101,7 @@ export function ConversationWorkspace({ card }: { card: WorldCard }) {
   const [stoppingRuns, setStoppingRuns] = useState<Set<string>>(() => new Set());
   const revealOutgoing = useRef(false);
   const key = (field: string) => surfaceDraftKey(card.id, `conversation-${field}`, activeSessionId);
-  const [selectedAgentId, setSelectedAgentId] = useSurfaceDraft<string | undefined>(key('agent'), undefined);
+  const [preferredAgentId, setSelectedAgentId] = useSurfaceDraft<string | undefined>(key('agent'), undefined);
   const [creatingGroup, setCreatingGroup] = useSurfaceDraft(key('creating-group'), false);
   const [groupTitle, setGroupTitle] = useSurfaceDraft(key('group-title'), '');
   const [groupAgentIds, setGroupAgentIds] = useSurfaceDraft<string[]>(key('group-agents'), []);
@@ -154,6 +156,11 @@ export function ConversationWorkspace({ card }: { card: WorldCard }) {
   const participants = (activeSession?.participant_ids ?? [])
     .map((id) => agents.find((item) => item.id === id))
     .filter((item): item is ConversationAgent => Boolean(item?.connected));
+  // Canvas and workspace can own separate REST snapshots of this conversation.
+  // Derive a fallback locally: a stale copy must not clear the shared choice
+  // while the other copy is creating a session or updating its participants.
+  const selectedAgentId = participants.some(agent => agent.id === preferredAgentId)
+    ? preferredAgentId : participants[0]?.id;
   const history = useConversationTimeline(card.id, !deployed || permissions[card.id]?.includes('conversation') ? activeSessionId : undefined, refreshEvent, socketLive, transcript, runtimeEvents);
   const visibleOutgoing = outgoing.filter((item) => item.message.conversation_id === card.id
     && item.message.session_id === activeSessionId && !history.messages.some((message) => message.id === item.message.id));
@@ -210,13 +217,6 @@ export function ConversationWorkspace({ card }: { card: WorldCard }) {
     const timer = deployed ? window.setInterval(() => { void refresh(); }, 3000) : undefined;
     return () => { current = false; window.clearInterval(timer); };
   }, [accessEvent, card.id, refreshEvent, socketLive, contextEvent, deployed, setActiveSessionId]);
-
-  useEffect(() => {
-    const eligible = activeSession?.participant_ids.filter((id) => agents.some((agent) => agent.id === id && agent.connected)) ?? [];
-    if (!eligible.includes(selectedAgentId ?? "")) {
-      setSelectedAgentId(eligible[0]);
-    }
-  }, [activeSession, agents, selectedAgentId]);
 
   useEffect(() => {
     setMentionIndex(0);
@@ -412,14 +412,21 @@ export function ConversationWorkspace({ card }: { card: WorldCard }) {
   };
 
   return (
-    <div className="conversation-workspace-grid" style={{ gridTemplateColumns: columns }}
+    <div className="conversation-workspace-view">
+    {inlineViews.length > 1 && <nav className="conversation-compact-navigation" aria-label={t('Conversation views')}>
+      {inlineViews.map(view => <button key={view} type="button" aria-pressed={visibleView === view} onClick={() => setCompactView(view)}>
+        {view === 'sessions' ? t('Sessions') : view === 'participants' ? t('Participants') : t('Conversation')}
+      </button>)}
+    </nav>}
+    <div className="conversation-workspace-grid" data-compact-view={visibleView} data-has-thread={conversationInline || undefined}
+      data-has-rail={hasRail || undefined} data-stacked-rail={conversationInline && sessionsInline && participantsInline || undefined}
+      style={{ '--conversation-columns': columns } as CSSProperties}
       onPointerDownCapture={activateConversation} onFocusCapture={activateConversation}>
-      <WorkspaceSection id="sessions" title={t("Sessions")} className={`conversation-sessions-section${conversationInline || participantsInline ? " has-neighbor" : ""}`}>
+      <WorkspaceSection id="sessions" title={t("Sessions")} layout={{ min_width: 180, min_height: 140, ideal_width: 240, ideal_height: 420 }} className={`conversation-sessions-section${conversationInline || participantsInline ? " has-neighbor" : ""}`}>
       <div ref={setSessionRegion} className="conversation-session-region">
       <nav className="workspace-session-sidebar conversation-session-navigation nodrag nopan nowheel" aria-label={t("Sessions")}>
         <div className="conversation-session-toolbar">
-          <span className="conversation-session-label">{t("Sessions")}</span>
-          <button type="button" className="conversation-nav-add" aria-label={t("New session")} title={t("New session")} disabled={!activeSession || busy} onClick={() => void createSession(t("New session"), activeSession?.participant_ids ?? [], activeGroupId)}><Plus size={13} aria-hidden="true" /></button>
+          <IconButton icon={Plus} size="sm" quiet label={t("New session")} disabled={!activeSession || busy} onClick={() => void createSession(t("New session"), activeSession?.participant_ids ?? [], activeGroupId)} />
           <ConversationGroupMenu host={sessionRegion} title={activeSession?.group_title ?? activeSession?.title ?? t("Groups")} open={groupsOpen} onOpenChange={setGroupsOpen}>
           {(groupMenu, closeGroups) => <>
         <div className="conversation-group-menu-scroll">
@@ -509,7 +516,7 @@ export function ConversationWorkspace({ card }: { card: WorldCard }) {
           <div className="conversation-sidebar-scroll">
             {groupSessions.map((session) => (
               <div className="conversation-session-row" key={session.id}>
-                <button type="button" className={`workspace-session ${session.id === activeSessionId ? "is-active" : ""}`} title={session.title} aria-current={session.id === activeSessionId ? "true" : undefined} onClick={() => setActiveSessionId(session.id)}>
+                <button type="button" className={`workspace-session ${session.id === activeSessionId ? "is-active" : ""}`} title={session.title} aria-current={session.id === activeSessionId ? "true" : undefined} onClick={() => { setActiveSessionId(session.id); if (conversationInline) setCompactView('conversation'); }}>
                   <MessageSquare size={13} aria-hidden="true" /><span>
                     <strong title={`${session.title}\n${new Date(session.created_at).toLocaleString(locale)}`}>{session.title}</strong>
                     <time dateTime={session.created_at} title={new Date(session.created_at).toLocaleString(locale)} aria-label={new Date(session.created_at).toLocaleString(locale)}>{sessionDateLabel(session.created_at, locale)}</time>
@@ -539,26 +546,11 @@ export function ConversationWorkspace({ card }: { card: WorldCard }) {
       </div>
       </WorkspaceSection>
 
-      <WorkspaceSection id="conversation" title={t("Conversation")} className="conversation-thread-section">
+      <WorkspaceSection id="conversation" title={t("Conversation")} layout={{ min_width: 280, min_height: 260, ideal_width: 640, ideal_height: 600 }} className="conversation-thread-section">
       <main className="workspace-conversation conversation-thread file-drop-target nodrag nopan nowheel" {...intake.dragProps}>
         <FileDropOverlay visible={intake.hovering}>{t("Drop files to attach to this conversation")}</FileDropOverlay>
         <header>
           <div className="conversation-heading"><strong title={activeSession?.title}>{activeSession?.title ?? t("Conversation")}</strong></div>
-          <div className="conversation-header-tools">
-            <button type="button" className="conversation-add-agent" aria-label={t("Add agents to session")} disabled={!activeSession || availableAgents.length === 0} onClick={() => setAddingParticipants((value) => !value)}><Plus size={12} /> {t("Add")}</button>
-            {addingParticipants ? (
-              <div className="conversation-participant-picker" role="dialog" aria-label={t("Add participants")}>
-                <header><strong>{t("Add to session")}</strong><IconButton icon={X} size="sm" quiet onClick={() => setAddingParticipants(false)} label={t("Close participant picker")} /></header>
-                {availableAgents.map((agent) => (
-                  <label key={agent.id}>
-                    <input type="checkbox" aria-label={t("Add {v0} to session", { v0: String(agent.name) })} checked={participantAgentIds.includes(agent.id)} onChange={() => setParticipantAgentIds((current) => current.includes(agent.id) ? current.filter((id) => id !== agent.id) : [...current, agent.id])} />
-                    <span><Bot size={11} /> {agent.name}</span>
-                  </label>
-                ))}
-                <button type="button" disabled={busy || participantAgentIds.length === 0} onClick={() => void addParticipants()}>{t("Add selected")}</button>
-              </div>
-            ) : null}
-          </div>
         </header>
         <div className="conversation-transcript-region">
         <div
@@ -567,12 +559,12 @@ export function ConversationWorkspace({ card }: { card: WorldCard }) {
           ref={transcript}
           onScroll={history.onScroll}
         >
-          <div className="conversation-transcript-content">
-          {error || history.error ? <div role="alert"><p>{error ?? history.error}</p><button type="button" onClick={() => void history.loadLatest()}>{t("Retry history")}</button></div> : null}
+          <div className="conversation-transcript-content" data-empty={!error && !history.error && messages.length === 0 && activeRuns.length === 0 && !history.loading || undefined}>
+          {error || history.error ? <div className="conversation-history-error" role="alert"><p>{error ?? history.error}</p><button type="button" className="secondary-button" onClick={() => void history.loadLatest()}>{t("Retry history")}</button></div> : null}
           {history.hasBefore ? <button type="button" disabled={history.loading} onClick={() => void history.loadOlder()}>{t("Load older messages")}</button> : null}
-          {history.loading ? <div className="sr-only" role="status">{t("Loading messages...")}</div> : null}
+          {history.loading ? messages.length === 0 ? <WorkspaceEmptyState busy title={t('Loading messages...')} /> : <div className="sr-only" role="status">{t("Loading messages...")}</div> : null}
           {!error && messages.length === 0 && activeRuns.length === 0 && !history.loading ? (
-            <div className="workspace-welcome"><span><MessageSquare size={22} /></span><strong>{t("This session is ready")}</strong><p>{t("Select a participant, type an explicit @name, or keep an unaddressed note.")}</p></div>
+            <WorkspaceEmptyState className="conversation-empty" icon={<MessageSquare size={24} />} title={t("This session is ready")} description={t("Select a participant, type an explicit @name, or keep an unaddressed note.")} />
           ) : null}
           {messages.map((message) => (
             <article className={`workspace-message is-${message.sender_kind}`} key={message.id} data-message-id={message.id}>
@@ -641,7 +633,7 @@ export function ConversationWorkspace({ card }: { card: WorldCard }) {
             event.target.value = "";
             void intake.pick(files, activeSession?.id);
           }} />
-          <div className="conversation-pending-files">{attachments.map((file) => <span key={file.version_id}><span>{file.name}</span><IconButton icon={X} size="xs" quiet label={t("Remove attachment {v0}", { v0: String(file.name) })} onClick={() => setAttachments((current) => current.filter((item) => item.version_id !== file.version_id))} /></span>)}</div>
+          {attachments.length > 0 && <div className="conversation-pending-files">{attachments.map((file) => <span key={file.version_id}><span>{file.name}</span><IconButton icon={X} size="xs" quiet label={t("Remove attachment {v0}", { v0: String(file.name) })} onClick={() => setAttachments((current) => current.filter((item) => item.version_id !== file.version_id))} /></span>)}</div>}
           <textarea ref={messageInput} value={draft} onChange={(event) => {
             setDraft(event.target.value);
             setMentionCaret(event.target.selectionStart ?? event.target.value.length);
@@ -682,19 +674,33 @@ export function ConversationWorkspace({ card }: { card: WorldCard }) {
           ) : null}
           <footer>
             <button type="button" aria-label={uploading ? t("Uploading files") : t("Attach files")} title={t("Attach files")} disabled={!activeSession || uploading || busy} onClick={() => fileInput.current?.click()}>{uploading ? <LoaderCircle size={14} /> : <Paperclip size={14} />}</button>
-            <span>{selectedAgentId ? `Default: @${agents.find((item) => item.id === selectedAgentId)?.name}` : t("No default recipient")} {t("· Enter to send · Shift+Enter for new line")}</span>
+            <span className="conversation-composer-guidance">{selectedAgentId ? <span>@{agents.find((item) => item.id === selectedAgentId)?.name}</span> : null}<span>{t("Enter to send · Shift+Enter for new line")}</span></span>
             <button type="button" onClick={() => void submit()} disabled={(!draft.trim() && attachments.length === 0) || !activeSession || uploading} aria-label={t("Send message")}><Send size={14} /></button>
           </footer>
         </div>
       </main>
       </WorkspaceSection>
 
-      <WorkspaceSection id="participants" title={t("Participants")} className={`conversation-participants-section${sessionsInline || conversationInline ? " has-neighbor" : ""}`}>
+      <WorkspaceSection id="participants" title={t("Participants")} layout={{ min_width: 180, min_height: 140, ideal_width: 240, ideal_height: 360 }} className={`conversation-participants-section${sessionsInline || conversationInline ? " has-neighbor" : ""}`}>
       <aside className="workspace-context-panel conversation-participant-panel nodrag nopan nowheel">
         <div className="conversation-participant-details">
-        <header><Users size={13} /><strong>{t("Participants")}</strong></header>
+        <header><Users size={13} /><strong>{t("Participants")}</strong>          <div className="conversation-header-tools">
+            <button type="button" className="conversation-add-agent" aria-label={t("Add agents to session")} disabled={!activeSession || availableAgents.length === 0} onClick={() => setAddingParticipants((value) => !value)}><Plus size={12} /> {t("Add")}</button>
+            {addingParticipants ? (
+              <div className="conversation-participant-picker" role="dialog" aria-label={t("Add participants")}>
+                <header><strong>{t("Add to session")}</strong><IconButton icon={X} size="sm" quiet onClick={() => setAddingParticipants(false)} label={t("Close participant picker")} /></header>
+                {availableAgents.map((agent) => (
+                  <label key={agent.id}>
+                    <input type="checkbox" aria-label={t("Add {v0} to session", { v0: String(agent.name) })} checked={participantAgentIds.includes(agent.id)} onChange={() => setParticipantAgentIds((current) => current.includes(agent.id) ? current.filter((id) => id !== agent.id) : [...current, agent.id])} />
+                    <span><Bot size={11} /> {agent.name}</span>
+                  </label>
+                ))}
+                <button type="button" disabled={busy || participantAgentIds.length === 0} onClick={() => void addParticipants()}>{t("Add selected")}</button>
+              </div>
+            ) : null}
+          </div>
+        </header>
         <section>
-          <span className="workspace-panel-label">{t("In this session")}</span>
           {participants.map((agent) => (
             <div className="conversation-participant-row" key={agent.id}>
               <button type="button" className="workspace-context-item" onClick={() => {
@@ -712,6 +718,7 @@ export function ConversationWorkspace({ card }: { card: WorldCard }) {
       </aside>
       </WorkspaceSection>
       {confirmation && <ConfirmDialog confirmation={confirmation} onClose={() => setConfirmation(undefined)} />}
+    </div>
     </div>
   );
 }

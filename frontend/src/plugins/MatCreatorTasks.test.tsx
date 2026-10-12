@@ -46,7 +46,7 @@ it('pauses hidden polling and restores the unsaved editor after viewport unmount
   vi.useRealTimers();
   first.unmount();
   render(<TaskBoard {...props} />);
-  await screen.findByRole('heading', { name: 'Copper study' });
+  await screen.findByRole('heading', { name: 'Edit task' });
   expect((screen.getByLabelText('Task title') as HTMLInputElement).value).toBe('Unfinished calculation');
 });
 

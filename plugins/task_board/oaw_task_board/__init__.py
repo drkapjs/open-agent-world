@@ -199,7 +199,7 @@ class TaskBoardPlugin:
             id=PREFIX, label="Task Board", description="Plan tasks and dependencies; share only the permissions each Agent needs.", icon="workflow", color="#6c827d",
             deck_id="fields", deck_label="Fields", deck_icon="workflow", default_name="Task Board", default_size=(360, 235), default_status="available", statuses=frozenset({"available"}),
             state=ScopedStateSpec(supportedScopes=("shared", "session"), defaultScope="session"),
-            config_model=BoardConfig, traits=frozenset({"oaw.task-board", "ui.task-board.v1"}),
+            config_model=BoardConfig, traits=frozenset({"oaw.task-board", "ui.task-board.v1", "ui.content-surface.v1"}),
             surfaces={"preview":True,"inspector":True,"workspace":True}, templateable=True,
             document=NodeDocumentDefinition(model=Board, actions=documents, summarize=summarize, capture=capture, remap_references=remap_references),
             execution=NodeExecutionDefinition(items=work_items, apply_outcome=apply_outcome, policy=execution_policy,

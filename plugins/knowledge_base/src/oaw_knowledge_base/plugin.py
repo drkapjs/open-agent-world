@@ -12,7 +12,7 @@ from typing import Literal
 from open_agent_world.plugin_api import (
     CapabilityDefinition, CapabilityGrantDefinition, DeploymentSurface, NodeDeploymentDefinition,
     NodeResourceAction, NodeTypeDefinition, PackDefinition, PluginAsset, PluginDescriptor,
-    RelationshipDefinition, NodeDataSource,
+    RelationshipDefinition, NodeDataSource, NodePresentation, WorkspaceLayoutMetadata,
 )
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -139,7 +139,7 @@ class KnowledgeConfig(BaseModel):
 
 
 class KnowledgeBasePlugin:
-    descriptor = PluginDescriptor(id=PREFIX, version="0.2.0", plugin_api_version="1.27",
+    descriptor = PluginDescriptor(id=PREFIX, version="0.2.0", plugin_api_version="1.28",
         name="Knowledge base",
         description="Embedded research knowledge base: documents to markdown, markdown to structured JSON, and a review-gated knowledge graph.")
 
@@ -177,6 +177,9 @@ class KnowledgeBasePlugin:
             templateable=True, template_status="available",
             frontend={"preview": "preview", "body": "workspace", "workspace": "workspace"},
             surfaces={"preview": True, "inspector": True, "workspace": True},
+            presentation=NodePresentation(states=("node", "preview", "inspector", "workspace"),
+                initial="preview", open="inspector",
+                workspace_layout=WorkspaceLayoutMetadata(min_width=320, min_height=280, ideal_width=800, ideal_height=600)),
             deployment=_deployment()))
 
         for access, label, short, granted, description in (

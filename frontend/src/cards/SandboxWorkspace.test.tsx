@@ -61,6 +61,39 @@ describe("Sandbox workspace interaction", () => {
   });
   afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
+  it('returns to the compact terminal view when loading a command preset', async () => {
+    useWorldStore.setState({ cards: [{ ...card, config: { ...card.config, presets: { Inspect: 'pwd' } } }] });
+    render(<Workspace />);
+    await screen.findByRole('button', { name: 'first.txt' });
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    fireEvent.click(screen.getByText('Command presets', { exact: true }));
+    fireEvent.change(screen.getByLabelText('Command preset'), { target: { value: 'pwd' } });
+    expect(screen.getByRole('region', { name: 'Workspace' }).getAttribute('data-compact-view')).toBe('terminal');
+    expect((screen.getByRole('textbox', { name: 'Command' }) as HTMLTextAreaElement).value).toBe('pwd');
+  });
+
+  it('publishes selected files from the toolbar dialog without disturbing a command draft', async () => {
+    const collection = { id: 'outputs', ...buildCardDraft('core.artifact-collection', { x: 0, y: 0 }), name: 'Retained outputs' };
+    useWorldStore.setState({ cards: [card, collection] });
+    const publish = vi.spyOn(worldApi, 'artifacts').mockResolvedValue({ state: 'ready', name: 'first.txt', version_id: 'v1' });
+    render(<Workspace />);
+    await screen.findByRole('button', { name: 'first.txt' });
+    const command = screen.getByRole('textbox', { name: 'Command' }) as HTMLTextAreaElement;
+    fireEvent.change(command, { target: { value: 'echo retained draft' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Publish selected files (0)' }));
+    const dialog = within(screen.getByRole('dialog', { name: 'Publish selected files (0)' }));
+    fireEvent.click(dialog.getByLabelText('Select first.txt for publication'));
+    fireEvent.change(dialog.getByLabelText('Publication collection'), { target: { value: 'outputs' } });
+    fireEvent.click(dialog.getByLabelText('Files are finalized; external writers are paused'));
+    fireEvent.click(dialog.getByRole('button', { name: 'Publish retained version' }));
+    await waitFor(() => expect(publish).toHaveBeenCalledWith('outputs', 'versions', expect.objectContaining({ sandbox_id: card.id, paths: ['first.txt'], finalized: true })));
+    await screen.findByText('Published first.txt · v1');
+    fireEvent.click(dialog.getByRole('button', { name: 'Close' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.getByRole('textbox', { name: 'Command' })).toBe(command);
+    expect(command.value).toBe('echo retained draft');
+  });
+
   it('uploads a dropped file through the shared API and refreshes the listing', async () => {
     const upload = vi.spyOn(worldApi, 'uploadSandboxEntry').mockResolvedValue({ written: 4 });
     render(<Workspace />);
@@ -160,10 +193,10 @@ describe("Sandbox workspace interaction", () => {
     await screen.findByRole('button', { name: 'first.txt' });
     fireEvent.drop(screen.getByLabelText('Sandbox files'), { dataTransfer: { types: ['Files'], files: [new File(['a'], 'a.txt'), new File(['b'], 'b.txt')] } });
     await waitFor(() => expect(upload).toHaveBeenCalledTimes(1));
-    fireEvent.click(screen.getByRole('tab', { name: 'Settings' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
     await act(async () => finish());
     await waitFor(() => expect(upload).toHaveBeenCalledTimes(2));
-    fireEvent.click(screen.getByRole('tab', { name: 'Workspace' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Back to workspace' }));
     await screen.findByText('2 completed');
   });
 
@@ -355,8 +388,8 @@ describe("Sandbox workspace interaction", () => {
     expect(container.querySelector(".sandbox-terminal")?.closest("[hidden]")).toBeNull();
 
     fireEvent.click(screen.getByRole("tab", { name: "History" }));
-    fireEvent.click(screen.getByRole("tab", { name: "Settings" }));
-    fireEvent.click(screen.getByRole("tab", { name: "Workspace" }));
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    fireEvent.click(screen.getByRole("button", { name: "Back to workspace" }));
     expect(screen.getByRole("tab", { name: "History" }).getAttribute("aria-selected")).toBe("true");
     expect(screen.getByText("Second file content")).toBeTruthy();
     fireEvent.click(screen.getByRole("tab", { name: "Terminal" }));

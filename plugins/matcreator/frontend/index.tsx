@@ -1,6 +1,7 @@
-import { t, useLocale, NetworkMap, type NetworkData, type NetworkMapHandle } from "@oaw/plugin-api";
+import { t, useLocale, NetworkMap, WorkspaceEmptyState, WorkspaceToolbar, type NetworkData, type NetworkMapHandle } from "@oaw/plugin-api";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FrontendPlugin, PluginViewProps } from "@oaw/plugin-api";
+import { Network, Plus, Search, SlidersHorizontal, X } from "lucide-react";
 import "./workspace.css";
 import { TaskBoard, TaskPreview } from "./TaskBoard";
 
@@ -31,6 +32,7 @@ function GraphWorkspace({ card, host }: PluginViewProps) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [resourcePreview, setResourcePreview] = useState<{ path: string; content: string } | null>(null);
   const [navigation, setNavigation] = useState(false);
+  const [assimilating, setAssimilating] = useState(false);
   const [inspector, setInspector] = useState(false);
   const [detail, setDetail] = useState<Detail | null>(null);
   const [revision, setRevision] = useState(0);
@@ -92,21 +94,23 @@ function GraphWorkspace({ card, host }: PluginViewProps) {
     setDetail({ entry: { id: "", title: t("New knowledge"), type: "capability", summary: "", content: "", owner: "user", trust: 0.5, verification: "unverified", refinement: "pending" }, resources: [], relationships: [] });
   };
   const selected = nodes.filter(node => selectedIds.includes(node.id));
+  const filtered = !!(query || type || relation || source || !memory || trusted || mode !== "browse");
   return <section ref={workspaceRef} className="kdg-workspace nodrag nowheel" aria-label={t("Know-Do Graph workspace")} onPointerDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}>
-    <header className="kdg-toolbar">
-      <button onClick={() => setNavigation(!navigation)} aria-label={t("Toggle navigator")} aria-expanded={navigation}>{t("Browse")}</button>
-      <form onSubmit={e => { e.preventDefault(); void run(() => load()); }}><input aria-label={t("Search knowledge")} value={query} onChange={e => setQuery(e.target.value)} placeholder={t("Search knowledge…")} /><button disabled={busy}>{t("Search")}</button></form>
-      <span className="kdg-count">{nodes.length} {t("entries")}</span>
+    <WorkspaceToolbar label={t("Knowledge")} className="kdg-toolbar">
+      <button onClick={() => setNavigation(!navigation)} aria-label={t("Toggle navigator")} title={t("Browse")} aria-expanded={navigation}><SlidersHorizontal size={15} /></button>
+      <form onSubmit={e => { e.preventDefault(); void run(() => load()); }}><input type="search" aria-label={t("Search knowledge")} value={query} onChange={e => setQuery(e.target.value)} placeholder={t("Search knowledge…")} /><button disabled={busy} aria-label={t("Search")} title={t("Search")}><Search size={15} /></button></form>
+      <span className="kdg-count">{nodes.length} {nodes.length === 1 ? t("entry") : t("entries")}</span>
       <button onClick={arrange} disabled={!nodes.length || busy} title={t("Group connected entries and fit the graph")}>{t("Arrange")}</button>
-      <button onClick={newEntry} disabled={busy}>{t("New entry")}</button>
-    </header>
+      <button className="kdg-primary" onClick={newEntry} disabled={busy}><Plus size={14} />{t("New entry")}</button>
     {selected.length > 0 && <div className="kdg-selection-actions" aria-label={t("Selection actions")}><span>{selected.length} {t("selected")}</span><button onClick={focus}>{t("Focus selection")}</button>
       <button onClick={() => { const ids = new Set(selectedIds); if (ids.size) { setNodes(ns => ns.filter(n => ids.has(n.id))); setEdges(es => es.filter(e => ids.has(e.source) && ids.has(e.target))); } }}>{t("Isolate")}</button>
       <button onClick={() => setInspector(!inspector)} aria-label={t("Toggle inspector")}>{t("Inspector")}</button>
     </div>}
+    </WorkspaceToolbar>
     {error && <p role="alert">{error}</p>}{notice && <p role="status">{notice}</p>}
     <div className="kdg-regions">
       {navigation && <aside className="kdg-navigator">
+        <div className="kdg-pane-heading"><strong>{t("Browse")}</strong><button aria-label={t("Close navigator")} onClick={() => setNavigation(false)}><X size={16} /></button></div>
         <label>{t("Mode")}<select aria-label={t("Workspace mode")} value={mode} onChange={e => { setMode(e.target.value); setDetail(null); setEditing(false); }}><option value="browse">{t("Browse")}</option><option value="review">{t("Review memories")}</option></select></label>
         <label>{t("Knowledge type")}<select aria-label={t("Knowledge type")} value={type} onChange={e => setType(e.target.value)}><option value="">{t("All types")}</option>{kinds.map(k => <option key={k}>{k}</option>)}</select></label>
         <label>{t("Relationship")}<select value={relation} onChange={e => setRelation(e.target.value)}><option value="">{t("All relations")}</option>{relations.map(k => <option key={k}>{k}</option>)}</select></label>
@@ -116,7 +120,7 @@ function GraphWorkspace({ card, host }: PluginViewProps) {
         <p>{result?.total ?? 0} {t("matches ·")} {nodes.length} {t("visible")}</p>
         <a href={host.documentDownloadUrl("snapshots")}>{t("Download source snapshots")}</a>
         {result?.next_offset != null && <button onClick={() => void run(() => load([], true, result.next_offset!))}>{t("Load more")}</button>}
-        <details><summary>{t("Assimilate a Toolset")}</summary><p>{t("Consume its world card after committing knowledge and a recoverable package snapshot.")}</p>
+        <details open={assimilating} onToggle={event => setAssimilating(event.currentTarget.open)}><summary>{t("Assimilate a Toolset")}</summary><p>{t("Consume its world card after committing knowledge and a recoverable package snapshot.")}</p>
           <button onClick={() => void run(async () => { setToolsets(await host.listCards(["oaw.skill-package"])); })}>{t("Choose Toolset")}</button>
           <select aria-label={t("Toolset to assimilate")} value={toolset} onChange={e => { setToolset(e.target.value); setPreview(null); }}><option value="">{t("Choose…")}</option>{toolsets.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}</select>
           <button disabled={!toolset || busy} onClick={() => void run(async () => { const original = await host.readDocument(toolset); const current = await host.documentAction("statistics", {}); setPreview(await host.transform("assimilate", { source_id: toolset, source_revision: original.revision, expected_revision: current.revision })); })}>{t("Preview assimilation")}</button>
@@ -124,13 +128,21 @@ function GraphWorkspace({ card, host }: PluginViewProps) {
         </details>
       </aside>}
       <main className="kdg-canvas"><NetworkMap ref={map} graphKey={`matcreator:${card.id}`} data={network} selected={selectedIds} search={false}
+        emptyState={<WorkspaceEmptyState icon={<Network size={26} />} title={filtered ? t("No matches") : t("Build your knowledge map")}
+          description={filtered ? t("Adjust filters in Browse or search again.") : t("Create an entry or bring knowledge in from a Toolset.")}
+          actions={filtered ? <button onClick={() => setNavigation(true)}>{t("Browse")}</button> : <>
+            <button className="kdg-primary" disabled={busy} onClick={newEntry}>{t("Create your first entry")}</button>
+            <button disabled={busy} onClick={() => { setNavigation(true); setAssimilating(true); }}>{t("Browse Toolsets")}</button>
+          </>} />}
         onSelectionChange={setSelectedIds} onSelect={id => void run(() => select(id))}
         onExpand={id => void run(() => load([id], true))}
         onContextMenu={(id, point) => { const element = workspaceRef.current!; const rect = element.getBoundingClientRect();
           setMenu({ id, x: (point.x - rect.left) * element.clientWidth / rect.width, y: (point.y - rect.top) * element.clientHeight / rect.height }); void run(() => select(id)); }}
         label={t("Know-Do Graph map")} /></main>
-      {inspector && <aside className="kdg-inspector" aria-label={t("Knowledge details")}><button className="kdg-inspector-close" aria-label={t("Close inspector")} onClick={() => { inspectSequence.current += 1; setInspector(false); setEditing(false); setConfirmDelete(false); }}>{t("Close")}</button>{inspectEntry ? <>
-        <h3>{inspectEntry.title}</h3><p>{inspectEntry.type} · {inspectEntry.verification} {t("· trust")} {inspectEntry.trust}</p>
+      {inspector && <aside className="kdg-inspector" aria-label={t("Knowledge details")}>
+        <div className="kdg-pane-heading">{inspectEntry ? <h3>{inspectEntry.title}</h3> : <strong>{t("Knowledge details")}</strong>}
+          <button className="kdg-inspector-close" aria-label={t("Close inspector")} onClick={() => { inspectSequence.current += 1; setInspector(false); setEditing(false); setConfirmDelete(false); }}><X size={16} /></button></div>{inspectEntry ? <>
+        <p className="kdg-entry-meta">{inspectEntry.type} · {inspectEntry.verification} {t("· trust")} {inspectEntry.trust}</p>
         {inspectEntry.id && <div className="kdg-entry-actions"><button disabled={busy} onClick={() => void run(() => load([inspectEntry.id], true))}>{t("Expand neighborhood")}</button>
           {!editing && <button disabled={busy} onClick={() => { setEditing(true); setConfirmDelete(false); }}>{t("Edit entry")}</button>}
           {!editing && <button className="kdg-delete" disabled={busy} onClick={() => setConfirmDelete(true)}>{t("Delete entry")}</button>}
@@ -153,9 +165,9 @@ function GraphWorkspace({ card, host }: PluginViewProps) {
           <select aria-label={t("New relationship type")} value={connectRelation} onChange={e => setConnectRelation(e.target.value)}>{relations.map(r => <option key={r}>{r}</option>)}</select>
           <button disabled={!connectTarget || busy} onClick={() => void run(() => mutate("connect", { source: inspectEntry.id, target: connectTarget, relation: connectRelation }))}>{t("Commit relationship")}</button></details>}
         {mode === "review" && !editing && <><label>{t("Reviewed knowledge")}<textarea value={inspectEntry.content} onChange={e => setDetail({ ...detail, entry: { ...inspectEntry, content: e.target.value } })} /></label><label>{t("Evidence")}<input value={evidence} onChange={e => setEvidence(e.target.value)} /></label><button disabled={!evidence || busy} onClick={() => void run(() => mutate("distill", { memory_ids: [inspectEntry.id], title: inspectEntry.title, content: inspectEntry.content, evidence }))}>{t("Distill to Heuristic")}</button></>}
-        <h4>{t("Resources")}</h4>{detail.resources.map(resource => <details key={`${resource.skill_node_id}:${resource.path}`}><summary>{resource.path}</summary>{resource.files.map(path => <button disabled={busy} key={path} onClick={() => void run(async () => { const response = await host.documentAction("inspect", { entry_id: inspectEntry.id, resource_path: path }); const value = response.value as { path: string; content: unknown }; setResourcePreview({ path: value.path, content: typeof value.content === 'string' ? value.content : JSON.stringify(value.content, null, 2) }); })}>{path}</button>)}</details>)}
+        {!!detail.resources.length && <h4>{t("Resources")}</h4>}{detail.resources.map(resource => <details key={`${resource.skill_node_id}:${resource.path}`}><summary>{resource.path}</summary>{resource.files.map(path => <button disabled={busy} key={path} onClick={() => void run(async () => { const response = await host.documentAction("inspect", { entry_id: inspectEntry.id, resource_path: path }); const value = response.value as { path: string; content: unknown }; setResourcePreview({ path: value.path, content: typeof value.content === 'string' ? value.content : JSON.stringify(value.content, null, 2) }); })}>{path}</button>)}</details>)}
         {resourcePreview && <section aria-label={t("Resource preview")}><h4>{resourcePreview.path}</h4><button onClick={() => setResourcePreview(null)}>{t("Close resource")}</button><pre>{resourcePreview.content}</pre></section>}
-        <h4>{t("Relationships")}</h4>{detail.relationships.map(edge => <div key={edge.id}><button disabled={busy} onClick={() => void run(() => select(edge.source === inspectEntry.id ? edge.target : edge.source))}>{edge.relation}</button>{!editing && <button className="kdg-delete" disabled={busy} onClick={() => { if (window.confirm(t("Delete {v0} relationship?", { v0: String(edge.relation) }))) void run(() => mutate("delete_relationship", { edge_id: edge.id })); }}>{t("Delete relationship")}</button>}</div>)}
+        {!!detail.relationships.length && <h4>{t("Relationships")}</h4>}{detail.relationships.map(edge => <div key={edge.id}><button disabled={busy} onClick={() => void run(() => select(edge.source === inspectEntry.id ? edge.target : edge.source))}>{edge.relation}</button>{!editing && <button className="kdg-delete" disabled={busy} onClick={() => { if (window.confirm(t("Delete {v0} relationship?", { v0: String(edge.relation) }))) void run(() => mutate("delete_relationship", { edge_id: edge.id })); }}>{t("Delete relationship")}</button>}</div>)}
         <details><summary>{t("Provenance and usage")}</summary><p>{t("Uses:")} {inspectEntry.usage_count ?? 0} · {inspectEntry.refinement}</p><pre>{JSON.stringify(inspectEntry.provenance, null, 2)}</pre></details>
       </> : <p>{t("Select an entry to inspect it. Double-click to expand its neighborhood.")}</p>}</aside>}
     </div>

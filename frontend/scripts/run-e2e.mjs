@@ -12,10 +12,12 @@ const resultFile = path.join(dataRoot, "result.json");
 const children = [];
 const ministerSuite = process.argv.includes("--minister");
 const args = process.argv.slice(2);
+const requestedTimeout = Number(process.env.OAW_E2E_TIMEOUT_MS);
+const runnerTimeout = Number.isFinite(requestedTimeout) && requestedTimeout > 0 ? requestedTimeout : 120_000;
 const testArgs = [];
 let viteConfig;
 for (let i = 0; i < args.length; i++) {
-  if (args[i] === "--minister") continue;
+  if (args[i] === "--minister" || args[i] === "--builtin-ui") continue;
   if (args[i] === "--vite-config") {
     const value = args[++i];
     if (!value || value.startsWith("--")) throw new Error("--vite-config requires a configuration file path");
@@ -76,7 +78,7 @@ function stopTree(child) {
 }
 
 async function waitForResult(runner) {
-  const deadline = Date.now() + 120_000;
+  const deadline = Date.now() + runnerTimeout;
   while (Date.now() < deadline) {
     if (runner.exitCode !== null) return runner.exitCode ?? 1;
     try {
@@ -88,7 +90,7 @@ async function waitForResult(runner) {
     }
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
-  throw new Error("Playwright did not report a result within 120 seconds");
+  throw new Error(`Playwright did not report a result within ${runnerTimeout / 1000} seconds`);
 }
 
 let exitCode = 1;
@@ -97,7 +99,7 @@ try {
   start(
     path.join(projectRoot, "backend", ".venv", ...(process.platform === "win32"
       ? ["Scripts", "python.exe"] : ["bin", "python"])),
-    ["-m", "uvicorn", ministerSuite ? "backend.tests.minister_app:app" : "backend.main:app", "--host", "127.0.0.1", "--port", "8017", "--no-proxy-headers"],
+    ["-m", "uvicorn", ministerSuite ? "backend.tests.minister_app:app" : args.includes("--builtin-ui") ? "backend.tests.builtin_ui_app:app" : "backend.main:app", "--host", "127.0.0.1", "--port", "8017", "--no-proxy-headers"],
     {
       cwd: projectRoot,
       env: {

@@ -1,4 +1,4 @@
-import { t, useLocale, WorkspaceSection } from "@oaw/plugin-api";
+import { t, useLocale, useWorkspaceSections, WorkspaceEmptyState, WorkspaceSection, WorkspaceToolbar } from "@oaw/plugin-api";
 import type { FrontendPlugin, PluginViewProps } from "@oaw/plugin-api";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useWorldStore } from "../../../frontend/src/state/worldStore";
@@ -6,7 +6,7 @@ import { availableModels } from "../../../frontend/src/state/modelConnections";
 import { deploymentApiBase } from "../../../frontend/src/deployment/api";
 import { ModelSelect } from "../../../frontend/src/cards/ModelSelect";
 import { DocumentMarkdown } from "../../../frontend/src/cards/DocumentMarkdown";
-import { BookOpen, FlaskConical, Settings2, Plus, RefreshCw, MoreHorizontal, FileText, X } from "lucide-react";
+import { BookOpen, FlaskConical, Settings2, Plus, RefreshCw, MoreHorizontal, FileText, Network, X } from "lucide-react";
 import { MineruCredentials } from "./MineruCredentials";
 import { GraphMap } from "./GraphMap";
 import "./style.css";
@@ -129,7 +129,8 @@ function Preview({ host, card }: PluginViewProps) {
 
 export function Workspace({ host, card }: PluginViewProps) {
   useLocale();
-  // The left rail switches which workflow is visible; each workflow remembers its
+  const { isInline, isDetached } = useWorkspaceSections();
+  // The navigation switches which workflow is visible; each workflow remembers its
   // own last-opened tab so hopping to Experiment and back does not lose your place.
   const [category, setCategory] = useState<Category>("literature");
   const [literatureTab, setLiteratureTab] = useState<LiteratureTab>("sources");
@@ -564,6 +565,7 @@ export function Workspace({ host, card }: PluginViewProps) {
   const graphProjections = projections.filter(item => item.schema_id === graphSchemaId);
   const graphProjectedRecordIds = new Set(graphProjections.map(item => item.record_id));
   const graphPendingSources = convertedSources.filter(item => !graphProjectedRecordIds.has(item.record_id!));
+  const activeSection = category === "settings" ? "settings" : category === "literature" ? literatureTab : experimentTab;
 
   const groupSelect = <label className="knowledge-groupselect">
     <span className="knowledge-visually-hidden">{t("Group")}</span>
@@ -585,10 +587,8 @@ export function Workspace({ host, card }: PluginViewProps) {
 
   return <div className="knowledge-app nodrag nowheel" aria-label={t("{v0} knowledge base", { v0: card.name })}>
 
-    <div className="knowledge-layout">
-      {/* The rail switches workflows; each workflow keeps its own tab strip, so the
-          middle column only ever shows the tabs that belong to whichever is active. */}
-      <nav className="knowledge-rail" aria-label={t("Workflow")}>
+    <header className="knowledge-navigation">
+      <nav className="knowledge-workflows" aria-label={t("Workflow")}>
         <button type="button" aria-pressed={category === "literature"} onClick={() => setCategory("literature")}>
           <BookOpen size={16} />{t("Literature")}</button>
         <button type="button" aria-pressed={category === "experiment"} onClick={() => setCategory("experiment")}>
@@ -596,7 +596,6 @@ export function Workspace({ host, card }: PluginViewProps) {
         {!deployed && <button type="button" aria-pressed={category === "settings"} onClick={() => setCategory("settings")}>
           <Settings2 size={16} />{t("Settings")}</button>}
       </nav>
-      <div className="knowledge-content">
         {category === "literature" && <div className="knowledge-tabstrip" role="tablist" aria-label={t("Literature sections")}>
           {LITERATURE_TABS.map(tab => <button key={tab.id} type="button" role="tab"
             aria-selected={literatureTab === tab.id} aria-pressed={literatureTab === tab.id}
@@ -607,16 +606,24 @@ export function Workspace({ host, card }: PluginViewProps) {
             aria-selected={experimentTab === tab.id} aria-pressed={experimentTab === tab.id}
             onClick={() => setExperimentTab(tab.id)}>{tab.label()}</button>)}
         </div>}
+    </header>
     <div className="knowledge-grid">
-      {!deployed && category === "settings" && <WorkspaceSection id="settings" title={t("Settings")} className="knowledge-section knowledge-settings-section">
+      {!isInline(activeSection) && <WorkspaceEmptyState className="knowledge-section-placeholder" icon={<BookOpen size={24} />}
+        title={isDetached(activeSection) ? t("Continue alongside this section") : t("Choose a section to continue")}
+        description={isDetached(activeSection) ? t("This section is open in its own pane. Choose another to work alongside it.")
+          : t("Use the navigation above to choose available content.")}
+        actions={LITERATURE_TABS.filter(tab => isInline(tab.id)).map(tab => <button key={tab.id} type="button" onClick={() => {
+          setCategory("literature"); setLiteratureTab(tab.id);
+        }}>{tab.label()}</button>)} />}
+      {!deployed && (category === "settings" || isDetached("settings")) && <WorkspaceSection id="settings" title={t("Settings")} className="knowledge-section knowledge-settings-section">
         {/* A detached section is portaled straight into its own tab, past ".knowledge-app": this
             wrapper carries the same classes so base colors and control styling still apply there. */}
-        <div className="knowledge-section knowledge-settings-section">
-        <div className="knowledge-section-heading">
-          <h3>{t("Settings")}</h3>
-          <div className="knowledge-heading-actions">{refreshControls}</div>
-        </div>
+        <div className="knowledge-section knowledge-settings-section" data-detached={isDetached("settings") || undefined}>
+        <WorkspaceToolbar label={t("Settings")} className="knowledge-section-toolbar">{refreshControls}</WorkspaceToolbar>
         <Banner error={error} notice={notice} />
+        <div className="knowledge-settings-layout">
+        <section className="knowledge-settings-fields" aria-label={t("Documents")}>
+        <h4>{t("Documents")}</h4>
         <label>{t("Collection name")}
           <input value={current.collection_name} disabled={busy}
             onChange={event => setSettings({ ...current, collection_name: event.target.value })}
@@ -636,6 +643,9 @@ export function Workspace({ host, card }: PluginViewProps) {
         <MineruCredentials cardId={card.id} onSaved={refresh} />
         <details className="knowledge-disclosure"><summary>{t("Available engines")}</summary>
           <p>{(overview?.engines ?? []).join(", ") || "—"}</p></details>
+        </section>
+        <section className="knowledge-settings-fields" aria-label={t("Model")}>
+        <h4>{t("Model")}</h4>
         <label>{t("Default model for deployment")}
           <select value={defaultModel} disabled={busy || !models.length}
             onChange={event => void saveDefaultModel(event.target.value)}>
@@ -653,14 +663,16 @@ export function Workspace({ host, card }: PluginViewProps) {
                 value={String(agent.config?.model ?? "oaw:default")}
                 onChange={value => void updateCard(agent.id, { config: { model: value } })} />
             </div>)}
+        </section>
+        </div>
         </div>
       </WorkspaceSection>}
-      {category === "literature" && literatureTab === "sources" && <WorkspaceSection id="sources" title={t("Sources")} className="knowledge-section">
-        <div className="knowledge-section">
-        <div className="knowledge-section-heading">
-          <div><h3>{t("Documents")} <span className="knowledge-total">{sources.length}</span></h3>
-            {!!running.length && <span className="knowledge-running" role="status">
-              {t("{v0} conversion running", { v0: running.length })}</span>}</div>
+      {((category === "literature" && literatureTab === "sources") || isDetached("sources")) && <WorkspaceSection id="sources" title={t("Sources")} layout={{ min_width: 320, min_height: 280, ideal_width: 920, ideal_height: 640 }} className="knowledge-section">
+        <div className="knowledge-section" data-detached={isDetached("sources") || undefined}>
+        <WorkspaceToolbar label={t("Documents")} className="knowledge-section-toolbar">
+          <span className="knowledge-meta">{sources.length === 1 ? t("1 document") : t("{v0} documents", { v0: sources.length })}</span>
+          {!!running.length && <span className="knowledge-running" role="status">
+            {t("{v0} conversion running", { v0: running.length })}</span>}
           <div className="knowledge-heading-actions">
           <button type="button" className="knowledge-icon-button" aria-label={t("Refresh")} title={t("Refresh")}
             disabled={busy} onClick={() => void perform(async () => { setNotice(""); await refresh(); })}>
@@ -676,7 +688,7 @@ export function Workspace({ host, card }: PluginViewProps) {
               }} />
           </label>
           </div>
-        </div>
+        </WorkspaceToolbar>
         <Banner error={error} notice={notice} />
         <div className="knowledge-source-toolbar">
         <div className="knowledge-document-controls">
@@ -731,10 +743,9 @@ export function Workspace({ host, card }: PluginViewProps) {
 
         <div className={`knowledge-document-layout${currentSource ? " has-document" : ""}`}>
         <div className="knowledge-source-pane">
-        {!sources.length && <div className="knowledge-empty-state"><FileText size={30} />
-          <strong>{t("Add your first document")}</strong>
-          <p>{t("Papers, notes, spreadsheets or images · up to 32 MiB each")}</p>
-        </div>}
+        {!sources.length && <WorkspaceEmptyState className="knowledge-empty-state" icon={<FileText size={30} />}
+          title={t("Add your first document")}
+          description={t("Papers, notes, spreadsheets or images · up to 32 MiB each")} />}
         <ul className="knowledge-list knowledge-source-list">
           {sources.map(item => <li key={item.id} className="knowledge-checkrow">
             <label><input type="checkbox" checked={selectedSources.includes(item.id)} disabled={busy}
@@ -766,6 +777,8 @@ export function Workspace({ host, card }: PluginViewProps) {
             <button type="button" className="knowledge-icon-button" aria-label={t("Close document")} title={t("Close document")}
               onClick={() => setSelectedSource("")}><X size={16} /></button>
           </div>
+          <details className="knowledge-disclosure knowledge-extraction">
+          <summary>{t("Project to JSON")}</summary>
           <div className="knowledge-projectbar">
             {/* An ad hoc, single-document projection while reading — any schema,
                 including the graph one. Batch-projecting several sources at once
@@ -788,6 +801,7 @@ export function Workspace({ host, card }: PluginViewProps) {
               onClick={() => void project()}>{busy ? t("Working…") : t("Project to JSON")}</button>
 
           </div>
+          </details>
           {documentError ? <p className="knowledge-empty">{documentError}</p>
             : !extracted ? <p role="status">{t("Loading markdown…")}</p> : <>
             <div className="knowledge-reading-toolbar">
@@ -825,15 +839,22 @@ export function Workspace({ host, card }: PluginViewProps) {
         </div>
       </WorkspaceSection>}
 
-      {((category === "literature" && literatureTab === "schemas") || (category === "experiment" && experimentTab === "schemas")) && <WorkspaceSection id="schemas" title={t("Schemas")} className="knowledge-section">
-        <div className="knowledge-section">
-        <div className="knowledge-section-heading">
-          <h3>{t("Schemas")}</h3>
-          <div className="knowledge-heading-actions">{refreshControls}</div>
-        </div>
+      {((category === "literature" && literatureTab === "schemas") || (category === "experiment" && experimentTab === "schemas") || isDetached("schemas")) && <WorkspaceSection id="schemas" title={t("Schemas")} className="knowledge-section">
+        <div className="knowledge-section" data-detached={isDetached("schemas") || undefined}>
+        <WorkspaceToolbar label={t("Schemas")} className="knowledge-section-toolbar">
+          <span className="knowledge-meta">{schemas.length} {t("Schemas")}</span>
+          <div className="knowledge-heading-actions">{refreshControls}
+          <button type="button" className="knowledge-primary" disabled={busy || !!editor} onClick={() => setEditor({
+            id: "", name: "", description: "", system_prompt: "", kind: category === "experiment" ? "experiment" : "literature",
+            definition: pretty({ type: "object", required: [], properties: { entities: { type: "array", items: { type: "object" } }, relations: { type: "array", items: { type: "object" } } } }),
+          })}><Plus size={14} />{t("New schema")}</button></div>
+        </WorkspaceToolbar>
         <Banner error={error} notice={notice} />
-
-        <ul className="knowledge-list">
+        <div className={`knowledge-split${editor ? " has-detail" : ""}`}>
+        <div className="knowledge-source-pane">
+        {!schemas.length && <WorkspaceEmptyState title={t("No schemas yet")}
+          description={t("Create a schema to define the information you want to extract.")} />}
+        <ul className="knowledge-list knowledge-record-list">
           {schemas.map(item => <li key={item.id}>
             <button type="button" aria-pressed={editor?.id === item.id} disabled={busy} onClick={() => void openSchema(item.id)}>
               <span>{item.name}</span>
@@ -841,10 +862,7 @@ export function Workspace({ host, card }: PluginViewProps) {
             </button>
           </li>)}
         </ul>
-        {!editor && <button type="button" disabled={busy} onClick={() => setEditor({
-          id: "", name: "", description: "", system_prompt: "", kind: "literature",
-          definition: pretty({ type: "object", required: [], properties: { entities: { type: "array", items: { type: "object" } }, relations: { type: "array", items: { type: "object" } } } }),
-        })}>{t("New schema")}</button>}
+        </div>
         {editor && <div className="knowledge-form">
           <label>{t("Name")}<input value={editor.name} disabled={busy}
             onChange={event => setEditor({ ...editor, name: event.target.value })} /></label>
@@ -868,21 +886,23 @@ export function Workspace({ host, card }: PluginViewProps) {
           </div>
         </div>}
         </div>
+        </div>
       </WorkspaceSection>}
 
-      {category === "literature" && literatureTab === "projections" && <WorkspaceSection id="projections" title={t("Projections")} className="knowledge-section">
-        <div className="knowledge-section">
-        <div className="knowledge-section-heading">
-          <h3>{t("Projections")}</h3>
-          <div className="knowledge-heading-actions">{groupSelect}{refreshControls}</div>
-        </div>
+      {((category === "literature" && literatureTab === "projections") || isDetached("projections")) && <WorkspaceSection id="projections" title={t("Projections")} className="knowledge-section">
+        <div className="knowledge-section" data-detached={isDetached("projections") || undefined}>
+        <WorkspaceToolbar label={t("Projections")} className="knowledge-section-toolbar">
+          {groupSelect}<div className="knowledge-heading-actions">{refreshControls}</div>
+        </WorkspaceToolbar>
         <Banner error={error} notice={notice} />
-        <p className="knowledge-meta">{t("Extract structured data with a schema. Review results below.")}</p>
 
-        <h4>{t("Project sources")}</h4>
+        <details className="knowledge-disclosure knowledge-workflow" open={!customProjections.length || undefined}>
+        <summary>{t("Project sources")}</summary>
         {!customSchemas.length
-          ? <p className="knowledge-empty">{t("Create a literature schema in Schemas first (or free one up: Graph is currently using {v0}).", {
-              v0: literatureSchemas.find(item => item.id === graphSchemaId)?.name ?? t("none") })}</p>
+          ? <WorkspaceEmptyState title={t("Create an extraction schema")}
+              description={t("Create a literature schema in Schemas first (or free one up: Graph is currently using {v0}).", {
+                v0: literatureSchemas.find(item => item.id === graphSchemaId)?.name ?? t("none") })}
+              actions={<button type="button" onClick={() => setLiteratureTab("schemas")}>{t("Schemas")}</button>} />
           : <>
             <div className="knowledge-formbar">
               <label>{t("Custom schema")}
@@ -919,9 +939,12 @@ export function Workspace({ host, card }: PluginViewProps) {
               {t("Project {v0} selected", { v0: customSelectedSources.length })}</button>
           </>}
 
-        <h4>{t("Projections")}</h4>
-        {!customProjections.length && <p className="knowledge-empty">{t("No custom projections yet.")}</p>}
-        <ul className="knowledge-list">
+        </details>
+        <div className={`knowledge-split${projection ? " has-detail" : ""}`}>
+        <div className="knowledge-source-pane">
+        {!customProjections.length && !!customSchemas.length && <WorkspaceEmptyState title={t("No custom projections yet.")}
+          description={t("Extract structured data with a schema. Review results below.")} />}
+        <ul className="knowledge-list knowledge-record-list">
           {customProjections.map(item => <li key={item.id}>
             <button type="button" aria-pressed={projection?.id === item.id} disabled={busy}
               onClick={() => void openProjection(item.id)}>
@@ -930,6 +953,7 @@ export function Workspace({ host, card }: PluginViewProps) {
             </button>
           </li>)}
         </ul>
+        </div>
         {projection && <div className="knowledge-detail">
           <h4>{t("Projection {v0}", { v0: shortId(projection.id) })}</h4>
           {projection.validation?.valid === false && <p role="alert" className="knowledge-error">
@@ -939,17 +963,17 @@ export function Workspace({ host, card }: PluginViewProps) {
           <pre>{pretty(projection.data)}</pre>
         </div>}
         </div>
+        </div>
       </WorkspaceSection>}
 
-      {category === "experiment" && experimentTab === "experiments" && <WorkspaceSection id="experiments" title={t("Experiments")} className="knowledge-section">
-        <div className="knowledge-section">
-        <div className="knowledge-section-heading">
-          <h3>{t("Experiments")}</h3>
-          <div className="knowledge-heading-actions">{groupSelect}{refreshControls}</div>
-        </div>
+      {((category === "experiment" && experimentTab === "experiments") || isDetached("experiments")) && <WorkspaceSection id="experiments" title={t("Experiments")} className="knowledge-section">
+        <div className="knowledge-section" data-detached={isDetached("experiments") || undefined}>
+        <WorkspaceToolbar label={t("Experiments")} className="knowledge-section-toolbar">
+          {groupSelect}<div className="knowledge-heading-actions">{refreshControls}</div>
+        </WorkspaceToolbar>
         <Banner error={error} notice={notice} />
-        <p className="knowledge-meta">{t("Combine extractions into an experiment record, then review and confirm.")}</p>
-        <h4>{t("Select projections to assemble")}</h4>
+        {(experimentProjections.length > 0 || experiments.length > 0) && <details className="knowledge-disclosure knowledge-workflow" open={!experiments.length || undefined}>
+        <summary>{t("Select projections to assemble")}</summary>
         {!experimentProjections.length
           ? <p className="knowledge-empty">{t("Project a document against an experiment-kind schema first, in Sources.")}</p>
           : <ul className="knowledge-list">
@@ -969,9 +993,14 @@ export function Workspace({ host, card }: PluginViewProps) {
           onClick={() => void assembleExperiment()}>
           {t("Assemble experiment record from {v0} selected", { v0: chosenExperiment.length })}</button>
 
-        <h4>{t("Experiment records")}</h4>
-        {!experiments.length && <p className="knowledge-empty">{t("No experiment records yet.")}</p>}
-        <ul className="knowledge-list">
+        </details>}
+        <div className={`knowledge-split${experimentDetail ? " has-detail" : ""}`}>
+        <div className="knowledge-source-pane">
+        {!experiments.length && <WorkspaceEmptyState title={t("No experiment records yet.")}
+          description={experimentProjections.length ? t("Combine extractions into an experiment record, then review and confirm.")
+            : t("Project a document against an experiment-kind schema first, in Sources.")}
+          actions={!experimentProjections.length && <button type="button" onClick={() => { setCategory("literature"); setLiteratureTab("sources"); }}>{t("Sources")}</button>} />}
+        <ul className="knowledge-list knowledge-record-list">
           {experiments.map(item => <li key={item.id}>
             <button type="button" aria-pressed={experimentDetail?.id === item.id} disabled={busy}
               onClick={() => void loadExperiment(item.id)}>
@@ -981,6 +1010,7 @@ export function Workspace({ host, card }: PluginViewProps) {
             </button>
           </li>)}
         </ul>
+        </div>
         {experimentDetail && <div className="knowledge-detail">
           <h4>{experimentDetail.name}</h4>
           <p className="knowledge-meta">{t("{v0} · revision {v1} · evidence: {v2}", {
@@ -1005,15 +1035,67 @@ export function Workspace({ host, card }: PluginViewProps) {
           </div>
         </div>}
         </div>
+        </div>
       </WorkspaceSection>}
 
-      {category === "literature" && literatureTab === "graph" && <WorkspaceSection id="graph" title={t("Graph")} className="knowledge-section knowledge-wide">
-        <div className="knowledge-section knowledge-wide">
-        <div className="knowledge-section-heading">
-          <h3>{t("Knowledge graph")}</h3>
-          <div className="knowledge-heading-actions">{groupSelect}{refreshControls}</div>
-        </div>
+      {((category === "literature" && literatureTab === "graph") || isDetached("graph")) && <WorkspaceSection id="graph" title={t("Graph")} layout={{ min_width: 320, min_height: 320, ideal_width: 960, ideal_height: 640 }} className="knowledge-section knowledge-wide">
+        <div className="knowledge-section knowledge-wide" data-detached={isDetached("graph") || undefined}>
+        <WorkspaceToolbar label={t("Knowledge graph")} className="knowledge-section-toolbar">
+          {groupSelect}<div className="knowledge-heading-actions">{refreshControls}</div>
+        </WorkspaceToolbar>
         <Banner error={error} notice={notice} />
+        <details className="knowledge-disclosure knowledge-collection-search">
+        <summary>{t("Search collection")}</summary>
+        <p className="knowledge-meta">{t("Search published entities beyond the current map.")}</p>
+        <form className="knowledge-formbar knowledge-graph-search" onSubmit={event => {
+          event.preventDefault();
+          void perform(() => loadGraph(filter.trim() ? { name_contains: filter.trim() } : {}));
+        }}>
+          <input type="search" aria-label={t("Filter by name")} placeholder={t("Filter by name")} value={filter} disabled={busy}
+            onChange={event => setFilter(event.target.value)} />
+          <button type="submit" disabled={busy}>{t("Search")}</button>
+          <button type="button" disabled={busy} onClick={() => void perform(async () => {
+            setFilter(""); setEntity(""); await loadGraph();
+          })}>{t("Show everything")}</button>
+        </form>
+        </details>
+        {!graph?.entities.length ? <WorkspaceEmptyState className="knowledge-graph-empty" icon={<Network size={28} />}
+          title={filter.trim() ? t("No matches") : t("No published knowledge yet")}
+          description={filter.trim() ? t("Try another name or show everything.") : t("The graph is empty until a draft is approved.")} /> : <>
+          <p className="knowledge-meta">{t("{v0} entities · {v1} relations{v2}", {
+            v0: graph.entities.length, v1: graph.relations.length,
+            v2: graph.truncated ? t(" · result limited") : "" })}</p>
+          <div className="knowledge-graph">
+            <GraphMap graphKey={`knowledge:${card.id}`} entities={graph.entities} relations={graph.relations} selected={entity}
+              onSelect={setEntity} onExpand={expand} />
+            <div className="knowledge-graphside">
+              <ul className="knowledge-list">
+                {graph.entities.map(item => <li key={item.id}>
+                  <button type="button" aria-pressed={entity === item.id} disabled={busy}
+                    onClick={() => setEntity(item.id)}>
+                    <span>{item.name}</span><small>{item.type}</small>
+                  </button>
+                </li>)}
+              </ul>
+              {selectedEntity && <div className="knowledge-detail">
+                <h4>{selectedEntity.name}</h4>
+                <p className="knowledge-meta">{selectedEntity.type}</p>
+                <button type="button" disabled={busy} onClick={() => expand(selectedEntity.id)}>
+                  {t("Show neighbours")}</button>
+                {!!Object.keys(selectedEntity.properties ?? {}).length && <pre>{pretty(selectedEntity.properties)}</pre>}
+                <ul className="knowledge-relations">
+                  {graph.relations.filter(relation => relation.source_id === selectedEntity.id
+                      || relation.target_id === selectedEntity.id).map(relation => {
+                    const name = (id: string) => graph.entities.find(item => item.id === id)?.name ?? shortId(id);
+                    return <li key={relation.id}>{name(relation.source_id)} →{relation.type}→ {name(relation.target_id)}</li>;
+                  })}
+                </ul>
+              </div>}
+            </div>
+          </div>
+        </>}
+        <details className="knowledge-disclosure knowledge-workflow knowledge-graph-workflow" open={!graph?.entities.length || !!draftDetail || undefined}>
+          <summary>{t("Build and review knowledge")} {drafts.length > 0 && <span className="knowledge-total">{drafts.length}</span>}</summary>
         <p className="knowledge-meta">{t("Extract → build draft → review → publish")}</p>
         <label>{t("Graph schema")}
           <select value={graphSchemaId} disabled={busy} onChange={event => void setGraphSchema(event.target.value)}>
@@ -1101,54 +1183,10 @@ export function Workspace({ host, card }: PluginViewProps) {
             </div>}
           </>}
 
-        <h4>{t("Published graph")}</h4>
-        <div className="knowledge-formbar">
-          <label>{t("Filter by name")}<input value={filter} disabled={busy}
-            onChange={event => setFilter(event.target.value)} /></label>
-          <button type="button" disabled={busy} onClick={() => void perform(() =>
-            loadGraph(filter.trim() ? { name_contains: filter.trim() } : {}))}>{t("Search")}</button>
-          <button type="button" disabled={busy} onClick={() => void perform(async () => {
-            setFilter(""); setEntity(""); await loadGraph();
-          })}>{t("Show everything")}</button>
-        </div>
-        {!graph?.entities.length ? <p className="knowledge-empty">{t("The graph is empty until a draft is approved.")}</p> : <>
-          <p className="knowledge-meta">{t("{v0} entities · {v1} relations{v2}", {
-            v0: graph.entities.length, v1: graph.relations.length,
-            v2: graph.truncated ? t(" · result limited") : "" })}</p>
-          <div className="knowledge-graph">
-            <GraphMap graphKey={`knowledge:${card.id}`} entities={graph.entities} relations={graph.relations} selected={entity}
-              onSelect={setEntity} onExpand={expand} />
-            <div className="knowledge-graphside">
-              <ul className="knowledge-list">
-                {graph.entities.map(item => <li key={item.id}>
-                  <button type="button" aria-pressed={entity === item.id} disabled={busy}
-                    onClick={() => setEntity(item.id)}>
-                    <span>{item.name}</span><small>{item.type}</small>
-                  </button>
-                </li>)}
-              </ul>
-              {selectedEntity && <div className="knowledge-detail">
-                <h4>{selectedEntity.name}</h4>
-                <p className="knowledge-meta">{selectedEntity.type}</p>
-                <button type="button" disabled={busy} onClick={() => expand(selectedEntity.id)}>
-                  {t("Show neighbours")}</button>
-                {!!Object.keys(selectedEntity.properties ?? {}).length && <pre>{pretty(selectedEntity.properties)}</pre>}
-                <ul className="knowledge-relations">
-                  {graph.relations.filter(relation => relation.source_id === selectedEntity.id
-                      || relation.target_id === selectedEntity.id).map(relation => {
-                    const name = (id: string) => graph.entities.find(item => item.id === id)?.name ?? shortId(id);
-                    return <li key={relation.id}>{name(relation.source_id)} →{relation.type}→ {name(relation.target_id)}</li>;
-                  })}
-                </ul>
-              </div>}
-            </div>
-          </div>
-        </>}
+        </details>
         </div>
       </WorkspaceSection>}
     </div>
-    </div>
-  </div>
   </div>;
 }
 

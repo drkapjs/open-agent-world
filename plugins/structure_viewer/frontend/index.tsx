@@ -1,4 +1,4 @@
-import { t, useLocale } from "@oaw/plugin-api";
+import { WorkspaceEmptyState, t, useLocale } from "@oaw/plugin-api";
 import { useEffect, useRef, useState } from "react";
 import { useFileViewer, type FrontendPlugin, type PluginViewProps } from "@oaw/plugin-api";
 import "./style.css";
@@ -42,16 +42,16 @@ function Viewer({ card, host, level }: PluginViewProps) {
   }, [file, host, reload, active]);
   if (!active) return <p className="structure-summary">{file?.name ?? t("Connect a file source")}</p>;
   return <section className={`structure-viewer structure-viewer--${level}`} aria-label={t("Structure viewer")}>
-    <div className="structure-toolbar">
-      <div><strong title={file?.name}>{file?.name ?? t("Structure viewer")}</strong><small>{source?.name ?? "CIF · POSCAR · XYZ · JSON"}</small></div>
+    {file && <div className="structure-toolbar">
+      <div><strong title={file.name}>{file.name}</strong>{source && <small title={source.name}>{source.name}</small>}</div>
       <button type="button" disabled={!file} aria-pressed={pinned} onClick={() => setPinned(!pinned)}>{pinned ? t("Pinned") : t("Following")}</button>
       <button type="button" disabled={!file} onClick={() => setReload(value => value + 1)}>{t("Reload")}</button>
-    </div>
+    </div>}
     <div className="structure-stage nodrag nopan nowheel">
       <div ref={target} className="structure-canvas" />
-      {!file && <div className="structure-empty">{sources.length ? t("Open a structure file in a connected window") : t("Connect this card to a Sandbox or Conversation")}</div>}
-      {status && <div className="structure-empty" role="status">{status}</div>}
-      {error && <div className="structure-empty" role="alert">{error}</div>}
+      {!file && <WorkspaceEmptyState className="structure-empty" title={sources.length ? t("Open a structure file in a connected window") : t("Connect this card to a Sandbox or Conversation")} description="CIF · POSCAR · XYZ · JSON" />}
+      {status && <WorkspaceEmptyState className="structure-empty" busy title={status} />}
+      {error && <div className="structure-empty" role="alert"><WorkspaceEmptyState title={error} actions={<button type="button" onClick={() => setReload(value => value + 1)}>{t("Reload")}</button>} /></div>}
     </div>
   </section>;
 }

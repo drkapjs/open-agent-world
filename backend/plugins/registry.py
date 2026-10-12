@@ -31,7 +31,7 @@ from backend.plugins.deployment import NodeDeploymentDefinition
 from backend.plugins.containers import NodeContainerDefinition
 from backend.plugins.execution import NodeExecutionDefinition
 
-PLUGIN_API_VERSION = "1.27"
+PLUGIN_API_VERSION = "1.28"
 _IDENTIFIER = re.compile(r"^[a-z][a-z0-9]*(?:[._:/-][a-z0-9]+)*$")
 _API_VERSION = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 
@@ -106,6 +106,23 @@ class PluginDefinition:
 SurfaceLevel = Literal["node", "preview", "inspector", "workspace"]
 
 
+class WorkspaceLayoutMetadata(BaseModel):
+    """Optional content sizing; never assigns a role or changes saved layouts."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
+    min_width: float | None = Field(default=None, ge=96, le=8192)
+    min_height: float | None = Field(default=None, ge=96, le=8192)
+    ideal_width: float | None = Field(default=None, ge=96, le=8192)
+    ideal_height: float | None = Field(default=None, ge=96, le=8192)
+
+    @model_validator(mode="after")
+    def validate_sizes(self) -> Self:
+        for minimum, ideal in ((self.min_width, self.ideal_width), (self.min_height, self.ideal_height)):
+            if minimum is not None and ideal is not None and ideal < minimum:
+                raise ValueError("workspace ideal size must not be smaller than its minimum")
+        return self
+
+
 class NodePresentation(BaseModel):
     """Supported canvas surfaces, first appearance, and compact-card open target."""
 
@@ -114,6 +131,7 @@ class NodePresentation(BaseModel):
     initial: SurfaceLevel
     open: SurfaceLevel
     sizes: dict[SurfaceLevel, dict[str, float]] = Field(default_factory=dict)
+    workspace_layout: WorkspaceLayoutMetadata | None = None
 
     @classmethod
     def from_legacy_surfaces(cls, surfaces: dict[str, bool]) -> Self:

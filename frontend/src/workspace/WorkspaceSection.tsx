@@ -3,12 +3,14 @@ import { createPortal } from 'react-dom';
 import { EyeOff, GripVertical } from 'lucide-react';
 import { t } from '../i18n';
 import { useWorkspaceAccess } from './WorkspaceAccess';
+import type { WorkspaceLayoutMetadata } from './workspaceLayoutMetadata';
 import './workspaceSection.css';
 
 export interface WorkspaceSectionRegistration {
   id: string;
   title: string;
   host: HTMLDivElement;
+  layout?: WorkspaceLayoutMetadata;
 }
 
 interface WorkspaceSectionContextValue {
@@ -29,14 +31,16 @@ export function WorkspaceSectionProvider({ children, ...value }: WorkspaceSectio
 }
 
 /** Presentation only: card data and component state remain with the owning card. */
-export function useWorkspaceSections(): { isInline: (id: string) => boolean } {
+export function useWorkspaceSections(): { isInline: (id: string) => boolean; isDetached: (id: string) => boolean } {
   const context = useContext(WorkspaceSectionContext);
   const detached = context?.detachedSectionIds;
   const hidden = context?.hiddenSectionIds;
   const access = useWorkspaceAccess();
-  const allowed = context && access.plugin_access?.[context.cardId] ? access.permissions[context.cardId] : undefined;
-  const isInline = useCallback((id: string) => (allowed === undefined || allowed.includes(id)) && !detached?.has(id) && !hidden?.has(id), [detached, hidden, allowed]);
-  return useMemo(() => ({ isInline }), [isInline]);
+  const restricted = !!(context && access.plugin_access?.[context.cardId]);
+  const allowed = context ? access.permissions[context.cardId] : undefined;
+  const isInline = useCallback((id: string) => (!restricted || !!allowed?.includes(id)) && !detached?.has(id) && !hidden?.has(id), [detached, hidden, allowed, restricted]);
+  const isDetached = useCallback((id: string) => (!restricted || !!allowed?.includes(id)) && !!detached?.has(id) && !hidden?.has(id), [detached, hidden, allowed, restricted]);
+  return useMemo(() => ({ isInline, isDetached }), [isInline, isDetached]);
 }
 
 export interface WorkspaceSectionProps {
@@ -45,10 +49,12 @@ export interface WorkspaceSectionProps {
   children: ReactNode;
   className?: string;
   style?: CSSProperties;
+  /** Optional sizing hints for this independently composable content area. */
+  layout?: WorkspaceLayoutMetadata;
 }
 
 /** A semantic card pane whose DOM can move without changing its React owner. */
-export function WorkspaceSection({ id, title, children, className, style }: WorkspaceSectionProps) {
+export function WorkspaceSection({ id, title, children, className, style, layout }: WorkspaceSectionProps) {
   const context = useContext(WorkspaceSectionContext);
   const access = useWorkspaceAccess();
   const permitted = !context || !access.plugin_access?.[context.cardId] || access.permissions[context.cardId]?.includes(id);
@@ -64,16 +70,20 @@ export function WorkspaceSection({ id, title, children, className, style }: Work
     if (element) element.append(host);
   }, [host]);
   const register = context?.register;
+  // Accept inline declarations without re-registering on every owner render.
+  const sizing = useMemo(() => layout && ({ min_width: layout.min_width, min_height: layout.min_height,
+    ideal_width: layout.ideal_width, ideal_height: layout.ideal_height }),
+  [layout?.min_width, layout?.min_height, layout?.ideal_width, layout?.ideal_height]);
 
   useLayoutEffect(() => {
     if (!permitted) return;
     host.dataset.workspaceSectionContent = id;
-    const unregister = register?.({ id, title, host });
+    const unregister = register?.({ id, title, host, layout: sizing });
     // Initially detached panes need one registration commit so their destination
     // can attach the host before children measure it in their layout effects.
     setContentReady(true);
     return unregister;
-  }, [host, id, title, register, permitted]);
+  }, [host, id, title, register, permitted, sizing]);
 
   // Keep this portal at the same React position, including while hidden. Only its
   // DOM host moves; rendering another copy in the destination would reset state.

@@ -67,6 +67,46 @@ describe("ConversationWorkspace snapshots", () => {
 
   afterEach(() => cleanup());
 
+  it.each(['session', 'group'])('does not let a stale canvas copy clear the participant selection after workspace %s creation', async (kind) => {
+    const summary = { conversation_id: card.id,
+      sessions: [{ ...session, participant_ids: ['atlas'] }],
+      agents: [{ id: 'atlas', name: 'Atlas', status: 'idle', model: 'mock', connected: true }],
+    };
+    vi.mocked(worldApi.getConversation).mockResolvedValue(summary);
+    vi.mocked(worldApi.getConversationTimeline).mockResolvedValue({ items: [], has_before: false, has_after: false });
+    vi.spyOn(worldApi, 'createConversationSession').mockResolvedValue({ ...session, id: 'new-session', participant_ids: ['atlas'] });
+    render(<><ConversationWorkspace card={card} /><ConversationWorkspace card={card} /></>);
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'New session' }).every(button => !(button as HTMLButtonElement).disabled)).toBe(true));
+    if (kind === 'session') {
+      fireEvent.click(screen.getAllByRole('button', { name: 'New session' })[1]);
+    } else {
+      fireEvent.click(screen.getAllByRole('button', { name: 'Switch group: General' })[1]);
+      fireEvent.click(screen.getByRole('button', { name: 'New group' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Create group' }));
+    }
+    await waitFor(() => expect(useConversationView.getState().sessions[card.id]).toBe('new-session'));
+    // The background canvas still has its old REST snapshot until the socket
+    // invalidation arrives. Both copies must remain usable during that gap.
+    expect(screen.getAllByLabelText('Conversation message')).toHaveLength(2);
+    const composer = screen.getAllByLabelText('Conversation message')[1] as HTMLTextAreaElement;
+    fireEvent.change(composer, { target: { value: 'A draft in the new session' } });
+    expect(composer.value).toBe('A draft in the new session');
+  });
+
+  it('keeps the live composer mounted while visiting compact session and participant views', async () => {
+    render(<ConversationWorkspace card={card} />);
+    await screen.findByText(historicalMessage.content);
+    const composer = screen.getByLabelText('Conversation message') as HTMLTextAreaElement;
+    fireEvent.change(composer, { target: { value: 'Keep this thought while checking participants' } });
+    const navigation = within(screen.getByRole('navigation', { name: 'Conversation views' }));
+    fireEvent.click(navigation.getByRole('button', { name: 'Participants' }));
+    fireEvent.click(navigation.getByRole('button', { name: 'Sessions' }));
+    fireEvent.click(screen.getByRole('button', { name: /^General/ }));
+    expect(navigation.getByRole('button', { name: 'Conversation' }).getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByLabelText('Conversation message')).toBe(composer);
+    expect(composer.value).toBe('Keep this thought while checking participants');
+  });
+
   it('restores each session composer after switching sessions and viewport unmount', async () => {
     const other = { ...session, id: 'session-b', title: 'Other' };
     vi.mocked(worldApi.getConversation).mockResolvedValue({ conversation_id: card.id, sessions: [session, other], agents: [] });

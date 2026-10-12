@@ -23,10 +23,15 @@
 .equipment-card .equipment-item-remove { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); color: var(--ink-faint); }
 .equipment-card select { position: absolute; right: 30px; top: 50%; transform: translateY(-50%); width: 74px; max-width: 74px; font-size: 9px; border: 0; background: var(--surface-soft); color: var(--ink-soft); }
 .equipment-card .react-flow__handle { width: 8px; height: 8px; background: var(--accent); }
-.agent-settings-window { height: 100%; overflow: auto; padding: 24px; max-width: 720px; margin: auto; }
+.agent-settings-window { height: 100%; min-width: 0; overflow: auto; padding: var(--space-4); container: agent-settings / inline-size; }
+.agent-settings-window > .expanded-stack { max-width: 1100px; margin-inline: auto; }
+.agent-settings-details { padding-block: var(--space-2); color: var(--ink-soft); font-size: var(--font-size-small); }
+.agent-settings-details summary { cursor: pointer; }
+.agent-settings-details .capability-chips { margin-top: var(--space-3); }
 .agent-window-tabs { display: flex; gap: 6px; padding: 8px 16px; border-bottom: 1px solid var(--line); }
 .agent-window-tabs button { border: 0; border-radius: 6px; padding: 5px 12px; background: transparent; color: var(--ink-soft); cursor: pointer; }
 .agent-window-tabs button[aria-selected="true"] { background: var(--surface-soft); color: var(--ink); }
-.agent-window-body { height: calc(100% - 46px); min-height: 0; }
+.agent-window-body { flex: 1; min-height: 0; }
+.workspace-content:has(> .agent-window-body) { display: flex; flex-direction: column; overflow: hidden; }
 .equipment-card.card-finish-surface .equipment-item-open > span { position: relative; z-index: 2; }
 .equipment-card.card-finish-surface > select { z-index: 2; }

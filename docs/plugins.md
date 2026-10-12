@@ -38,6 +38,11 @@ Plugin-specific documentation can remain in its own package or repository. These
 
 ## Developing a plugin
 
+Plugin API 1.28 adds optional `WorkspaceLayoutMetadata` on `NodePresentation`.
+The frontend SDK exposes shared application content helpers and `composeWorkspace`
+recipes over the existing v2 layout. These leave saved layouts and runtime
+ownership unchanged; see [workspace design](developers/workspace-design.md).
+
 Plugin API 1.23 adds declarative `state` policies, bound `ctx.state` / `host.state`,
 and host-owned shared/session namespaces. Legacy plugins remain unchanged. See
 [Card state lifecycle](card-state.md) for declarations, migration, defaults and

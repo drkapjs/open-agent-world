@@ -276,6 +276,7 @@ def register(registration):
         icon="workflow", color="#8ba69c", deck_id="tools", deck_label="Tools", deck_icon="boxes",
         default_name="Research tasks", default_size=(640, 520), default_status="available",
         statuses=frozenset({"available"}), config_model=Model, templateable=True,
+        traits=frozenset({"ui.content-surface.v1"}),
         state=ScopedStateSpec(supportedScopes=("shared", "session"), defaultScope="session"),
         surfaces={"preview": True, "inspector": True, "workspace": True},
         frontend={"preview": "tasks-preview", "body": "tasks", "workspace": "tasks"},

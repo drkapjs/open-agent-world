@@ -85,14 +85,14 @@ function InputView({card,host,level}:PluginViewProps){
   const help=(card.type==='xrd.pattern'?'支持两列 CSV / TXT 或 SmartLab 文本导出谱。':card.type==='xrd.reference'?'支持含 2-Theta、d、I、(h k l) 峰表的文本标准卡片；全谱拟合还需要 CIF。':'导入真实候选结构 CIF，并关联对应的标准卡片。')+' 可从资源管理器拖入一个文件，最大 8 MiB。从算法卡片连接到此对象，选择「XRD 输入」。';
   if(level==='preview')return <section {...dropProps} className={`xrd-panel xrd-drop-panel ${dragging?'is-dragging':''}`}><strong>{doc?.filename||'尚未导入'}</strong><small>{doc?.kind==='pattern'?`${doc.points.length} 个实验点`:doc?.kind==='reference'?`${doc.peaks.length} 条标准峰 · ${doc.metadata.formula||''}`:doc?.reference_node_id?'已关联标准卡片':'待关联标准卡片'}</small><small>{busy?'正在导入…':'拖入文件，或点击查看详情'}</small>{error&&<p role="alert">{error}</p>}</section>;
   return <section {...dropProps} className={`xrd-panel xrd-drop-panel nodrag nopan ${dragging?'is-dragging':''}`} aria-busy={busy}>
-    {level!=='workspace'&&<div className="xrd-import-row">
+    <div className="xrd-import-row">
       <span className="xrd-import-control">
         <button type="button" disabled={busy||!doc} aria-describedby={tooltipId} onClick={()=>fileInput.current?.click()}>{busy?'正在导入…':'选择文件'}</button>
         <span className="xrd-import-tooltip" role="tooltip" id={tooltipId}>{help}</span>
       </span>
       <small>{dragging?'松开以导入':'或将文件拖到这里'}</small>
       <input ref={fileInput} type="file" hidden aria-label="导入文件" disabled={busy||!doc} accept={card.type==='xrd.cif'?'.cif':'.txt,.csv,.ras'} onChange={e=>{const file=e.target.files?.[0];e.target.value='';if(file)void importFile(file);}}/>
-    </div>}
+    </div>
     {doc?.filename&&<><strong className="xrd-source-filename">{doc.filename}</strong>
       <div className="xrd-source-row">
         <small>{doc.kind==='pattern'?`${doc.points.length} 个点 · ${doc.metadata.format} · Kα₁ ${doc.metadata.HW_XG_WAVE_LENGTH_ALPHA1||'未提供'} Å`:doc.kind==='reference'?`${doc.metadata.name} · ${doc.metadata.formula} · ${doc.peaks.length} 条标准峰`:'CIF 结构文件'}</small>
@@ -116,6 +116,10 @@ function MatchResult({result,host,sourceId=''}:{result:Result;host:PluginViewPro
   const library=result.library_search;const full=library?.enabled;const qualx=library?.engine==='qualx';
   const matched=new Set(c?.matches.map(m=>m.observed_index));const residual=full?result.observed_peaks?.filter((_,i)=>!matched.has(i)):result.unexplained_peaks;
   return <div className="xrd-panel xrd-match-tables"><header className="xrd-match-result-heading"><strong>标准卡片匹配结果</strong>{c&&<div className="xrd-match-current">{codId?<CandidateStructure key={codId} codId={codId} host={host}/>:c.metadata.url&&<a href={c.metadata.url} target="_blank" rel="noreferrer">查看结构与文献</a>}</div>}</header>
+    <Plot key={c?.node_id} interactive points={result.pattern?.points} peaks={c?.peaks} unexplained={residual}/>
+    {qualx&&library?.screened_candidates===0&&c&&<p role="status">本次未召回谱库候选，以下为手动标准卡片的比对结果。</p>}
+    {c?<details className="xrd-candidate-comparison" open><summary>候选结构</summary><div className="xrd-table"><table aria-label="候选匹配比较"><thead><tr><th>候选结构</th><th>匹配分数 / 100</th><th>标准峰匹配</th><th>平均 |Δ2θ| / °</th><th>来源</th></tr></thead><tbody>{result.candidates?.map(candidate=><tr key={candidate.node_id} aria-selected={candidate.node_id===c.node_id}><td><button type="button" className="xrd-candidate-row-button" aria-pressed={candidate.node_id===c.node_id} onClick={()=>{setSelected(candidate.node_id);selectFrameCandidate(sourceId,candidate.node_id);}}>{candidate.filename}<small>{candidate.metadata.formula}</small></button></td><td title="匹配分数不是概率">{candidate.score==null?'—':(candidate.score*100).toFixed(1)}</td><td>{candidate.matches.length} / {candidate.reference_count}</td><td>{candidate.mean_abs_delta?.toFixed(4)??'—'}</td><td>{candidate.metadata.source||'用户标准卡片'}</td></tr>)}</tbody></table></div></details>:<p role="status">未找到可比对候选。{qualx?'可调整元素范围，或切换 遍历检索。':'请检查已连接的标准卡片及谱库筛选条件。'}</p>}
+    <details className="xrd-search-details"><summary>检索概况与数据来源</summary>
     <div className="xrd-table"><table aria-label="检索概况"><tbody>
       <tr><th scope="row">实验谱</th><td colSpan={3}>{result.pattern?.filename??'—'}</td></tr>
       <tr><th scope="row">检出峰数</th><td>{result.observed_peaks?.length??0}</td><th scope="row">{full?'当前候选':'所有候选合计'}未解释峰</th><td>{residual?.length??0}</td></tr>
@@ -126,9 +130,7 @@ function MatchResult({result,host,sourceId=''}:{result:Result;host:PluginViewPro
         <tr><th scope="row">元素条件排除</th><td>{library.excluded_by_elements?.toLocaleString()??'—'}</td><th scope="row">返回候选</th><td>{result.candidates?.length??0}</td></tr>
       </>}
     </tbody></table></div>
-    {qualx&&library?.screened_candidates===0&&c&&<p role="status">本次未召回谱库候选，以下为手动标准卡片的比对结果。</p>}
-    {c?<details className="xrd-candidate-comparison" open><summary>候选结构</summary><div className="xrd-table"><table aria-label="候选匹配比较"><thead><tr><th>候选结构</th><th>匹配分数 / 100</th><th>标准峰匹配</th><th>平均 |Δ2θ| / °</th><th>来源</th></tr></thead><tbody>{result.candidates?.map(candidate=><tr key={candidate.node_id} aria-selected={candidate.node_id===c.node_id}><td><button type="button" className="xrd-candidate-row-button" aria-pressed={candidate.node_id===c.node_id} onClick={()=>{setSelected(candidate.node_id);selectFrameCandidate(sourceId,candidate.node_id);}}>{candidate.filename}<small>{candidate.metadata.formula}</small></button></td><td title="匹配分数不是概率">{candidate.score==null?'—':(candidate.score*100).toFixed(1)}</td><td>{candidate.matches.length} / {candidate.reference_count}</td><td>{candidate.mean_abs_delta?.toFixed(4)??'—'}</td><td>{candidate.metadata.source||'用户标准卡片'}</td></tr>)}</tbody></table></div></details>:<p role="status">未找到可比对候选。{qualx?'可调整元素范围，或切换 遍历检索。':'请检查已连接的标准卡片及谱库筛选条件。'}</p>}
-    <Plot key={c?.node_id} interactive points={result.pattern?.points} peaks={c?.peaks} unexplained={residual}/>
+    </details>
     {c&&<>
       <details><summary>匹配峰与偏差（{c.matches.length}）</summary><div className="xrd-table"><table><thead><tr><th>实验 / °</th><th>标准 / °</th><th>Δ2θ / °</th><th>h k l</th></tr></thead><tbody>{c.matches.map((m,i)=><tr key={i}><td>{m.observed.toFixed(3)}</td><td>{m.reference.toFixed(3)}</td><td>{m.delta.toFixed(4)}</td><td>{m.hkl.join(' ')}</td></tr>)}</tbody></table></div></details></>}
     <details><summary>未解释峰</summary><p>{residual?.map(p=>`${p.two_theta.toFixed(3)}°`).join('、')||'当前检测阈值下没有未解释峰'}</p></details>

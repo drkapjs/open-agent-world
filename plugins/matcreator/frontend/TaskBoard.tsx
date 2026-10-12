@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type SetStateAction } from 'react';
-import { t, useLocale, type PluginViewProps } from '@oaw/plugin-api';
+import { WorkspaceEmptyState, t, useLocale, type PluginViewProps } from '@oaw/plugin-api';
 import './tasks.css';
 
 type Status = 'pending' | 'running' | 'review' | 'blocked' | 'done';
@@ -206,11 +206,7 @@ export function TaskBoard({ host, level = 'workspace' }: PluginViewProps) {
   }
   const patch = (value: Partial<Task>) => setEditor(current => current && ({ ...current, task: { ...current.task, ...value } }));
   const stale = editor && snapshot && editor.revision !== snapshot.revision;
-  return <section ref={surface} className="mc-task-board nodrag nowheel" aria-label={t('Research task board')}>
-    <header className="mc-task-header">
-      <div className="mc-task-heading"><h3 title={plan?.title}>{plan?.title ?? t('Research plans')}</h3>
-        {plan && <span className="mc-task-count" aria-label={t('Research progress')}>{done}/{plan.tasks.length}{plan.tasks.length > 0 && done === plan.tasks.length ? ' ✓' : ''}</span>}
-        <details className="mc-task-menu" ref={details} onKeyDown={event => {
+  const planMenu = <details className="mc-task-menu" ref={details} onKeyDown={event => {
           if (event.key === 'Escape') { event.stopPropagation(); event.preventDefault(); event.currentTarget.open = false; event.currentTarget.querySelector('summary')?.focus(); }
         }} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false; }}><summary aria-label={t('Plan details and actions')} title={t('Plan details and actions')}>···</summary>
           <div className="mc-task-menu-content">
@@ -224,12 +220,17 @@ export function TaskBoard({ host, level = 'workspace' }: PluginViewProps) {
       <button disabled={!snapshot || busy} onClick={() => void refresh().catch(reason => setError(message(reason)))}>{t('Refresh')}</button>
       <p className="mc-task-hint">{t('Task status records progress. Use the conversation or Sandbox controls to stop execution.')}</p>
           </div>
-        </details>
+        </details>;
+  return <section ref={surface} className="mc-task-board nodrag nowheel" aria-label={t('Research task board')}>
+    {plan && !inTask && <header className="mc-task-header">
+      <div className="mc-task-heading"><h3 title={plan.title}>{plan.title}</h3>
+        {plan && <span className="mc-task-count" aria-label={t('Research progress')}>{done}/{plan.tasks.length}{plan.tasks.length > 0 && done === plan.tasks.length ? ' ✓' : ''}</span>}
+        {!inTask && plan && !creating && <button className="mc-task-add" aria-label={t('Add task')} disabled={busy} onClick={() => edit()}>{t('+ Task')}</button>}
+        {!creating && <button className="mc-task-board-toggle" aria-pressed={view === 'board'} onClick={() => setView(view === 'board' ? 'activity' : 'board')}>{t(view === 'board' ? 'Compact cards' : 'Open board')}<span aria-hidden="true">↗</span></button>}
+        {planMenu}
       </div>
-      {!inTask && plan?.goal && <p className="mc-task-subtitle" title={plan.goal}>{plan.goal}</p>}
-      {!inTask && plan && <progress aria-label={t('Research progress')} value={done} max={plan.tasks.length || 1} />}
-    </header>
-    {(error || draft.error || readError) && <p className="mc-task-error" role="alert">{error || draft.error || readError}</p>}
+    </header>}
+    {(error || draft.error || readError) && <p className="mc-task-error" role="alert">{error || draft.error || readError}{readError && <button disabled={busy} onClick={() => void refresh().catch(reason => setError(message(reason)))}>{t('Refresh')}</button>}</p>}
     {!!execution?.wakeups?.some(check => (!check.notification_suppressed || check.notification_error) && !check.notification_run_id) &&
       <section className="mc-task-checks" aria-label={t('Scheduled checks')}>
         <strong>{t('Scheduled checks')}</strong>
@@ -244,7 +245,7 @@ export function TaskBoard({ host, level = 'workspace' }: PluginViewProps) {
             }}>{t('Cancel check')}</button>}
           </div>)}
       </section>}
-    {!snapshot && !readError && <p role="status">{t('Loading research tasks…')}</p>}
+    {!snapshot && !readError && <WorkspaceEmptyState busy title={t('Loading research tasks…')} />}
     {creating && <form className="mc-task-editor" onSubmit={async event => {
       event.preventDefault();
       await mutate('create_plan', { title: title.trim(), goal, tasks: [] });
@@ -255,17 +256,10 @@ export function TaskBoard({ host, level = 'workspace' }: PluginViewProps) {
       <div className="mc-task-actions"><button disabled={busy || !title.trim()}>{t('Create plan')}</button><button type="button" disabled={busy} onClick={() => setCreating(false)}>{t('Cancel')}</button></div>
     </form>}
     {plan && !creating && <>
-      {!inTask && <div className="mc-task-status-strip">
-        <button className="mc-task-add" aria-label={t('Add task')} disabled={busy} onClick={() => edit()}>{t('+ Task')}</button>
-        {columns.map(column => { const count = plan.tasks.filter(task => task.status === column.id).length;
-          return <span key={column.id} className={`is-${column.id}${count ? ' has-tasks' : ''}`}>
-            <StatusIcon status={column.id} size={13} />{t(column.id === 'running' ? 'Running' : column.label)} <b>{count}</b></span>;
-        })}
-        <button className="mc-task-board-toggle" aria-pressed={view === 'board'} onClick={() => setView(view === 'board' ? 'activity' : 'board')}>{t(view === 'board' ? 'Compact cards' : 'Open board')}<span aria-hidden="true">↗</span></button>
-      </div>}
       {inTask && <nav className="mc-task-detail-nav"><button ref={back} disabled={busy} onClick={returnToTasks}>{t('‹ Tasks')}</button>
         {editor && taskId && <button disabled={busy} onClick={() => { setEditor(undefined); setError(''); }}>{t('‹ Detail')}</button>}
         {!editor && taskDetail && <button disabled={busy} onClick={() => edit(taskDetail)}>{t('Edit')}</button>}
+        {planMenu}
       </nav>}
       {editor ? <form className="mc-task-editor" onSubmit={async event => {
         event.preventDefault();
@@ -366,11 +360,11 @@ export function TaskBoard({ host, level = 'workspace' }: PluginViewProps) {
             </div>
           </section>;
         })}
-        {!plan.tasks.length && <p className="mc-task-list-empty">{t('No tasks yet. Add a task to get started.')}</p>}
+        {!plan.tasks.length && <WorkspaceEmptyState className="mc-task-list-empty" title={t('No tasks yet. Add a task to get started.')} />}
       </div>}
     </>}
-    {snapshot && !plan && !creating && <div className="mc-task-empty"><span>01 → 02 → 03</span><h3>{t('Plan, execute, verify and learn.')}</h3>
-      <p>{t('Describe a materials research goal in the conversation, or create a plan here. Tasks keep dependencies, progress and results together.')}</p>
-      <button onClick={() => setCreating(true)}>{t('New plan')}</button></div>}
+    {snapshot && !plan && !creating && <WorkspaceEmptyState className="mc-task-empty" title={t('Plan, execute, verify and learn.')}
+      description={t('Describe a materials research goal in the conversation, or create a plan here. Tasks keep dependencies, progress and results together.')}
+      actions={<button onClick={() => setCreating(true)}>{t('New plan')}</button>} />}
   </section>;
 }

@@ -1,3 +1,5 @@
+import { workspaceLayoutSize, type WorkspaceLayoutMetadata } from '../workspace/workspaceLayoutMetadata';
+
 /** Layouts reference a card or one of its sections; they never copy runtime ownership. */
 export interface WorkspaceView { card_id: string; section_id?: string }
 export type WorkspaceLeaf = { kind: 'pane'; view: WorkspaceView }
@@ -162,9 +164,14 @@ export function resizeSplit(node: WorkspaceNode, path: string, ratio: number): W
     : { ...node, second: resizeSplit(node.second, path.slice(1), ratio) };
 }
 
-export function layoutMinimum(node: WorkspaceNode | null): { width: number; height: number } {
-  if (!node || node.kind !== 'split') return { width: 240, height: 200 };
-  const a = layoutMinimum(node.first), b = layoutMinimum(node.second);
+export function layoutMinimum(node: WorkspaceNode | null, preference?: (view: WorkspaceView) => WorkspaceLayoutMetadata | undefined): { width: number; height: number } {
+  if (!node) return workspaceLayoutSize().minimum;
+  if (node.kind !== 'split') {
+    // A tab switch must not resize the workspace or make another tab unusable.
+    return paneViews(node).map(view => workspaceLayoutSize(preference?.(view)).minimum)
+      .reduce((size, next) => ({ width: Math.max(size.width, next.width), height: Math.max(size.height, next.height) }), { width: 0, height: 0 });
+  }
+  const a = layoutMinimum(node.first, preference), b = layoutMinimum(node.second, preference);
   // Resizing redistributes the available space; it must not grow the workspace.
   // Each grid track enforces its subtree minimum independently of the ratio.
   return node.axis === 'horizontal'

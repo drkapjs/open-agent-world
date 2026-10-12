@@ -1,7 +1,17 @@
 import { expect, test } from "@playwright/test";
 
-test("edit execution cards and bind secrets outside portable documents", async ({ page, request }, testInfo) => {
+test.beforeEach(async ({ page, request }) => {
   await page.setViewportSize({ width: 1500, height: 1000 });
+  const profile = await (await request.get('/api/application')).json();
+  expect((await request.patch('/api/application/preferences', { data: {
+    profile_id: profile.profile_id, generation: profile.generation, changes: {
+      'oaw-canvas-viewport-v1': null, 'oaw.locale': 'en', 'oaw-theme': 'light',
+      'oaw-onboarding-v1': JSON.stringify({ version: 1, state: { status: 'skipped' } }),
+    },
+  } })).ok()).toBe(true);
+});
+
+test("edit execution cards and bind secrets outside portable documents", async ({ page, request }, testInfo) => {
   const nodes: string[] = [];
   try {
     for (const [type, name, x] of [["environment", "Local environment", 420], ["compute-target", "Local destination", 950]] as const) {
@@ -18,25 +28,34 @@ test("edit execution cards and bind secrets outside portable documents", async (
     await environment.getByRole("button", { name: "Add variable", exact: true }).click();
     await environment.getByLabel("Environment variable 2 name").fill("API_TOKEN");
     await environment.getByLabel("Environment variable 2 type").selectOption("secret");
-    await environment.getByLabel("Environment variable 2 value").fill("token");
+    await environment.getByLabel("Environment variable 2 value").fill("e2e-private-credential");
     await environment.getByRole("button", { name: "Save", exact: true }).click();
-    await expect(environment.getByText("token · Unbound", { exact: true })).toBeVisible();
-    await environment.getByLabel("Secret for token").fill("e2e-private-credential");
-    await environment.getByRole("button", { name: "Bind secret", exact: true }).click();
-    await expect(environment.getByText("token · Configured", { exact: true })).toBeVisible();
-    await expect(environment.getByLabel("Secret for token")).toHaveValue("");
+    const secretRow = () => environment.locator('.environment-variable-row').filter({ has: page.locator('input[value="API_TOKEN"]') });
+    const valueRow = () => environment.locator('.environment-variable-row').filter({ has: page.locator('input[value="DEMO_REGION"]') });
+    await expect(secretRow().getByText("Configured", { exact: true })).toBeVisible();
+    await expect(secretRow().getByLabel(/value$/)).toHaveValue("");
     const document = await (await request.get(`/api/nodes/${nodes[0]}/document`)).json();
-    expect(document.value.variables.API_TOKEN).toEqual({ secret_ref: "token" });
+    expect(document.value.variables.API_TOKEN).toEqual({ secret_ref: expect.any(String) });
     expect(JSON.stringify(document)).not.toContain("e2e-private-credential");
     expect(await page.evaluate(() => JSON.stringify(localStorage))).not.toContain("e2e-private-credential");
     await page.screenshot({ path: testInfo.outputPath("environment-profile.png") });
-    await environment.getByLabel("Environment variable 1 name").fill("LD_PRELOAD");
+    // Save/close/reopen must retain only the private binding and a blank field.
+    await page.reload();
+    await expect(secretRow().getByText("Configured", { exact: true })).toBeVisible();
+    await expect(secretRow().getByLabel(/value$/)).toHaveValue("");
+    await valueRow().getByLabel(/name$/).fill("LD_PRELOAD");
     await environment.getByRole("button", { name: "Save", exact: true }).click();
-    await expect(environment.getByRole("alert")).toContainText("reserved");
+    await expect(environment.getByRole("alert")).toContainText("Invalid environment configuration");
+    const rejected = await (await request.get(`/api/nodes/${nodes[0]}/document`)).json();
+    expect(rejected.value.variables.LD_PRELOAD).toBeUndefined();
+    expect(rejected.value.variables.DEMO_REGION).toBe("local-test");
     await environment.getByRole("button", { name: "Reload", exact: true }).click();
     await expect(environment.locator('input[value="DEMO_REGION"]')).toBeVisible();
-    await environment.getByRole("button", { name: "Unbind", exact: true }).click();
-    await expect(environment.getByText("token · Unbound", { exact: true })).toBeVisible();
+    await secretRow().getByRole("button", { name: /Remove environment variable/ }).click();
+    await environment.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(secretRow()).toHaveCount(0);
+    const removed = await (await request.get(`/api/nodes/${nodes[0]}/document`)).json();
+    expect(removed.value.variables.API_TOKEN).toBeUndefined();
     await environment.getByRole("button", { name: "Close Local environment inspector", exact: true }).click();
     const target = page.locator(`[data-card-id="${nodes[1]}"]`);
     await target.locator(".card-kind-icon").click();
@@ -65,7 +84,12 @@ test("Sandbox local settings reuse the environment editor and a live default pro
     await page.goto("/");
     const card = page.locator(`[data-card-id="${sandbox.id}"]`);
     await expect(card).toHaveAttribute("data-surface-level", "workspace");
-    await card.getByRole("tab", { name: "Settings", exact: true }).click();
+    // Fit the expanded workspace in this test's viewport, independently of the
+    // server-backed camera saved by previous tests with different window sizes.
+    await page.getByRole('button', { name: 'Fit view', exact: true }).click();
+    const settings = card.getByRole("button", { name: "Settings", exact: true });
+    await expect(settings).toBeInViewport();
+    await settings.click();
     await card.getByText("Resource limits", { exact: true }).click();
     await card.getByLabel("Command timeout (seconds)").fill("90");
     await card.getByRole("button", { name: "Save", exact: true }).click();
@@ -81,7 +105,7 @@ test("Sandbox local settings reuse the environment editor and a live default pro
     await card.getByRole("button", { name: "Close workspace", exact: true }).click();
     await card.locator(".card-kind-icon").click();
     const workspace = page.locator(`[data-workspace-node-id="${sandbox.id}"]`);
-    await expect(workspace.getByRole("tab", { name: "Settings", exact: true })).toHaveAttribute("aria-selected", "true");
+    await expect(workspace.getByRole("button", { name: "Back to workspace", exact: true })).toHaveAttribute("aria-expanded", "true");
     await expect(workspace.getByRole("combobox", { name: "Default profile", exact: true })).not.toBeVisible();
     await workspace.getByText("Environment variables", { exact: true }).click();
     await expect(workspace.getByRole("combobox", { name: "Default profile", exact: true })).toHaveValue(profile.id);
@@ -98,7 +122,7 @@ test("Sandbox local settings reuse the environment editor and a live default pro
     await expect.poll(async () => (await effective()).variables.length).toBe(1);
     expect((await (await request.get(`/api/sandboxes/${sandbox.id}/history`)).json()).length).toBe(0);
     await expect(workspace.getByLabel("Command", { exact: true })).not.toBeVisible();
-    await workspace.getByRole("tab", { name: "Workspace", exact: true }).click();
+    await workspace.getByRole("button", { name: "Back to workspace", exact: true }).click();
     await expect(workspace.getByLabel("Command", { exact: true })).toHaveValue("");
     await expect(workspace.getByLabel("Command", { exact: true })).not.toBeEditable();
     const world = await (await request.get("/api/world")).json();

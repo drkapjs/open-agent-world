@@ -33,48 +33,31 @@
 
 .xrd-plot.is-interactive { cursor: crosshair; }
 
-.node-workspace-window .xrd-source-filename { font-size: 13px; line-height: 19.5764px; overflow-wrap: anywhere; }
-.node-workspace-window .xrd-source-row small { font-size: 11px; }
+.xrd-source-filename { font-size: 13px; line-height: 19.5764px; overflow-wrap: anywhere; }
+.xrd-source-row small { font-size: 11px; }
 
-/* Local spectrum-library enclosure: scales with card width, not viewport. */
-.xrd-nas { color: #dce6df; padding: 14px; border: 1px solid #64716e; border-radius: 14px; background: linear-gradient(145deg,#49514e,#272e2e 55%,#202626); box-shadow: inset 0 1px #ffffff28,0 7px 18px #0003; }
-.xrd-nas-header,.xrd-nas-footer { display:flex; justify-content:space-between; align-items:center; gap:8px; font-size:9px; letter-spacing:1.1px; }
-.xrd-nas-header { margin-bottom:14px; color:#a9b6b0; }
-.xrd-led { display:flex; align-items:center; gap:5px; letter-spacing:0; }
-.xrd-led::before { content:''; width:5px; height:5px; border-radius:50%; background:#68716a; }
-.xrd-led.is-online::before { background:#baf7a3; box-shadow:0 0 7px #a1ef86; }
-.xrd-drive-bays { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:7px; }
-.xrd-drive-bay { position:relative; min-width:0; padding:4px; min-height:104px; border:1px solid #0f1716; border-radius:7px; background:repeating-linear-gradient(0deg,#141b1a 0px,#141b1a 3px,#17201e 4px); box-shadow:inset 0 3px 10px #000b,0 1px #ffffff17; color:inherit; font:inherit; text-align:left; overflow:hidden; }
-button.xrd-drive-bay { cursor:pointer; }
-button.xrd-drive-bay:disabled { cursor:default; opacity:1; }
-button.xrd-drive-bay:focus-visible { outline:2px solid #c5f2a4; outline-offset:3px; }
-button.xrd-drive-bay:hover:not(:disabled) .xrd-drive { border-color:#b2bda6; }
-.xrd-drive { height:100%; box-sizing:border-box; display:flex; flex-direction:column; gap:5px; padding:7px 8px; border:1px solid #77817a; border-radius:4px; background:linear-gradient(120deg,#59605a,#373f3b 70%); box-shadow:inset 0 1px #ffffff30,0 3px 5px #0009; }
-.xrd-drive-top { display:flex; justify-content:space-between; align-items:center; font:9px monospace; color:#bec9bf; }
-.xrd-drive-top i { width:4px;height:4px;border:1px solid #929e94;border-radius:50%; }
-.xrd-drive-display { padding:5px 3px; display:grid; gap:3px; text-align:center; background:#111f18; border:1px solid #0a100c; border-radius:4px; box-shadow:inset 0 2px 5px #000c; }
-.xrd-digital-count { font-family:'Consolas','Courier New',monospace; font-size:clamp(14px,1.5em,24px); font-variant-numeric:tabular-nums; letter-spacing:-.8px; color:#c4ff9e; text-shadow:0 0 6px #9ce47199; white-space:nowrap; }
-.xrd-drive-display .xrd-drive-filename { font:11px Consolas,monospace; color:#c4ff9e; text-shadow:0 0 6px #9ce47199; overflow-wrap:anywhere; }
-.xrd-drive strong { font-size:11px; overflow-wrap:anywhere; }
-.xrd-drive-version { font-size:9px; color:#b3bdb5; }
-.xrd-drive-handle { margin-top:auto; height:8px; border:1px solid #1e2821; border-radius:2px; background:#222a25; box-shadow:0 1px #89918366; }
-.xrd-empty-drive { min-height:94px; height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; color:#77847c; font-size:11px; }
-.xrd-empty-drive small { font:8px monospace; text-align:center; }
-.xrd-slot-plus { font:22px monospace; color:#b8cbb9; }
-.xrd-slot-lines { font:24px monospace; opacity:.4; }
-.xrd-nas-footer { margin-top:12px; color:#98a69b; font-size:8px; }
-.xrd-mount-caption { text-align:center; }
-.xrd-mount-form { display:grid; gap:8px; padding:12px; border:1px solid #ffffff20; border-radius:8px; background:#10191830; }
+/* Expanded library content; the compact Canvas readout retains its material. */
+.xrd-library-panel { align-content:start; color:var(--ink); }
+.xrd-library-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:8px 0 16px; }
+.xrd-library-heading > div { display:grid; gap:4px; }
+.xrd-library-heading strong { font-size:var(--font-size-title); font-variant-numeric:tabular-nums; }
+.xrd-library-heading small,.xrd-library-heading > span { color:var(--ink-soft); font-size:var(--font-size-caption); }
+.xrd-library-sources { display:grid; gap:4px; }
+.xrd-library-source { display:flex; gap:12px; align-items:center; min-width:0; padding:12px 8px; text-align:left; border:0; border-radius:var(--radius-control); background:transparent; color:inherit; font:inherit; cursor:pointer; }
+.xrd-library-source:hover,.xrd-library-source[aria-expanded=true] { background:var(--surface-soft); }
+.xrd-library-source:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.xrd-library-slot { color:var(--ink-faint); font-variant-numeric:tabular-nums; }
+.xrd-library-source-copy { display:grid; gap:3px; min-width:0; flex:1; }
+.xrd-library-source-copy strong { overflow-wrap:anywhere; font-weight:600; }
+.xrd-library-source-copy small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--ink-soft); }
+.xrd-library-source-count { flex:none; color:var(--accent-strong); font-variant-numeric:tabular-nums; }
+.xrd-mount-form { display:grid; gap:8px; padding:12px; border:0; border-radius:var(--radius-control); background:var(--surface-soft); }
 .xrd-mount-actions { display:flex; justify-content:flex-end; gap:8px; }
 .xrd-mount-actions button { border:1px solid #c1987560; border-radius:6px; color:inherit; background:#c1987520; padding:6px 12px; cursor:pointer; }
 .xrd-mount-actions button[type=submit] { color:#d9f4ca; background:#79966130; border-color:#b0cd8e65; }
 .xrd-mount-actions button:disabled { opacity:.45; cursor:default; }
-.xrd-mount-status { color:#c4e8b1; font-size:11px; }
+.xrd-mount-status { color:var(--success); font-size:11px; }
 .xrd-mount-status:empty { display:none; }
-.xrd-drive.is-inserting { animation:xrd-drive-insert .7s cubic-bezier(.16,1,.3,1) both; }
-@keyframes xrd-drive-insert { 0% { transform:translateY(-65%) scale(.94); opacity:0; } 65% { transform:translateY(3px) scale(1); opacity:1; } 100% { transform:translateY(0); } }
-@media(prefers-reduced-motion:reduce) { .xrd-drive.is-inserting { animation:none; } }
-
 /* Preview uses a display only; the six configuration bays belong to expanded views. */
 .xrd-library-readout { min-width:0; display:grid; gap:5px; padding:10px; border:1px solid #596c5d; border-radius:7px; background:linear-gradient(145deg,#18271f,#0d1812); box-shadow:inset 0 2px 7px #0008; color:#c4ff9e; font-family:Consolas,'Courier New',monospace; text-shadow:0 0 6px #9ce47180; }
 .xrd-readout-count { font-size:22px; line-height:1.15; font-variant-numeric:tabular-nums; letter-spacing:-.5px; }

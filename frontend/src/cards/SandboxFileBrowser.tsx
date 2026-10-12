@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState, type Ref, type MouseEvent, type KeyboardEvent } from 'react';
-import { ChevronDown, ChevronRight, Copy, Download, File, FileText, Folder, FolderOpen, RefreshCw, Upload, FolderUp, Eye, Search, Trash2, X } from 'lucide-react';
+import { ChevronDown, ChevronRight, Copy, Download, File, FileText, Folder, RefreshCw, Upload, FolderUp, Eye, Search, Trash2, X } from 'lucide-react';
 import { worldApi, apiErrorMessage } from '../api/client';
 import { IconButton } from '../components/IconButton';
 import { ContextMenu, type ContextMenuAnchor } from '../components/ContextMenu';
@@ -192,8 +192,7 @@ export function SandboxFileBrowser({ cardId, roots, tree, expanded, loading, sel
   }
   return <aside ref={sidebarRef} className="sandbox-files file-drop-target nodrag nopan nowheel" aria-label={t('Sandbox files')}
     aria-busy={mutating} data-drop-active={drag.folder !== undefined || undefined} {...drag.props}>
-    <header className="sandbox-pane-heading"><span><FolderOpen size={13} /> {t('Files')}</span>
-      <div className="sandbox-pane-actions">
+    <div className="sandbox-file-toolbar" role="group" aria-label={t('File actions')}>
         <IconButton ref={searchToggle} icon={Search} size="xs" quiet label={t('Search workspace files')}
           disabled={!roots.some(root => root.id === 'workspace')} aria-expanded={searchOpen} aria-controls={searchOpen ? searchId : undefined}
           onClick={() => { if (searchOpen) closeSearch(); else setSearchOpen(true); }} />
@@ -202,8 +201,7 @@ export function SandboxFileBrowser({ cardId, roots, tree, expanded, loading, sel
           <IconButton icon={FolderUp} size="xs" quiet label={t('Upload folder')} disabled={intake.processing || mutating} onClick={() => folderInput.current?.click()} />
         </>}
         <IconButton icon={RefreshCw} size="xs" quiet label={t('Refresh files')} disabled={loading.roots || searching} onClick={() => { void onRefresh(); if (query.trim()) void searchFiles(); }} />
-      </div>
-    </header>
+    </div>
     {searchOpen && <div id={searchId} className="sandbox-file-search" onKeyDown={event => {
       event.stopPropagation();
       if (event.key === 'Escape') { event.preventDefault(); closeSearch(); }

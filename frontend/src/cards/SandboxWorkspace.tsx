@@ -1,7 +1,7 @@
 import { useWorkspaceAccess } from '../workspace/WorkspaceAccess';
 import { t, useLocale } from "../i18n";
-import { Download, FileText, History, LayoutPanelLeft, RefreshCw, Settings, Square, Terminal } from "lucide-react";
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { ArrowLeft, Download, FileText, FolderOpen, History, RefreshCw, Settings, Square, Terminal } from "lucide-react";
+import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
 import { apiErrorMessage, worldApi } from "../api/client";
 import { useWorldStore } from "../state/worldStore";
 import { useOpenFiles } from "../state/openFiles";
@@ -14,6 +14,7 @@ import { PublishFiles } from "./Artifacts";
 import { useTransferQueue } from '../files/TransferList';
 import { saveDownload } from '../files/transferQueue';
 import { WorkspaceSection, useWorkspaceSections } from "../workspace/WorkspaceSection";
+import { WorkspaceEmptyState } from "../workspace/WorkspacePrimitives";
 import "./sandboxWorkspace.css";
 
 import { SandboxFileBrowser, type FileRoot as Root, type FileEntry as Entry, type FileSelection, type FileChange } from "./SandboxFileBrowser";
@@ -44,6 +45,9 @@ export function SandboxWorkspace({ card }: { card: WorldCard }) {
   const previewInline = sections.isInline("preview");
   const terminalInline = sections.isInline("terminal");
   const hasWorkArea = previewInline || terminalInline;
+  const [compactView, setCompactView] = useState('files');
+  const inlineViews = [filesInline && 'files', previewInline && 'preview', terminalInline && 'terminal'].filter(Boolean) as string[];
+  const visibleView = inlineViews.includes(compactView) ? compactView : inlineViews[0];
   const refreshSandbox = useWorldStore(s => s.refreshSandbox);
   const info = useWorldStore(s => s.sandboxInfo[card.id]);
   const execute = useWorldStore(s => s.executeSandbox);
@@ -317,24 +321,29 @@ export function SandboxWorkspace({ card }: { card: WorldCard }) {
   }, [skill, card.id, history.length]);
   return <div className="sandbox-workspace nodrag nopan nowheel">
     <header className="sandbox-window-toolbar">
-      <nav className="sandbox-tabs" role="tablist" aria-label={t("Sandbox window")} onKeyDown={tabKeys}>
-        {(deployed ? ["workspace"] as const : ["workspace", "settings"] as const).map(view => <button key={view} role="tab" id={`${card.id}-${view}-tab`}
-          aria-selected={tab === view} aria-controls={`${card.id}-${view}-panel`} tabIndex={tab === view ? 0 : -1}
-          onClick={() => setTab(view)}>
-          {view === "workspace" ? <LayoutPanelLeft size={13} /> : <Settings size={13} />}
-          {view === "workspace" ? t("Workspace") : t("Settings")}{view === "settings" && settingsDirty && <span className="sandbox-dirty-dot" aria-label={t("Unsaved changes")} />}
-        </button>)}
-      </nav>
-      <SandboxRuntimeControls card={card} disabled={settingsDirty || diagnosticBusy} />
+      <SandboxRuntimeControls compact card={card} disabled={settingsDirty || diagnosticBusy} />
+      {!deployed && <button type="button" className="sandbox-settings-toggle" aria-expanded={tab === 'settings'} aria-controls={`${card.id}-settings-panel`}
+        aria-label={tab === 'settings' ? t('Back to workspace') : t('Settings')} aria-description={settingsDirty ? t('Unsaved changes') : undefined}
+        onClick={() => setTab(tab === 'settings' ? 'workspace' : 'settings')}>
+        {tab === 'settings' ? <ArrowLeft size={14} /> : <Settings size={14} />}
+        {tab === 'settings' ? t('Back to workspace') : t('Settings')}
+        {settingsDirty && <span className="sandbox-dirty-dot" aria-hidden="true" />}
+      </button>}
     </header>
     {(error || (tab === "workspace" && runtimeError)) && <p className="sandbox-workspace-error" role="alert">{error || runtimeError}</p>}
-    <div className="sandbox-workbench" role="tabpanel" hidden={tab !== 'workspace'} id={`${card.id}-workspace-panel`} aria-labelledby={`${card.id}-workspace-tab`}>
-      <WorkspaceSection id="files" title={t("Files")} className={`sandbox-files-section${hasWorkArea ? "" : " is-only-section"}`} style={{ width: hasWorkArea ? sidebarWidth : "100%" }}>
+    {tab === 'workspace' && inlineViews.length > 1 && <nav className="sandbox-compact-navigation" aria-label={t('Workspace views')}>
+      {inlineViews.map(view => <button type="button" key={view} aria-pressed={visibleView === view} onClick={() => setCompactView(view)}>
+        {view === 'files' ? <FolderOpen size={14} /> : view === 'preview' ? <FileText size={14} /> : <Terminal size={14} />}
+        {view === 'files' ? t('Files') : view === 'preview' ? t('Preview') : t('Terminal')}
+      </button>)}
+    </nav>}
+    <div className="sandbox-workbench" role="region" hidden={tab !== 'workspace'} id={`${card.id}-workspace-panel`} aria-label={t('Workspace')} data-compact-view={visibleView}>
+      <WorkspaceSection id="files" title={t("Files")} layout={{ min_width: 240, min_height: 180, ideal_width: 320, ideal_height: 540 }} className={`sandbox-files-section${hasWorkArea ? "" : " is-only-section"}`} style={{ '--sandbox-sidebar-width': hasWorkArea ? `${sidebarWidth}px` : "100%" } as CSSProperties}>
       <SandboxFileBrowser key={binding} cardId={card.id} roots={roots} tree={tree} expanded={expanded}
         loading={loading} selection={selection} error={filesError} sidebarRef={sidebarElement}
         workspacePath={info?.workspace_path ?? info?.workspace ?? t("Managed workspace")}
         writable={!deployed && !card.ephemeral && roots.some(root => root.id === 'workspace' && root.access === 'read_write') && info?.workspace_access !== 'read_only'}
-        onExpand={expand} onSelect={select} onDownload={download} transfers={transfers} onLoadMore={loadDirectory} onChange={filesChanged}
+        onExpand={expand} onSelect={(root, path, label) => { if (previewInline) setCompactView('preview'); return select(root, path, label); }} onDownload={download} transfers={transfers} onLoadMore={loadDirectory} onChange={filesChanged}
         onRefresh={async () => { await refreshFiles(); if (selection) await select(selection.root, selection.path, selection.label); }} />
       </WorkspaceSection>
       {filesInline && hasWorkArea && <div className="sandbox-file-divider" role="separator" aria-label={t("Resize file sidebar")} aria-orientation="vertical"
@@ -348,10 +357,13 @@ export function SandboxWorkspace({ card }: { card: WorldCard }) {
         onPointerUp={e => { if (resizing.current) saveSidebarWidth(resizing.current.width + (e.clientX - resizing.current.x) / resizing.current.scale); resizing.current = undefined; e.currentTarget.releasePointerCapture(e.pointerId); }}
         onPointerCancel={() => { resizing.current = undefined; }}
         onKeyDown={e => { if (e.key === "ArrowLeft" || e.key === "ArrowRight") { e.preventDefault(); e.stopPropagation(); saveSidebarWidth(sidebarWidth + (e.key === "ArrowRight" ? 16 : -16)); } }} />}
-      <main ref={workArea} className="sandbox-work-area" hidden={!hasWorkArea}>
-        <WorkspaceSection id="preview" title={t("File preview")} className="sandbox-preview-section">
+      <main ref={workArea} className="sandbox-work-area" hidden={!hasWorkArea} data-empty-preview={!selection && previewInline && terminalInline || undefined}>
+        <WorkspaceSection id="preview" title={t("File preview")} layout={{ min_width: 280, min_height: 180, ideal_width: 640, ideal_height: 420 }} className="sandbox-preview-section">
         <section className="sandbox-preview nodrag nopan nowheel" aria-label={t("File preview")}>
-          {!deployed && <PublishFiles card={card} paths={publishPaths.length ? publishPaths : selection?.root === "workspace" ? [selection.path] : []}>
+          <header className="sandbox-pane-heading sandbox-preview-heading">
+            <span className="sandbox-preview-location" title={selection?.path}><FileText size={14} /><span>{selection?.label ?? t('Preview')}{selection && <small>{selection.root === 'workspace' ? t('Workspace') : t('Resource')} / {selection.path || selection.label}</small>}</span></span>
+            <div className="sandbox-pane-actions">
+          {!deployed && <PublishFiles compact card={card} paths={publishPaths.length ? publishPaths : selection?.root === "workspace" ? [selection.path] : []}>
             {Object.entries(tree).filter(([key]) => key.startsWith("workspace:")).flatMap(([key, value]) =>
               (value.entries ?? []).filter(entry => !entry.blocked).map(entry => {
                 const parent = key.slice("workspace:".length);
@@ -361,22 +373,20 @@ export function SandboxWorkspace({ card }: { card: WorldCard }) {
                   onChange={event => setPublishPaths(current => event.target.checked ? [...current, path] : current.filter(p => p !== path))} />{path}</label>;
               }))}
           </PublishFiles>}
-          <header className="sandbox-pane-heading">
-            <span title={selection?.path}><FileText size={13} />{selection?.label ?? t("File preview")}</span>
-            {selection && <div className="sandbox-pane-actions">
+            {selection && <>
               {selection.root.startsWith("resource:") && <button className="secondary-button" onClick={() => useNodeSurfaceStore.getState().openInspector(selection.root.slice(9))}>{t("Edit resource")}</button>}
               <IconButton icon={Download} size="xs" quiet label={t("Download file")} onClick={() => void download()} />
-            </div>}
+            </>}
+            </div>
           </header>
           {selection ? <>
-            <div className="sandbox-preview-path" title={selection.path}>{selection.root === "workspace" ? t("Workspace") : t("Resource")} / {selection.path || selection.label}</div>
             <div className="sandbox-preview-content">
-              {!preview ? <div className="sandbox-pane-empty">{t("Loading preview…")}</div>
+              {!preview ? <WorkspaceEmptyState busy title={t('Loading preview…')} />
                 : preview.state === "text" ? <pre>{preview.text || t("Empty file")}</pre>
                 : preview.state === "image" ? <img alt={selection.label} src={`data:${preview.media_type};base64,${preview.data}`} />
                 : <div className="sandbox-pane-empty">{preview.message ?? ({ oversized: t("Preview exceeds 1 MiB. Download to view."), unsupported: t("Preview unsupported. Download to open locally."), missing: t("File no longer exists."), permission_denied: t("Permission denied.") }[preview.state ?? ""] ?? preview.state)}</div>}
             </div>
-          </> : <div className="sandbox-pane-empty"><FileText size={26} strokeWidth={1.2} /><span>{t("Select a file to preview")}</span></div>}
+          </> : <WorkspaceEmptyState className="sandbox-preview-empty" title={t('Select a file to preview')} actions={filesInline ? <button type="button" className="onboarding-text-button" onClick={() => setCompactView('files')}>{t('Browse files')}</button> : undefined} />}
         </section>
         </WorkspaceSection>
         {previewInline && terminalInline && <div className="sandbox-terminal-divider" role="separator" aria-label={t("Resize terminal")} aria-orientation="horizontal"
@@ -389,7 +399,7 @@ export function SandboxWorkspace({ card }: { card: WorldCard }) {
           onPointerUp={e => { if (terminalResize.current) saveTerminalHeight(terminalResize.current.height + (terminalResize.current.y - e.clientY) / terminalResize.current.area * 100); terminalResize.current = undefined; e.currentTarget.releasePointerCapture(e.pointerId); }}
           onPointerCancel={() => { terminalResize.current = undefined; }}
           onKeyDown={e => { if (e.key === "ArrowUp" || e.key === "ArrowDown") { e.preventDefault(); e.stopPropagation(); saveTerminalHeight(terminalHeight + (e.key === "ArrowUp" ? 4 : -4)); } }} />}
-        <WorkspaceSection id="terminal" title={t("Terminal")} className="sandbox-terminal-section" style={{ flexBasis: previewInline ? `${terminalHeight}%` : "100%" }}>
+        <WorkspaceSection id="terminal" title={t("Terminal")} layout={{ min_width: 280, min_height: 180, ideal_width: 640, ideal_height: 280 }} className="sandbox-terminal-section" style={{ flexBasis: previewInline ? `${terminalHeight}%` : "100%" }}>
         <section className="sandbox-terminal nodrag nopan nowheel" aria-label={t("Sandbox terminal")}>
           <header className="sandbox-pane-heading">
             <nav className="sandbox-tabs" role="tablist" aria-label={t("Terminal views")} onKeyDown={tabKeys}>
@@ -420,7 +430,7 @@ export function SandboxWorkspace({ card }: { card: WorldCard }) {
             </div>
           </div>
           <div className="sandbox-history" role="tabpanel" id={`${card.id}-history-panel`} aria-labelledby={`${card.id}-history-tab`} hidden={terminalTab !== "history"}>
-            {!history.length && <div className="sandbox-pane-empty">{t("No executions yet.")}</div>}
+            {!history.length && <WorkspaceEmptyState title={t('No executions yet.')} description={t('Run a command to see its output and status here.')} actions={<button type="button" className="secondary-button" onClick={() => { setTerminalTab('terminal'); terminalInput.current?.focus(); }}>{t('Terminal')}</button>} />}
             {[...history].reverse().map(h => <article key={h.id}><header><strong>{h.caller} · {h.state}</strong><small>{t("Exit")} {h.exit_code ?? "—"} · {h.duration_seconds?.toFixed(2) ?? "—"}s</small></header>
               {h.state === "running" && <IconButton icon={Square} size="xs" quiet label={t("Cancel command")} onClick={() => void action(`cancel?command_id=${encodeURIComponent(h.id)}`)} />}
               <code>{h.argv.join(" ")}</code><pre>{h.error || `${h.stdout ?? ""}${h.stderr ?? ""}`}</pre></article>)}
@@ -429,12 +439,12 @@ export function SandboxWorkspace({ card }: { card: WorldCard }) {
         </WorkspaceSection>
       </main>
     </div>
-    {!deployed && tab === 'settings' && <div className="sandbox-settings-window" role="tabpanel" id={`${card.id}-settings-panel`} aria-labelledby={`${card.id}-settings-tab`}>
+    {!deployed && tab === 'settings' && <div className="sandbox-settings-window" role="region" id={`${card.id}-settings-panel`} aria-label={t('Sandbox settings')}>
       <div className="sandbox-settings-content">
         <SandboxSettings card={card} onDirtyChange={setSettingsDirty} />
         <details className="sandbox-settings"><summary>{t("Command presets")}</summary><div className="sandbox-config-form">
           <p className="sandbox-help">{t("Save the current command for reuse.")}</p>
-          <label className="field-label">{t("Load preset")}<select aria-label={t("Command preset")} value="" onChange={e => { setDraft(e.target.value); setTab("workspace"); setTerminalTab("terminal"); }}><option value="">{t("Choose a preset")}</option>{Object.entries(card.config.presets as Record<string, string> ?? {}).map(([name, command]) => <option key={name} value={command}>{name}</option>)}</select></label>
+          <label className="field-label">{t("Load preset")}<select aria-label={t("Command preset")} value="" onChange={e => { setDraft(e.target.value); setTab("workspace"); setTerminalTab("terminal"); setCompactView("terminal"); }}><option value="">{t("Choose a preset")}</option>{Object.entries(card.config.presets as Record<string, string> ?? {}).map(([name, command]) => <option key={name} value={command}>{name}</option>)}</select></label>
           <label className="field-label">{t("Preset name")}<input value={presetName} onChange={e => setPresetName(e.target.value)} placeholder={t("e.g. Run tests")} /></label>
           {draft.trim() && <pre className="sandbox-preset-preview">{draft}</pre>}
           <div className="editor-actions"><button className="secondary-button" disabled={!presetName.trim() || !draft.trim()} onClick={() => void savePreset()}>{t("Save preset")}</button></div>

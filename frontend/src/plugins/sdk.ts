@@ -17,6 +17,12 @@ export { useFileViewer } from "../state/openFiles";
 export type { FileReference, OpenedFile } from "../state/openFiles";
 export { WorkspaceSection, useWorkspaceSections } from "../workspace/WorkspaceSection";
 export type { WorkspaceSectionProps } from "../workspace/WorkspaceSection";
+export { ApplicationSurface, WorkspacePanel, WorkspaceToolbar, WorkspaceEmptyState } from '../workspace/WorkspacePrimitives';
+export { IconButton } from '../components/IconButton';
+export { Modal } from '../components/Modal';
+export type { WorkspaceLayoutMetadata } from "../workspace/workspaceLayoutMetadata";
+export { composeWorkspace } from "../legions/workspaceRecipes";
+export type { WorkspaceCompositionItem, WorkspaceCompositionOptions, WorkspaceRecipe } from "../legions/workspaceRecipes";
 
 export interface CardStateStore {
   get(): Promise<{ value: Record<string, unknown>; revision: number }>;

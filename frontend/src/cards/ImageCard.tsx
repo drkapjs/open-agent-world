@@ -86,10 +86,10 @@ export function ImageCardBody({ card }: { card: WorldCard; level: NodeSurfaceLev
       )}
       {error && <p role="alert" className="ui-error">{error}</p>}
 
-      <section className="card-section">
-        <div className="section-heading"><span>{t("Relationships")}</span><small>{t("read-only resource")}</small></div>
+      <details className="resource-details">
+        <summary>{t("Relationships")}</summary>
         <RelationshipList card={card} />
-      </section></>}
+      </details></>}
       <FileDropOverlay visible={intake.hovering}>{t('Drop image here')}</FileDropOverlay>
     </div>
   );
