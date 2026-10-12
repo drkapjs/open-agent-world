@@ -2,7 +2,11 @@ from backend.plugins.loader import load_plugin_registry
 
 
 def test_research_preview_projects_counts_without_task_content():
-    definition = load_plugin_registry().node_type("matcreator.tasks").document
+    from backend.tests.plugin_support import install_test_plugin
+    from backend.tests.research_tasks import register
+    registry = load_plugin_registry()
+    install_test_plugin(registry, "test.research", register)
+    definition = registry.node_type("test.research.tasks").document
     action = definition.actions["summary"]
     assert action.read_only and action.project
     value = {"plans": [{"title": "Copper study", "tasks": [

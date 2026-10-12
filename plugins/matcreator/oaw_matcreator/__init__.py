@@ -7,13 +7,13 @@ from open_agent_world.plugin_api import (
 )
 from open_agent_world.skill_packages import SkillPackage, register_skill_package, register_skill_node, SkillContainerDefinition, ToolboxConfig
 from . import knowledge as k
-from . import tasks, preset
+from . import preset, native_card
 
 READ = "matcreator.kdg.read"
 
 class MatCreatorPlugin:
-    descriptor = PluginDescriptor(id="matcreator", version="0.4.0", plugin_api_version="1.23", name="MatCreator",
-                                  requires_plugins=("science.structure-viewer", "oaw.barracks"))
+    descriptor = PluginDescriptor(id="matcreator", version="0.5.0", plugin_api_version="1.30", name="MatCreator",
+                                  requires_plugins=("science.structure-viewer",))
 
     def register(self, registration):
         for name in ("core", "simulation", "ai", "research"):
@@ -85,10 +85,10 @@ class MatCreatorPlugin:
             description="Explicitly authorize editing local graph knowledge and reviewing memories; source snapshots stay immutable.",
             source_traits=frozenset({"core.agent"}), target_types=frozenset({"matcreator.kdg"}),
             capabilities=tuple(CapabilityGrantDefinition(kind=kind) for kind in [READ, *["matcreator.kdg." + key for key in [*reads, *writes]]])))
-        tasks.register(registration)
-        registration.register_legion_preset(preset.definition())
+        native_card.register(registration)
+        registration.register_legion_preset(preset.native_definition())
         registration.register_pack(PackDefinition(id='matcreator.default', name='MatCreator',
-            description='Scientific skills, research tasks and a Know-Do Graph.', cards=tuple(registration.nodes)))
+            description='Native research Agent, scientific skills, execution views and a Know-Do Graph.', cards=tuple(registration.nodes)))
 
 def create_plugin():
     return MatCreatorPlugin()

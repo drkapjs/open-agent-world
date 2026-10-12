@@ -8,6 +8,18 @@ from backend.services import ApplicationServices
 router = APIRouter(prefix="/nodes", tags=["node-resources"])
 
 
+@router.get('/{node_id}/execution-sources')
+async def execution_sources(node_id: str, services: ApplicationServices = Depends(get_services)):
+    from backend.execution_graph import connected_sources
+    async with services._node_mutation(read_only=True):
+        return {'sources': connected_sources(services, node_id)}
+
+
+@router.get('/{node_id}/execution-sources/{source_id}')
+async def execution_snapshot(node_id: str, source_id: str, services: ApplicationServices = Depends(get_services)):
+    return await invoke_resource_action(services, source_id, 'execution', ResourceActionRequest(), execution_reader=node_id)
+
+
 @router.get("/{node_id}/data-sources")
 async def data_sources(node_id: str, services: ApplicationServices = Depends(get_services)):
     from backend.data_sources import connected_sources

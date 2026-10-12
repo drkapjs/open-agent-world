@@ -19,12 +19,22 @@ class ResourceActionRequest(BaseModel):
     confirm: bool = False
 
 
-async def invoke_resource_action(services, node_id, action, request, *, capability=None, data_reader=None, data_relationship=None):
+async def invoke_resource_action(services, node_id, action, request, *, capability=None, data_reader=None, data_relationship=None, execution_reader=None):
     # Hold this lock until the worker has stopped, including cancellation. An
     # edge revocation or deletion can never overtake a running resource write.
     async with services._node_mutation():
         node = services.world.get_card(node_id)
         operation = services.plugins.node_type(node.type).resource_actions.get(action)
+        if execution_reader is not None:
+            from backend.execution_graph import connected_sources, snapshot
+            if node_id not in {item['id'] for item in connected_sources(services, execution_reader)}:
+                raise PermissionDeniedError('Connect this execution source before reading it')
+            def read_execution(context, arguments):
+                result = snapshot(services, node_id, context)
+                if len(json.dumps(result, ensure_ascii=False).encode()) > 2 * 1024 * 1024:
+                    raise ResourceValidationError('Execution projection exceeds 2 MiB')
+                return result
+            operation = NodeResourceAction(read_execution)
         if data_reader is not None:
             from backend.data_sources import connected_sources
             if data_relationship is not None:

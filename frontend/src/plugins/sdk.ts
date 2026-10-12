@@ -2,6 +2,7 @@ import type { ComponentType } from "react";
 import type { NodeSurfaceLevel, NodeTypeCatalogItem, WorldCard } from "../types/world";
 export type { TutorialDefinition, TutorialStep, TutorialText } from '../tutorials/types';
 export type { DataConsumer, DataSchema, DataQuery, Dataset, DataSourceHost } from './dataSources';
+export type { ExecutionNode, ExecutionSnapshot, ExecutionSourceHost } from './executionSources';
 export type { NodePresentation, NodeSurfaceLevel, PluginStateSpec } from "../types/world";
 export { SchemaFields } from "./SchemaFields";
 export { CardFace, CardStock } from '../components/CardFace';
@@ -14,13 +15,15 @@ export { NetworkMap } from '../graph/NetworkMap';
 export type { NetworkMapProps } from '../graph/NetworkMap';
 export type { NetworkData, NetworkNode, NetworkEdge, NetworkMapHandle } from '../graph/types';
 export { useFileViewer } from "../state/openFiles";
-export type { FileReference, OpenedFile } from "../state/openFiles";
+export type { FileReference, OpenedFile, FileOpenOptions } from "../state/openFiles";
 export { WorkspaceSection, useWorkspaceSections } from "../workspace/WorkspaceSection";
 export type { WorkspaceSectionProps } from "../workspace/WorkspaceSection";
 export { ApplicationSurface, WorkspacePanel, WorkspaceToolbar, WorkspaceEmptyState } from '../workspace/WorkspacePrimitives';
 export { IconButton } from '../components/IconButton';
 export { Modal } from '../components/Modal';
 export type { WorkspaceLayoutMetadata } from "../workspace/workspaceLayoutMetadata";
+export { useWorkspaceNavigation } from '../workspace/WorkspaceNavigation';
+export type { WorkspaceNavigation } from '../workspace/WorkspaceNavigation';
 export { composeWorkspace } from "../legions/workspaceRecipes";
 export type { WorkspaceCompositionItem, WorkspaceCompositionOptions, WorkspaceRecipe } from "../legions/workspaceRecipes";
 
@@ -143,7 +146,11 @@ export interface PluginViewProps {
   definition: NodeTypeCatalogItem;
   level: NodeSurfaceLevel;
   host: {
+    /** Only on workspace surfaces. Presentation only; defaults to this card.
+     * Does not save layout, grant access or interrupt layout editing. */
+    workspace?: { activate(view?: { card_id?: string; section_id?: string }): boolean };
     dataSources?: import('./dataSources').DataSourceHost;
+    executionSources?: import('./executionSources').ExecutionSourceHost;
     /** Optional transient UI draft, isolated by the host's card/state scope/session.
      * Survives surface unmount; never written to durable state or preferences.
      * Clear with undefined after save/cancel. Older hosts may omit this capability. */
@@ -182,7 +189,7 @@ export interface PluginViewProps {
     transform(operation: string, request: Record<string, unknown>): Promise<Record<string, unknown>>;
     documentDownloadUrl(name: string, nodeId?:string): string;
     readFile(reference: import("../state/openFiles").FileReference, signal?: AbortSignal): Promise<{ name: string; size_bytes: number; data: string }>;
-    openFile(reference: import("../state/openFiles").FileReference, name: string): void;
+    openFile(reference: import("../state/openFiles").FileReference, name: string, options?: import('../state/openFiles').FileOpenOptions): void;
     clearOpenedFile(): void;
     openInputNode?(type: string, name: string, source: { filename: string; source_base64: string }, relationship?: string): Promise<void>;
   };

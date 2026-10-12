@@ -13,6 +13,7 @@ from backend.errors import GraphValidationError, PluginCompatibilityError, Plugi
 from backend.plugins.lifecycle import NodeLifecycleHandler
 from backend.plugins.resources import NodeResourceAction
 from backend.plugins.data_sources import NodeDataConsumer, NodeDataSource
+from backend.plugins.execution_graph import NodeExecutionSource
 from backend.plugins.template import NodeTemplateHandler
 from backend.plugins.presets import LegionPresetDefinition
 from backend.plugins.tutorials import Tutorials, validate_tutorials
@@ -31,7 +32,7 @@ from backend.plugins.deployment import NodeDeploymentDefinition
 from backend.plugins.containers import NodeContainerDefinition
 from backend.plugins.execution import NodeExecutionDefinition
 
-PLUGIN_API_VERSION = "1.28"
+PLUGIN_API_VERSION = "1.30"
 _IDENTIFIER = re.compile(r"^[a-z][a-z0-9]*(?:[._:/-][a-z0-9]+)*$")
 _API_VERSION = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 
@@ -330,6 +331,7 @@ class NodeTypeDefinition:
     document: NodeDocumentDefinition | None = None
     resource_actions: Mapping[str, NodeResourceAction] = field(default_factory=dict)
     data_source: NodeDataSource | None = None
+    execution_source: NodeExecutionSource | None = None
     data_consumer: NodeDataConsumer | None = None
     # Native state with no browser snapshot must never masquerade as undoable.
     deletion_warning: str | None = None
@@ -474,6 +476,8 @@ class PluginRegistration:
         self._add(self.assets, asset.id, asset, "asset")
 
     def register_node_type(self, definition: NodeTypeDefinition) -> None:
+        if 'core.agent' in definition.traits or definition.summoning or definition.execution_source:
+            definition = replace(definition, traits=definition.traits | frozenset({'core.execution-source'}))
         self._add(self.nodes, definition.id, definition, "node type")
 
     def register_relationship(self, definition: RelationshipDefinition) -> None:

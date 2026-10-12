@@ -48,6 +48,16 @@ class AgentConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class RuntimeModelConnection:
+    """Run-local model credentials for trusted runtime adapters; never persist."""
+
+    model: str
+    adapter: str = "legacy"
+    base_url: str = ""
+    api_key: str = field(default="", repr=False)
+
+
+@dataclass(frozen=True, slots=True)
 class AgentInfo:
     config: AgentConfig
     status: AgentStatus

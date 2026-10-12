@@ -424,6 +424,12 @@ export const worldApi = {
   async dataSources(id: string): Promise<{sources: {id: string; name: string; type: string}[]}> {
     return request(`/nodes/${encodeURIComponent(id)}/data-sources`);
   },
+  async executionSources(id: string): Promise<{sources: {id: string; name: string; type: string}[]}> {
+    return request(`/nodes/${encodeURIComponent(id)}/execution-sources`);
+  },
+  async executionSnapshot(id: string, source: string, sessionId: string | null): Promise<import('../plugins/executionSources').ExecutionSnapshot> {
+    return request(`/nodes/${encodeURIComponent(id)}/execution-sources/${encodeURIComponent(source)}`, { headers: stateSessionHeaders(sessionId) });
+  },
   async dataSourceSchemas(id: string, source: string, relationship: string): Promise<{schemas: import('../plugins/dataSources').DataSchema[]; truncated?: boolean}> {
     return request(`/nodes/${encodeURIComponent(id)}/data-source-schemas`, {
       method: 'POST', body: JSON.stringify({source_id: source, relationship}),

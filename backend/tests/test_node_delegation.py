@@ -55,9 +55,14 @@ class ResearchRuntime(RecordingProvider):
 async def research(tmp_path):
     registry = load_plugin_registry()
     runtime = ResearchRuntime()
-    install_test_plugin(registry, "test.research", lambda r: r.register_runtime_provider("test.research", lambda _: runtime))
+    from backend.tests import research_tasks
+    def register(registration):
+        registration.register_runtime_provider("test.research", lambda _: runtime)
+        research_tasks.register(registration)
+        registration.register_legion_preset(research_tasks.preset())
+    install_test_plugin(registry, "test.research", register)
     services = create_services(replace(Settings.for_data_root(tmp_path), agent_runtime="test.research"), plugins=registry)
-    instance = await services.instantiate_legion("matcreator.research", LegionInstantiate(), record=preset_record("matcreator.research", registry))
+    instance = await services.instantiate_legion("test.research.fixture", LegionInstantiate(), record=preset_record("test.research.fixture", registry))
     ids = instance.node_ids
     board = read_document(services, ids["tasks"])
     await invoke_document_action(services, ids["tasks"], "create_plan", DocumentActionRequest(expected_revision=board["revision"], arguments={
@@ -269,7 +274,7 @@ async def test_summoning_wait_timeout_and_followup_retain_private_context(resear
 @pytest.mark.asyncio
 async def test_research_board_adopts_legacy_data_once_and_session_creation_stays_lazy(research):
     services, ids, _, _ = research
-    board = await services.create_card(CardCreate(type="matcreator.tasks", parent_id=ids["group"], name="Existing research"))
+    board = await services.create_card(CardCreate(type="test.research.tasks", parent_id=ids["group"], name="Existing research"))
     value = read_document(services, ids["tasks"])["value"]
     value["plans"][0]["session_id"] = "old-descriptive-label"
     legacy = services.state.ensure_scope("node_document", board.id, schema_id="core.node_document")
@@ -287,7 +292,7 @@ async def test_research_board_adopts_legacy_data_once_and_session_creation_stays
     assert current.state_scope_override is None
     assert services.plugins.node_type(board.type).state.user_configurable is False
     # A legacy descriptive label survives, but new tools never request a session key.
-    from oaw_matcreator.tasks import CreatePlan
+    from backend.tests.research_tasks import CreatePlan
     assert "session_id" not in CreatePlan.model_json_schema()["properties"]
 
 

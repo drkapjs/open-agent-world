@@ -41,6 +41,7 @@ class EventType(StrEnum):
     RUN_FAILED = "run_failed"
     RUN_CANCELLED = "run_cancelled"
     RUN_INTERRUPTED = "run_interrupted"
+    EXECUTION_UPDATED = "execution_updated"
     STATE_CREATED = "state_created"
     STATE_UPDATED = "state_updated"
     STATE_DELETED = "state_deleted"

@@ -15,7 +15,7 @@ test('standalone builtin content in narrow and wide light and dark containers', 
   page.on('pageerror', error => errors.push(error.message));
   for (const [type, name, selector] of [
     ['agent', 'Research agent', '.agent-window-body'],
-    ['matcreator.tasks', 'Research tasks', '[aria-label="Research task board"]'],
+    ['core.execution-graph', 'Agent graph', '[aria-label="Execution graph"]'],
     ['data.sqlite', 'Research database', '.sqlite-app'],
     ['data.visualization.line', 'Thermal measurements', '.viz-app'],
     ['science.structure-viewer', 'Atomic structure', '.structure-viewer'],

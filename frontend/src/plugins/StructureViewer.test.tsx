@@ -5,10 +5,10 @@ import { useOpenFiles } from "../state/openFiles";
 import { useWorldStore } from "../state/worldStore";
 import { ConversationAttachments } from "../cards/ConversationAttachments";
 import plugin from "../../../plugins/structure_viewer/frontend/index";
-import { renderStructure } from "../../../plugins/structure_viewer/frontend/render";
+import { renderStructure, parseStructure } from "../../../plugins/structure_viewer/frontend/render";
 import type { PluginViewProps } from "./sdk";
 
-vi.mock("../../../plugins/structure_viewer/frontend/render", () => ({ renderStructure: vi.fn(() => vi.fn()) }));
+vi.mock("../../../plugins/structure_viewer/frontend/render", () => ({ parseStructure: vi.fn(() => ({})), renderStructure: vi.fn(() => vi.fn()) }));
 const props = { card: { id: "viewer" }, host: { readFile: vi.fn() }, level: "workspace" } as unknown as PluginViewProps;
 const Viewer = plugin.views.viewer;
 const open = (path: string) => useOpenFiles.getState().open({ kind: "sandbox", source_id: "source", root: "workspace", path }, path);
@@ -45,4 +45,28 @@ it("opens Conversation files without starting a download", () => {
   expect(useOpenFiles.getState().sources.room.reference).toEqual({ kind: "conversation", source_id: "room",
     session_id: "session", version_id: "version", path: "cell.cif" });
   expect(screen.getByRole("link", { name: "Download cell.cif" }).getAttribute("download")).toBe("cell.cif");
+});
+
+it('reveals only a newly opened, parsed structure before mounting and acknowledges its preview', async () => {
+  const activate = vi.fn(() => true), onReveal = vi.fn();
+  const host = { ...props.host, workspace: { activate } };
+  vi.mocked(props.host.readFile).mockResolvedValue({ name: 'cell.cif', data: '', size_bytes: 0 });
+  open('existing.cif');
+  render(<Viewer {...props} host={host} />);
+  await waitFor(() => expect(renderStructure).toHaveBeenCalledOnce());
+  expect(activate).not.toHaveBeenCalled();
+  act(() => useOpenFiles.getState().open({ kind: 'sandbox', source_id: 'source', root: 'workspace', path: 'new.cif' }, 'new.cif', { onReveal }));
+  await waitFor(() => expect(activate).toHaveBeenCalledOnce());
+  expect(onReveal).toHaveBeenCalledOnce();
+  await waitFor(() => expect(renderStructure).toHaveBeenCalledTimes(2));
+  fireEvent.click(screen.getByRole('button', { name: 'Reload' }));
+  await waitFor(() => expect(renderStructure).toHaveBeenCalledTimes(3));
+  expect(activate).toHaveBeenCalledOnce();
+  act(() => open('readme.txt'));
+  await screen.findByRole('alert');
+  expect(activate).toHaveBeenCalledOnce();
+  vi.mocked(parseStructure).mockImplementationOnce(() => { throw new Error('Invalid structure'); });
+  act(() => open('invalid.json'));
+  await screen.findByText('Invalid structure');
+  expect(activate).toHaveBeenCalledOnce();
 });

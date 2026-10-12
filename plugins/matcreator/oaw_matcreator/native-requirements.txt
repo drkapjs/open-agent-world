@@ -1,0 +1,9 @@
+# Pack-owned orchestration dependencies, installed by the normal OAW plugin setup.
+# Scientific executables belong to Sandbox cards.
+google-adk==2.8.0
+litellm==1.98.0
+know-do-graph==0.1.9
+a2a-sdk==0.3.25
+json-repair==0.64.0
+PyYAML>=6,<7
+requests>=2.31,<3

@@ -16,6 +16,8 @@ import { useLegionWorkspace } from '../state/legionWorkspace';
 import { WorkspaceSurfaceContext } from './WorkspaceSurfaceContext';
 import type { PluginSlot, PluginViewProps } from "./sdk";
 import { useWorkspaceAccess } from "../workspace/WorkspaceAccess";
+import { useWorkspaceNavigation } from '../workspace/WorkspaceNavigation';
+import { useExecutionSources } from './executionSources';
 
 import { PrintedCardView } from '../factory/PrintedCardView';
 
@@ -34,6 +36,8 @@ export function PluginSurface({ card, slot, level, children }: {
   const access = useWorkspaceAccess();
   const sessionId = useCardStateSession(card.id);
   const inWorkspace = useContext(WorkspaceSurfaceContext);
+  const navigation = useWorkspaceNavigation();
+  const executionSources = useExecutionSources(card.id, access.deployed);
   const covered = useLegionWorkspace(s => Boolean(s.activeId));
   const definition = useWorldStore((s) => s.catalog.node_types.find((d) => d.id === card.type));
   const runtime = useWorldStore((s) => definition ? s.catalog.frontend_modules?.[definition.plugin_id] : undefined);
@@ -41,6 +45,8 @@ export function PluginSurface({ card, slot, level, children }: {
   const source = useWorldStore(s=>xrdCanvasSource(card,s.cards,s.edges));
   const viewCard = useMemo(()=>source?{...card,config:{...card.config,source_node_id:source}}:card,[card,source]);
   const host = useMemo<PluginViewProps["host"]>(() => ({
+    executionSources,
+    workspace: inWorkspace && navigation ? { activate: view => navigation.activate({ ...view, card_id: view?.card_id ?? card.id }) } : undefined,
     dataSources: access.deployed ? undefined : {
       list: () => worldApi.dataSources(card.id),
       schemas: source => worldApi.dataSource(card.id, source, 'schemas', {}),
@@ -162,7 +168,7 @@ export function PluginSurface({ card, slot, level, children }: {
     delegationAction: (action, arguments_) => worldApi.nodeDelegationAction(card.id, action, arguments_, sessionId ?? null),
     resourceAction: (action, arguments_, confirm) => worldApi.nodeResourceAction(card.id, action, arguments_, confirm, sessionId ?? null),
     readFile: (reference, signal) => worldApi.readFilePreview(card.id, reference, signal),
-    openFile: (reference, name) => useOpenFiles.getState().open({ ...reference, source_id: card.id }, name),
+    openFile: (reference, name, options) => useOpenFiles.getState().open({ ...reference, source_id: card.id }, name, options),
     openInputNode: async (type, name, source, relationship) => {
       // Reuse an imported source by exact bytes, including after a page reload.
       const state = useWorldStore.getState();
@@ -196,7 +202,7 @@ export function PluginSurface({ card, slot, level, children }: {
       state.selectCards([target.id], { syncCanvas: true });
     },
     clearOpenedFile: () => useOpenFiles.getState().clear(card.id),
-  }), [card.id, card.state_scope, source, updateCard, access, definition, sessionId]);
+  }), [card.id, card.state_scope, source, updateCard, access, definition, sessionId, inWorkspace, navigation, executionSources]);
   const reference = definition?.frontend?.[slot];
   if (covered && !inWorkspace && card.type.startsWith('xrd.')) return null;
   if (!reference || !definition) return <>{children}</>;

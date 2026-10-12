@@ -1,11 +1,14 @@
 [project]
 name = "oaw-matcreator"
-version = "0.4.0"
+version = "0.5.0"
 requires-python = ">=3.11"
 dependencies = ["pydantic>=2.11,<3"]
 
 [project.entry-points."open_agent_world.plugins"]
 matcreator = "oaw_matcreator:create_plugin"
+
+[project.entry-points."open_agent_world.setup"]
+native = "oaw_matcreator.native_environment:install"
 
 [build-system]
 requires = ["hatchling"]

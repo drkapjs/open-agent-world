@@ -10,7 +10,7 @@ from backend.conversations.models import ConversationSessionCreate
 from backend.errors import PermissionDeniedError
 from backend.node_documents import DocumentActionRequest, invoke_document_action, read_document, write_document
 from backend.services import create_services
-from plugins.matcreator.tests.test_delegation import research, until, dispatch_args
+from backend.tests.test_node_delegation import research, until, dispatch_args
 
 
 @pytest.mark.asyncio

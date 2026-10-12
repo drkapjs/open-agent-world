@@ -1,4 +1,8 @@
-"""A research task ledger. Execution and cancellation remain owned by OAW Runs."""
+"""Test-only multi-plan plugin for host delegation, review and recovery contracts.
+
+The retired MatCreator task-board schema remains solely as a demanding host
+fixture. Production MatCreator uses its native runtime and execution projection.
+"""
 from typing import Literal
 from uuid import uuid4
 import hashlib
@@ -217,7 +221,7 @@ def register(registration):
         "remove_task": (RemoveTask, remove_task, "Remove a task with no dependent references. This does not cancel execution or delete output files."),
     }
     for operation, (model, handler, description) in operations.items():
-        kind = "matcreator.tasks." + operation
+        kind = "test.research.tasks." + operation
         is_read = operation == "read"
         schema = model.model_json_schema()
         if not is_read:
@@ -235,8 +239,8 @@ def register(registration):
     # Canvas previews need no task descriptions, dependency lists or execution collection.
     actions["summary"] = NodeDocumentAction(
         preview_summary,
-        capability_kind="matcreator.tasks.read", read_only=True, project=True)
-    delegation_kind = "matcreator.tasks.delegate"
+        capability_kind="test.research.tasks.read", read_only=True, project=True)
+    delegation_kind = "test.research.tasks.delegate"
     # One control grant with bounded operations; host validates each operation's inputs.
     delegate_schema = {
         "type": "object", "properties": {
@@ -272,22 +276,47 @@ def register(registration):
             "Successful execution becomes review, not done: inspect outputs and update_task with verified evidence. "
             "stop requires instance_id. Task edits alone never stop execution."), delegate)
     registration.register_node_type(NodeTypeDefinition(
-        id="matcreator.tasks", label="Research task board", description="Plan research steps, track dependencies and preserve verified results.",
+        id="test.research.tasks", label="Research task board", description="Plan research steps, track dependencies and preserve verified results.",
         icon="workflow", color="#8ba69c", deck_id="tools", deck_label="Tools", deck_icon="boxes",
         default_name="Research tasks", default_size=(640, 520), default_status="available",
         statuses=frozenset({"available"}), config_model=Model, templateable=True,
         traits=frozenset({"ui.content-surface.v1"}),
         state=ScopedStateSpec(supportedScopes=("shared", "session"), defaultScope="session"),
         surfaces={"preview": True, "inspector": True, "workspace": True},
-        frontend={"preview": "tasks-preview", "body": "tasks", "workspace": "tasks"},
         document=NodeDocumentDefinition(model=Board, initial_value={"plans": []}, actions=actions,
             summarize=summary, capture=capture, max_size_bytes=1024 * 1024),
         execution=NodeExecutionDefinition(items=work_items, apply_outcome=apply_outcome,
             policy=lambda value: ExecutionPolicy(max_parallel=4, pause_on_failure=False),
             executor_relationship="", control_capability_kind=delegation_kind, summoning=True)))
     for suffix, names, label in (("view", ["read"], "Read tasks"), ("manage", list(operations), "Manage tasks")):
-        registration.register_relationship(RelationshipDefinition(id="matcreator.tasks." + suffix,
+        registration.register_relationship(RelationshipDefinition(id="test.research.tasks." + suffix,
             label=label, short_label="tasks", description="Read research tasks." if suffix == "view" else "Plan research and record task progress and evidence.",
-            source_traits=frozenset({"core.agent"}), target_types=frozenset({"matcreator.tasks"}), templateable=True,
-            capabilities=tuple(CapabilityGrantDefinition(kind="matcreator.tasks." + name) for name in names)
+            source_traits=frozenset({"core.agent"}), target_types=frozenset({"test.research.tasks"}), templateable=True,
+            capabilities=tuple(CapabilityGrantDefinition(kind="test.research.tasks." + name) for name in names)
                 + ((CapabilityGrantDefinition(kind=delegation_kind),) if suffix == "manage" else ())))
+
+
+def preset():
+    from open_agent_world.plugin_api import LegionPresetDefinition, PresetNode, PresetEdge
+    from plugins.matcreator.oaw_matcreator.preset import initial_knowledge
+    nodes = (
+        PresetNode(key="group", type="legion", name="Research fixture", parent_key=None, config={"mode": "group"}),
+        PresetNode(key="agent", type="agent", name="Coordinator"),
+        PresetNode(key="summoning", type="oaw.barracks.summoner", name="Summoning", parent_key=None,
+                   owner_key="agent", equipment_relationship="oaw.barracks.use"),
+        PresetNode(key="barracks", type="oaw.barracks", name="Research Executors", initial_document={
+            "name": "Research Executors", "instructions": "Research fixture", "policy": {"max_depth": 1, "max_concurrent": 4, "max_instances": 16}}),
+        PresetNode(key="executor", type="agent", name="Research Executor", parent_key="barracks"),
+        PresetNode(key="conversation", type="conversation", name="Conversation"),
+        PresetNode(key="sandbox", type="sandbox", name="Compute"),
+        PresetNode(key="tasks", type="test.research.tasks", name="Tasks"),
+        PresetNode(key="artifacts", type="core.artifact-collection", name="Artifacts"),
+        PresetNode(key="knowledge", type="matcreator.kdg", name="Knowledge", initial_document=initial_knowledge()),
+    )
+    edges = [PresetEdge(source="agent", target=target, relationship=relationship) for target, relationship in (
+        ("conversation", "participate"), ("sandbox", "execute_manage"), ("tasks", "test.research.tasks.manage"),
+        ("knowledge", "matcreator.kdg.learn"), ("artifacts", "artifact.manage"))]
+    edges.append(PresetEdge(source="summoning", target="barracks", relationship="oaw.barracks.summon"))
+    edges.extend(PresetEdge(source="executor", target=target, relationship=relationship) for target, relationship in (
+        ("sandbox", "execute"), ("knowledge", "matcreator.kdg.use"), ("artifacts", "artifact.publish")))
+    return LegionPresetDefinition(id="test.research.fixture", name="Research fixture", nodes=nodes, edges=tuple(edges))

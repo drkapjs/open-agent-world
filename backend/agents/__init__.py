@@ -16,9 +16,11 @@ from .models import (
     AgentStatus,
     ScopedToolDefinition,
     ToolParameter,
+    RuntimeModelConnection,
 )
 
 __all__ = [
+    "RuntimeModelConnection",
     "AgentCapabilityProvider",
     "AgentConfig",
     "AgentConfigurationError",

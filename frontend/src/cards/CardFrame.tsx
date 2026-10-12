@@ -1,3 +1,4 @@
+import { ExecutionGraphCard } from './ExecutionGraph';
 import { isMissingCard, MissingPlugin } from "./MissingPlugin";
 import { CardLODView } from './CardLODView';
 import { useCardRenderLOD } from '../canvas/useCardRendering';
@@ -51,6 +52,7 @@ const NON_DRAG_SELECTOR = "button, input, textarea, select, label, a, summary, [
 interface BodyProps { card: WorldCard; level: NodeSurfaceLevel }
 
 const BODIES: Partial<Record<CardType, ComponentType<BodyProps>>> = {
+  'core.execution-graph': ExecutionGraphCard,
   agent: AgentCardBody,
   conversation: ConversationCardBody,
   text: TextCardBody,

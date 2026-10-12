@@ -20,26 +20,43 @@ function Viewer({ card, host, level }: PluginViewProps) {
   const [reload, setReload] = useState(0);
   const source = sources.find(item => item.id === file?.reference.source_id);
   const active = level === "inspector" || level === "workspace";
+  // Only new open-file intent may reveal the viewer. Mount, refresh, reconnect
+  // and pinned previews must not steal focus from the user's current tab.
+  const observedSequence = useRef(file?.sequence ?? 0);
+  const connections = sources.map(source => source.id).sort().join('\0');
+  const previous = useRef({ connections, pinned });
   useEffect(() => {
     const controller = new AbortController();
     let dispose: (() => void) | undefined;
     setError(""); setStatus("");
+    const following = previous.current.connections === connections && !previous.current.pinned && !pinned;
+    previous.current = { connections, pinned };
     if (!active || !file || !target.current) return;
+    const reveal = following && file.reveal !== false && file.sequence > observedSequence.current;
+    observedSequence.current = Math.max(observedSequence.current, file.sequence);
     if (!supported(file.name)) { setError(t("This file is not a supported structure. Open CIF, POSCAR, XYZ, or structure JSON.")); return; }
     const container = target.current;
     setStatus(t("Loading structure…"));
     void (async () => {
       const content = await host.readFile(file.reference, controller.signal);
       if (controller.signal.aborted) return;
-      const { renderStructure } = await import("./render");
+      const { renderStructure, parseStructure } = await import("./render");
       if (controller.signal.aborted) return;
-      dispose = renderStructure(container, content, message => { if (!controller.signal.aborted) setError(message); });
+      const structure = parseStructure(content);
+      if (reveal && host.workspace?.activate()) {
+        file.onReveal?.();
+        // Let the host attach and size the activated pane before the 3D camera
+        // observes its viewport. Parsing remains the gate for navigation.
+        await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+      }
+      if (controller.signal.aborted) return;
+      dispose = renderStructure(container, content, message => { if (!controller.signal.aborted) setError(message); }, structure);
       setStatus("");
     })().catch(error => {
       if (!controller.signal.aborted) { setError(error instanceof Error ? error.message : String(error)); setStatus(""); }
     });
     return () => { controller.abort(); dispose?.(); };
-  }, [file, host, reload, active]);
+  }, [file, host, reload, active, pinned, connections]);
   if (!active) return <p className="structure-summary">{file?.name ?? t("Connect a file source")}</p>;
   return <section className={`structure-viewer structure-viewer--${level}`} aria-label={t("Structure viewer")}>
     {file && <div className="structure-toolbar">

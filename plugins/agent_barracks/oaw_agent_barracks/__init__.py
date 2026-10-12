@@ -5,7 +5,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from open_agent_world.plugin_api import (
     CapabilityGrantDefinition, NodeContainerDefinition,
     NodeDocumentAction, NodeDocumentDefinition, NodeSummoningDefinition,
-    NodeTypeDefinition, PluginDescriptor, RelationshipDefinition,
+    NodeTypeDefinition, PluginDescriptor, RelationshipDefinition, NodeExecutionSource,
     SummoningAction, SummoningPolicy,
 )
 
@@ -23,7 +23,7 @@ class Config(BaseModel):
 
 
 class AgentBarracksPlugin:
-    descriptor = PluginDescriptor(id="oaw.barracks", version="0.3.0", plugin_api_version="1.22",
+    descriptor = PluginDescriptor(id="oaw.barracks", version="0.3.0", plugin_api_version="1.30",
         name="Agent Barracks", description="Reusable configured Agents with private equipment.")
 
     def register(self, registration):
@@ -44,6 +44,7 @@ class AgentBarracksPlugin:
             document=NodeDocumentDefinition(model=Barracks, initial_value={},
                 actions={"configure": NodeDocumentAction(lambda value, args: {**value, **args})}), **barracks_card))
         registration.register_node_type(NodeTypeDefinition(id="oaw.barracks.summoner", label="Summoning",
+            execution_source=NodeExecutionSource(kind="summoning-adapter"),
             description="Equip on an Agent, then connect this skill to an Agent Barracks to grant summons.",
             default_name="Summoning", default_size=(360, 235), traits=frozenset({"oaw.summoner"}), **skill_card))
         registration.register_relationship(RelationshipDefinition(id="oaw.barracks.use", label="Use Summoning", short_label="use",

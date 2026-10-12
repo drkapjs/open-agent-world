@@ -14,6 +14,7 @@ import { PublishFiles } from "./Artifacts";
 import { useTransferQueue } from '../files/TransferList';
 import { saveDownload } from '../files/transferQueue';
 import { WorkspaceSection, useWorkspaceSections } from "../workspace/WorkspaceSection";
+import { useWorkspaceNavigation } from '../workspace/WorkspaceNavigation';
 import { WorkspaceEmptyState } from "../workspace/WorkspacePrimitives";
 import "./sandboxWorkspace.css";
 
@@ -41,6 +42,7 @@ export function SandboxWorkspace({ card }: { card: WorldCard }) {
   const terminalAllowed = !deployed || permissions[card.id]?.includes("terminal");
   const filesAllowed = !deployed || permissions[card.id]?.some(p => p === "files" || p === "preview");
   const sections = useWorkspaceSections();
+  const navigation = useWorkspaceNavigation();
   const filesInline = sections.isInline("files");
   const previewInline = sections.isInline("preview");
   const terminalInline = sections.isInline("terminal");
@@ -217,10 +219,11 @@ export function SandboxWorkspace({ card }: { card: WorldCard }) {
     catch (e) { if (current()) setTree(s => ({ ...s, [key]: { state: "permission_denied", message: apiErrorMessage(e) } })); }
     finally { if (current()) setLoading(s => ({ ...s, [key]: false })); }
   }
-  async function select(root: string, path: string, label: string) {
+  async function select(root: string, path: string, label: string, reveal = true) {
     const current = fileRequest("preview");
     setSelection({ root, path, label }); setPreview(undefined);
-    useOpenFiles.getState().open({ kind: "sandbox", source_id: card.id, root, path }, label);
+    if (reveal) navigation?.activate({ card_id: card.id, section_id: 'preview' });
+    useOpenFiles.getState().open({ kind: "sandbox", source_id: card.id, root, path }, label, { reveal });
     try {
       const value = await worldApi.sandboxWorkspace<Files>(card.id, fileQuery("preview", root, path));
       if (current()) setPreview(value);
@@ -246,7 +249,7 @@ export function SandboxWorkspace({ card }: { card: WorldCard }) {
       useNodeSurfaceStore.getState().setDraft(staticPreviewKey, '');
     } else if (current) {
       const path = current.root === 'workspace' ? remap(current.path)! : current.path;
-      void select(current.root, path, current.label);
+      void select(current.root, path, current.label, false);
     }
     await refreshFiles();
   }

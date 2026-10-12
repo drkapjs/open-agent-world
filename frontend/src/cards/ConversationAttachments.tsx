@@ -18,7 +18,7 @@ export function ConversationAttachments({ conversationId, sessionId, files }: {
       const url = conversationAttachmentUrl(conversationId, sessionId, file);
       const isImage = ["image/png", "image/jpeg", "image/gif", "image/webp"].includes(file.media_type);
       const open = () => useOpenFiles.getState().open({ kind: "conversation", source_id: conversationId,
-        session_id: sessionId, version_id: file.version_id, path: file.path }, file.name);
+        session_id: sessionId, version_id: file.version_id, path: file.path }, file.name, { onReveal: () => setPreview(undefined) });
       return <div className="conversation-attachment" key={`${file.version_id}/${file.path}`}>
         {isImage ? <button type="button" className="conversation-image-thumbnail" aria-label={t("Preview {v0}", { v0: String(file.name) })} onClick={() => { open(); setPreview(file); }}>
           <img src={conversationAttachmentUrl(conversationId, sessionId, file, true)} alt={file.name} loading="lazy" />

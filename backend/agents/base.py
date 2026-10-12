@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Mapping, Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
-from .models import AgentConfig, AgentEvent, AgentInfo, ScopedToolDefinition
+from .models import AgentConfig, AgentEvent, AgentInfo, ScopedToolDefinition, RuntimeModelConnection
 
 if TYPE_CHECKING:
     from backend.runs.models import InvocationContext, RuntimeInput
@@ -21,6 +22,14 @@ class AgentCapabilityProvider(Protocol):
     """
 
     async def read_own_document(self, agent_id: str) -> dict[str, Any]: ...
+
+    def resolve_model(self, model: str) -> RuntimeModelConnection: ...
+
+    def runtime_state_directory(self, agent_id: str) -> Path: ...
+
+    async def publish_execution(self, agent_id: str, run_id: str, snapshot: Mapping[str, Any]) -> None:
+        """Publish a bounded ExecutionSnapshot for this runtime's current Run."""
+        ...
 
     async def list_tools(self, agent_id: str) -> Sequence[ScopedToolDefinition]: ...
 

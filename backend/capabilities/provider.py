@@ -300,8 +300,46 @@ class _CapabilityContext:
 class WorldAgentCapabilityProvider:
     """ADK-neutral adapter from scoped tools to live broker operations."""
 
+    def resolve_model(self, model):
+        from backend.agents.models import RuntimeModelConnection, AgentConfigurationError
+        from backend.security.model_connections import ModelConnectionStore, MODEL_REF_PREFIX
+        store = ModelConnectionStore(self.services.llm_settings)
+        if model == "oaw:default":
+            model = store.read().default_model
+        if not model:
+            raise AgentConfigurationError("Choose a default model in Settings / Models.")
+        if model.startswith(MODEL_REF_PREFIX):
+            adapter, model_id, base_url, api_key = store.resolve(model)
+            return RuntimeModelConnection(model_id, adapter, base_url or "", api_key or "")
+        options = store.legacy_options() or {}
+        return RuntimeModelConnection(model, base_url=options.get("api_base", ""), api_key=options.get("api_key", ""))
+
+    def runtime_state_directory(self, agent_id):
+        import hashlib
+        self.services.world.get_card(agent_id)
+        return self.services.settings.data_root / "runtime-state" / hashlib.sha256(agent_id.encode()).hexdigest()
+
     def __init__(self, services: ApplicationServices) -> None:
         self.services = services
+
+    async def publish_execution(self, agent_id, run_id, snapshot):
+        from backend.plugins.execution_graph import ExecutionSnapshot
+        manager = self.services._require_run_manager()
+        context = manager.current_context
+        if context is None or context.agent_id != agent_id or context.run_id != run_id:
+            raise ResourceValidationError('Execution projection requires the current agent run')
+        value = ExecutionSnapshot.model_validate({**snapshot, 'run_id': run_id}).model_dump(mode='json')
+        import json
+        if len(json.dumps(value).encode()) > 2 * 1024 * 1024:
+            raise ResourceValidationError('Execution projection exceeds 2 MiB')
+        async with self.services._node_mutation(read_only=True):
+            manager.store.update_lifecycle(run_id, execution_graph=value)
+        # Invalidate only: reads still recheck the live connection and session.
+        from backend.events.models import EventType
+        conversation_id, session_id = manager._conversation_scope(manager.get_run(run_id))
+        await self.services.events.publish(EventType.EXECUTION_UPDATED,
+            node_id=agent_id, agent_id=agent_id, run_id=run_id,
+            conversation_id=conversation_id, session_id=session_id)
 
     async def read_own_document(self, agent_id: str) -> dict[str, Any]:
         context = self.services._require_run_manager().current_context

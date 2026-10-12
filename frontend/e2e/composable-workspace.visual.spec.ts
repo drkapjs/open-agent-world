@@ -31,7 +31,7 @@ test.afterEach(async ({ request }) => {
 });
 
 for (const preset of [
-  { id: 'matcreator.research', name: 'MatCreator research', slug: 'matcreator' },
+  { id: 'matcreator.native-research', name: 'MatCreator native research', slug: 'matcreator' },
   { id: 'knowledge.base.research', name: 'Knowledge research', slug: 'knowledge' },
 ]) test(`${preset.slug} real workspace visual matrix`, async ({ page, request }) => {
   test.setTimeout(90_000);
@@ -56,7 +56,7 @@ for (const preset of [
     await document.click();
     await expect(app.locator('.knowledge-prose table')).toBeVisible();
   } else {
-    await expect(workspace.getByRole('region', { name: 'Research task board', exact: true })).toBeVisible();
+    await expect(workspace.getByRole('region', { name: 'Execution graph', exact: true })).toBeVisible();
   }
   for (const theme of ['light', 'dark']) {
     await page.evaluate(value => { document.documentElement.dataset.theme = value; }, theme);
@@ -107,32 +107,9 @@ for (const preset of [
     expect(await detachedContent.evaluate(element => element.scrollTop)).toBe(scrollPosition);
     await page.screenshot({ path: `${screenshotRoot}/knowledge-detached-sources-scrolled-dark-narrow.png` });
   } else {
-    const board = workspace.getByRole('region', { name: 'Research task board', exact: true });
-    await board.getByRole('button', { name: 'New plan', exact: true }).first().click();
-    await board.getByLabel('Plan title', { exact: true }).fill('Copper structure review');
-    await board.getByLabel('Research goal', { exact: true }).fill('Review the generated copper structure before acceptance.');
-    await board.getByRole('button', { name: 'Create plan', exact: true }).click();
-    await board.getByRole('button', { name: 'Add task', exact: true }).click();
-    await board.getByLabel('Task title', { exact: true }).fill('Verify copper atom count');
-    await board.getByLabel('Task details', { exact: true }).fill('Inspect the structure artifact and record evidence.');
-    await board.getByLabel('Acceptance criteria', { exact: true }).fill('Confirm 32 atoms and the intended cell dimensions.');
-    await board.getByRole('button', { name: 'Save task', exact: true }).click();
-    await board.getByRole('button', { name: '‹ Tasks', exact: true }).click();
-    const document = await (await request.get(`/api/nodes/${ids.tasks}/document`)).json();
-    const plan = document.value.plans[0];
-    expect((await request.post(`/api/nodes/${ids.tasks}/actions/update_task`, { data: {
-      expected_revision: document.revision, arguments: { plan_id: plan.id, task_id: plan.tasks[0].id,
-        status: 'review', result: 'Fixture result awaiting manual verification.' },
-    } })).ok()).toBe(true);
-    await expect(board.getByRole('region', { name: 'Awaiting review', exact: true })).toBeVisible();
-    await workspace.getByRole('button', { name: 'Back to canvas', exact: true }).click();
-    await expect(workspace).toBeHidden();
-    await open(page, ids.group, preset.name);
-    await board.getByRole('button', { name: 'Verify copper atom count', exact: true }).click();
-    await expect(board.getByText('Fixture result awaiting manual verification.', { exact: true })).toBeVisible();
-    await expect(board.getByText('Confirm 32 atoms and the intended cell dimensions.', { exact: true })).toBeVisible();
-    await expect(board.getByText('Executor finished. Verify the outputs and record evidence before marking this task done.')).toBeVisible();
-    await page.screenshot({ path: `${screenshotRoot}/matcreator-task-review-narrow.png` });
+    await workspace.getByRole('tab', { name: 'Skills & knowledge', exact: true }).click();
+    await expect(workspace.getByRole('region', { name: 'Know-Do Graph workspace', exact: true })).toBeVisible();
+    await page.screenshot({ path: `${screenshotRoot}/matcreator-knowledge-narrow.png` });
   }
   expect(errors).toEqual([]);
 });

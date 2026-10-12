@@ -86,7 +86,7 @@ function makeLeaf(views: WorkspaceView[], active: WorkspaceView): WorkspaceLeaf 
     : { kind: 'tabs', views, active_view: includesView(views, active) ? active : views[0] };
 }
 
-function leafForView(node: WorkspaceNode | null, view: WorkspaceView): WorkspaceLeaf | null {
+export function leafForView(node: WorkspaceNode | null, view: WorkspaceView): WorkspaceLeaf | null {
   if (!node) return null;
   return node.kind === 'split' ? leafForView(node.first, view) ?? leafForView(node.second, view)
     : includesView(paneViews(node), view) ? node : null;

@@ -14,13 +14,15 @@ import { useLegionWorkspace } from '../state/legionWorkspace';
 import { useWorldStore } from '../state/worldStore';
 import type { WorldCard } from '../types/world';
 import { WorkspaceSectionProvider, type WorkspaceSectionRegistration } from '../workspace/WorkspaceSection';
-import { activateTab, activePaneView, dockPane, dropSide, layoutMinimum, paneViews, readWorkspaceLayout, removePane, resizeSplit, retainPanes, stackPane, viewKey,
+import { activateTab, activePaneView, dockPane, dropSide, layoutMinimum, leafForView, paneViews, readWorkspaceLayout, removePane, resizeSplit, retainPanes, stackPane, viewKey,
   type DockSide, type WorkspaceLayout, type WorkspaceLeaf, type WorkspaceNode, type WorkspaceView } from './workspaceLayout';
 import './legionWorkspace.css';
 import { PublishApplication } from '../deployment/PublishApplication';
 import { WorkspaceSurfaceContext } from '../plugins/WorkspaceSurfaceContext';
 import { composeWorkspace, type WorkspaceRecipe } from './workspaceRecipes';
 import type { WorkspaceLayoutMetadata } from '../workspace/workspaceLayoutMetadata';
+import { WorkspaceNavigationContext, type WorkspaceNavigation } from '../workspace/WorkspaceNavigation';
+import { useWorkspaceAccess } from '../workspace/WorkspaceAccess';
 
 const CARD_MIME = 'application/x-oaw-workspace-view';
 type RegisteredSection = WorkspaceSectionRegistration & { card_id: string };
@@ -41,6 +43,7 @@ export function WorkspaceWindow({ card, locked = false, actions }: { card: World
   const catalog = useWorldStore(s => s.catalog);
   const updateCard = useWorldStore(s => s.updateCard);
   const close = useLegionWorkspace(s => s.close);
+  const access = useWorkspaceAccess();
   const members = useMemo(() => cards.filter(item => item.parent_id === card.id
     && item.type !== 'legion'
     && (!catalog.node_types.find(type => type.id === item.type)?.container
@@ -76,6 +79,8 @@ export function WorkspaceWindow({ card, locked = false, actions }: { card: World
   const mountedIds = useRef(new Set<string>());
   const dirty = !locked && JSON.stringify(draft) !== JSON.stringify(baseline);
   const root = useMemo(() => retainPanes(draft.root, memberIds), [draft, memberIds]);
+  const [revealed, setRevealed] = useState<WorkspaceView[]>([]);
+  const visibleRoot = useMemo(() => !root || editing ? root : revealed.reduce((tree, view) => activateTab(tree, view), root), [root, editing, revealed]);
   const placedViews = paneViews(root);
   const assigned = new Set(placedViews.map(viewKey));
   const unplaced = members.filter(member => !assigned.has(viewKey({ card_id: member.id })));
@@ -99,6 +104,7 @@ export function WorkspaceWindow({ card, locked = false, actions }: { card: World
     const name = members.find(member => member.id === view.card_id)?.name ?? view.card_id;
     return view.section_id ? `${name} · ${sections.get(viewKey(view))?.title ?? view.section_id}` : name;
   };
+  const viewLabel = (view: WorkspaceView) => view.section_id ? sections.get(viewKey(view))?.title ?? view.section_id : viewTitle(view);
   const viewLayout = useCallback((view: WorkspaceView) => {
     if (view.section_id) return sectionLayouts.current.get(view.card_id)?.get(view.section_id);
     const member = members.find(item => item.id === view.card_id);
@@ -201,6 +207,8 @@ export function WorkspaceWindow({ card, locked = false, actions }: { card: World
   };
   const activate = (view: WorkspaceView) => {
     if (!root || busy || savingRef.current || conflict) return;
+    const keys = new Set(paneViews(leafForView(root, view)).map(viewKey));
+    setRevealed(current => current.filter(item => !keys.has(viewKey(item))));
     const next = activateTab(root, view);
     if (JSON.stringify(next) === JSON.stringify(root)) return;
     changeRoot(next);
@@ -212,7 +220,26 @@ export function WorkspaceWindow({ card, locked = false, actions }: { card: World
     setSelected(view); setDragging(true);
   };
 
-  return <dialog ref={dialog} className="legion-workspace" data-presentation="application" data-legion-workspace={card.id} aria-label={t('{v0} workspace mode', { v0: card.name })}
+  // Stable host identity keeps subscriptions and in-flight reads intact.
+  const revealRef = useRef<WorkspaceNavigation['activate']>(() => false);
+  revealRef.current = requested => {
+    if (editing || busy || conflict || !memberIds.has(requested.card_id)) return false;
+    if (draft.hidden_sections.some(view => viewKey(view) === viewKey(requested))) return false;
+    if (access.deployed && requested.section_id && !access.permissions[requested.card_id]?.includes(requested.section_id)) return false;
+    if (requested.section_id && !sections.has(viewKey(requested))) return false;
+    const view = assigned.has(viewKey(requested)) ? requested : { card_id: requested.card_id };
+    if (!assigned.has(viewKey(view))) {
+      if (locked) return false;
+      setDrawerId(view.card_id);
+      return true;
+    }
+    const keys = new Set(paneViews(leafForView(root, view)).map(viewKey));
+    setRevealed(current => [...current.filter(item => !keys.has(viewKey(item))), view]);
+    return true;
+  };
+  const navigation = useMemo<WorkspaceNavigation>(() => ({ activate: view => revealRef.current(view) }), []);
+
+  return <WorkspaceNavigationContext.Provider value={navigation}><dialog ref={dialog} className="legion-workspace" data-presentation="application" data-legion-workspace={card.id} aria-label={t('{v0} workspace mode', { v0: card.name })}
     onCancel={event => { event.preventDefault(); if (event.target !== event.currentTarget) return; if (drawerCard) setDrawerId(null); else requestClose(); }} onKeyDown={event => event.stopPropagation()}
     onDragEnd={() => { setDragging(false); setSelected(null); }}>
     <header className="legion-window-titlebar" data-finish={normalizeCardFinish(card.finish)}>
@@ -299,10 +326,10 @@ export function WorkspaceWindow({ card, locked = false, actions }: { card: World
       </aside>}
       <main ref={stage} className="legion-layout-stage" aria-label={t('Workspace layout')}>
         <div className="legion-layout-root" style={{ minWidth: minimum.width, minHeight: minimum.height }}>
-          {root ? <LayoutRegion node={root} path="" members={members} hosts={hosts} viewTitle={viewTitle} viewLayout={viewLayout} editing={editing && !busy} resizable={!locked && !busy && !conflict} finishResize={finishResize} selected={selected} dragging={dragging}
+          {visibleRoot ? <LayoutRegion node={visibleRoot} path="" members={members} hosts={hosts} viewTitle={viewTitle} viewLabel={viewLabel} viewLayout={viewLayout} editing={editing && !busy} resizable={!locked && !busy && !conflict} finishResize={finishResize} selected={selected} dragging={dragging}
             stack={stack} activate={activate} selectable={!busy && !conflict}
             place={place} startDrag={startDrag} remove={remove} restore={restoreSection}
-            resize={(path, ratio) => changeRoot(resizeSplit(root, path, ratio))} />
+            resize={(path, ratio) => changeRoot(resizeSplit(root!, path, ratio))} />
             : <div className="legion-layout-empty" onDragOver={event => { if (editing && dragging) event.preventDefault(); }}
               onDrop={event => { event.preventDefault(); if (editing && selected && event.dataTransfer.getData(CARD_MIME) === viewKey(selected)) place(selected, null, 'right'); }}>
               <LayoutTemplate size={44} /><h2>{t('Build your workspace')}</h2>
@@ -348,7 +375,7 @@ export function WorkspaceWindow({ card, locked = false, actions }: { card: World
       member={member} host={surfaceHosts.current.get(viewKey({ card_id: member.id }))!} workspace={nodeSurfaceSupport(member.type, catalog).workspace}
       editing={editing && !busy} placedViews={placedViews} hiddenViews={draft.hidden_sections} register={registerSection}
       select={setSelected} startDrag={startDrag} hide={remove} />)}
-  </dialog>;
+  </dialog></WorkspaceNavigationContext.Provider>;
 }
 
 interface RegionProps {
@@ -358,6 +385,7 @@ interface RegionProps {
   hosts: Map<string, HTMLDivElement>;
   node: WorkspaceNode; path: string; members: WorldCard[]; editing: boolean; selected: WorkspaceView | null; dragging: boolean;
   viewTitle: (view: WorkspaceView) => string;
+  viewLabel: (view: WorkspaceView) => string;
   viewLayout: (view: WorkspaceView) => WorkspaceLayoutMetadata | undefined;
   place: (view: WorkspaceView, target: WorkspaceView, side: DockSide) => void;
   startDrag: (event: DragEvent, view: WorkspaceView) => void;
@@ -409,7 +437,7 @@ function LayoutRegion(props: RegionProps) {
   </div>;
 }
 
-function WorkspacePane({ leaf, members, hosts, viewTitle, editing, selected, dragging, place, stack, activate, selectable, startDrag, remove, restore }: RegionProps & { leaf: WorkspaceLeaf }) {
+function WorkspacePane({ leaf, members, hosts, viewTitle, viewLabel, editing, selected, dragging, place, stack, activate, selectable, startDrag, remove, restore }: RegionProps & { leaf: WorkspaceLeaf }) {
   const view = activePaneView(leaf), id = viewKey(view);
   const views = paneViews(leaf);
   const catalog = useWorldStore(s => s.catalog);
@@ -473,7 +501,7 @@ function WorkspacePane({ leaf, members, hosts, viewTitle, editing, selected, dra
           return <span key={tabId} className={`legion-tab-item ${tabId === id ? 'is-active' : ''} ${dragging && tabHover === tabId ? 'is-drop-before' : ''}`} role="presentation" data-workspace-tab={tabId}>
             <button className="legion-workspace-tab" role="tab" id={`legion-tab-${tabId}`} aria-controls={`legion-panel-${tabId}`}
               aria-selected={tabId === id} aria-disabled={!selectable} tabIndex={tabId === id ? 0 : -1}
-              title={viewTitle(tabView)} draggable={editing}
+              title={viewTitle(tabView)} aria-label={viewTitle(tabView)} draggable={editing}
               onDragStart={event => startDrag(event, tabView)} onClick={() => activate(tabView)}
               onKeyDown={event => {
                 if (!selectable || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
@@ -482,7 +510,7 @@ function WorkspacePane({ leaf, members, hosts, viewTitle, editing, selected, dra
                 const buttons = tabs.current?.querySelectorAll<HTMLButtonElement>('[role="tab"]');
                 buttons?.[nextIndex]?.focus(); activate(views[nextIndex]);
               }}>
-              <CatalogIcon definition={tabDefinition} size={13} /><span>{viewTitle(tabView)}</span>
+              <CatalogIcon definition={tabDefinition} size={13} /><span>{viewLabel(tabView)}</span>
             </button>
             {editing && tabView.section_id && <button className="legion-tab-close" title={t('Restore to card')}
               aria-label={t('Restore {v0} to card', { v0: viewTitle(tabView) })} onClick={() => restore(tabView)}><ArrowLeft size={12} /></button>}

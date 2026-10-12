@@ -45,7 +45,7 @@ async function capture(page: Page, card: Locator, name: string) {
   }
 }
 
-for (const type of ['oaw.tasks', 'matcreator.tasks', 'science.structure-viewer']) {
+for (const type of ['oaw.tasks', 'science.structure-viewer']) {
   test(`${type} content surface preserves drag and actions`, async ({ page, request }) => {
     test.setTimeout(90_000);
     const profile = await (await request.get('/api/application')).json();
@@ -104,13 +104,6 @@ for (const type of ['oaw.tasks', 'matcreator.tasks', 'science.structure-viewer']
           { id: 'report', title: 'Write the research report', depends_on: ['compare'] },
         ] } } })).ok()).toBe(true);
         await expect(card.getByRole('button', { name: 'Edit task Compare stable candidates', exact: true })).toBeVisible();
-      } else if (type === 'matcreator.tasks') {
-        expect((await request.post(`/api/nodes/${node.id}/actions/create_plan`, { data: { expected_revision: 0, arguments: { title: 'Solid electrolyte screening', goal: 'Compare structure stability and transport evidence.', tasks: [
-          { id: 'sources', title: 'Collect reference structures', status: 'done', result: 'Verified source structures and citations.' },
-          { id: 'compare', title: 'Compare stable candidates', status: 'review', depends_on: ['sources'] },
-          { id: 'report', title: 'Write the research report', depends_on: ['compare'] },
-        ] } } })).ok()).toBe(true);
-        await expect(card.getByRole('button', { name: 'Compare stable candidates', exact: true })).toBeVisible();
       } else {
         await page.getByRole('button', { name: 'Fit view', exact: true }).click();
         const source = page.locator(`[data-card-id="${sourceId}"]`);

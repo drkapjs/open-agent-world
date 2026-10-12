@@ -110,6 +110,37 @@ Do not conceal a section to make a narrow pane look cleaner. The official
 Conversation stacks its content; Files stacks its tree and preview. Charts and
 maps retain their existing renderers and resize handling.
 
+## Activate content after an operation
+
+Workspace surfaces receive the optional `host.workspace.activate(view?)` API.
+Use it after a user operation makes content available:
+
+```tsx
+const result = await host.documentAction('inspect', { entry_id });
+setResult(result.value);
+host.workspace?.activate({ section_id: 'details' });
+// Omit the argument to reveal this card, or pass card_id for another member.
+```
+
+It returns whether the current workspace can reveal the target. Placed sections
+activate their existing tab; inline sections reveal the owning card; unplaced
+cards open their drawer. It does not create tabs, recompose/save geometry, open
+another workspace or grant resource access. Unknown/hidden sections, nonmembers,
+unavailable deployed sections and requests during layout editing are rejected.
+Use `useWorkspaceNavigation()` for the same contract in built-in React content.
+Existing saved layouts remain authoritative; activation is transient browser UI.
+
+Call it for an explicit operation, not from background polling, mount or every
+state update. Keep the card's original React owner and `WorkspaceSection` host.
+Guard asynchronous results against a newer selection or a revoked connection.
+
+Sandbox selection reveals its `preview` section. Structure Viewer requests its
+card only after a newly opened file parses successfully. `host.openFile` accepts
+optional `{ reveal: false }` for background refresh, and `onReveal` to dismiss a
+temporary preview after a connected viewer successfully reveals its workspace
+tab. The shared `useFileViewer` returns this browser-local intent with the file;
+read authorization remains enforced by `host.readFile` and the backend.
+
 ## Optional sizing metadata
 
 Python declares whole-card content needs independently of canvas `sizes`:

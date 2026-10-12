@@ -13,6 +13,7 @@ import { ReactFlowProvider } from "@xyflow/react";
 import type { ComponentProps } from "react";
 import { WorldCardNode } from "./CardFrame";
 import { WorkspaceSectionProvider, type WorkspaceSectionRegistration } from "../workspace/WorkspaceSection";
+import { WorkspaceNavigationContext } from '../workspace/WorkspaceNavigation';
 
 const card: WorldCard = { id: "sandbox-window", ...buildCardDraft("sandbox", { x: 0, y: 0 }), status: "ready" };
 const info: SandboxInfo = {
@@ -60,6 +61,14 @@ describe("Sandbox workspace interaction", () => {
     });
   });
   afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+
+  it('reveals its detached file preview on a direct file selection', async () => {
+    const activate = vi.fn(() => true);
+    render(<WorkspaceNavigationContext.Provider value={{ activate }}><Workspace /></WorkspaceNavigationContext.Provider>);
+    fireEvent.click(await screen.findByRole('button', { name: 'first.txt' }));
+    expect(activate).toHaveBeenCalledWith({ card_id: card.id, section_id: 'preview' });
+    await screen.findByText('Contents of first.txt');
+  });
 
   it('returns to the compact terminal view when loading a command preset', async () => {
     useWorldStore.setState({ cards: [{ ...card, config: { ...card.config, presets: { Inspect: 'pwd' } } }] });

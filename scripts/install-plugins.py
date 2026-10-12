@@ -13,6 +13,20 @@ import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 
+# Run hooks in the destination interpreter, including desktop --target builds.
+# Only the distributions explicitly selected for this installation can run hooks.
+SETUP_HOOKS = """
+import sys
+from importlib.metadata import distribution
+sys.path.insert(0, sys.argv[1])
+if sys.argv[3]:
+    sys.path.insert(0, sys.argv[3])
+for entry in distribution(sys.argv[2]).entry_points:
+    if entry.group == 'open_agent_world.setup':
+        print(f'Preparing {sys.argv[2]}: {entry.name}', flush=True)
+        entry.load()()
+"""
+
 
 def plugin_paths(directory: Path) -> list[Path]:
     return [manifest.parent for manifest in sorted(directory.glob("*/pyproject.toml"))
@@ -42,6 +56,12 @@ def main():
         for path in paths:
             command += ["--editable", str(path.resolve())]
     subprocess.run(command, cwd=ROOT, check=True)
+    if not args.dry_run:
+        for path in paths:
+            project = tomllib.loads((path / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+            if project.get("entry-points", {}).get("open_agent_world.setup"):
+                subprocess.run([args.python, "-c", SETUP_HOOKS, str(ROOT), project["name"],
+                                str(args.target.resolve()) if args.target else ""], cwd=ROOT, check=True)
 
 
 if __name__ == "__main__":
