@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Dict, List, Optional
 
@@ -14,6 +15,8 @@ from google.adk.tools.tool_context import ToolContext
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from ..execution_graph_state import get_execution_graph, set_execution_graph
+from ..consumed_inputs import ConsumedInput, validate_input_references
+from ..graph_logger import AgentGraphLogger
 
 logger = logging.getLogger(__name__)
 
@@ -139,6 +142,8 @@ class GraphNode(BaseModel):
     )
     status: NodeStatus = Field(default=NodeStatus.pending)
     result: Optional[str] = Field(default=None, description="Brief summary after completion or failure reason")
+    consumed_inputs: List[ConsumedInput] = Field(default_factory=list,
+        description="Exact inputs to deliver: prior successful step_id, same-plan predecessor node_id, or versioned artifact_ref. No inferred provenance.")
 
     @field_validator("suggested_skills")
     @classmethod
@@ -225,10 +230,19 @@ def validate_graph(graph: dict, tool_context: ToolContext) -> dict:
     try:
         validated = ExecutionGraph(**graph)
         committed_graph = validated.model_dump()
+        history = AgentGraphLogger(tool_context.state.get("session_id", "default"))
+        for key, node in committed_graph["nodes"].items():
+            if node["node_id"] != key:
+                raise ValueError("Graph node_id must match its mapping key")
+            node["consumed_inputs"] = validate_input_references(node["consumed_inputs"], history, committed_graph, key)
+            node["status"] = "pending"
+            node["result"] = None
         # Recovery records are keyed by session and node ID on disk.  A fresh
         # graph may legitimately reuse a node ID from an earlier failed plan,
         # so give every committed graph its own recovery namespace identity.
         committed_graph["graph_id"] = uuid.uuid4().hex
+        committed_graph["planning_id"] = tool_context.state.get("_graph_planning_node_id")
+        committed_graph["created_at"] = datetime.now(timezone.utc).isoformat()
         set_execution_graph(tool_context.state, committed_graph)
         tool_context.state["plan_exec_id"] = None  # force new execution namespace
         return {
@@ -282,6 +296,7 @@ def get_ready_nodes(tool_context: ToolContext) -> dict:
                 "label": node.get("label", node_id),
                 "action": node.get("action", ""),
                 "suggested_skills": node.get("suggested_skills", []),
+                "consumed_inputs": node.get("consumed_inputs", []),
             }
             # A node resumed from a remote-job handoff carries the job identity so
             # its executor re-attaches instead of submitting a duplicate job.

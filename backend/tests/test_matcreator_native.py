@@ -64,7 +64,9 @@ def test_native_projection_is_session_scoped_and_bridge_rechecks_revocation(clie
                     event = notifications.get_nowait()
                     assert event.type == 'execution_updated'
                     assert (event.node_id, event.run_id, event.session_id, event.conversation_id) == (ids['agent'], run.run_id, a, ids['conversation'])
-                    assert event.payload == {}  # Reads enforce authorization; no graph data is broadcast.
+                    # Notifications carry invalidation metadata, never graph content.
+                    assert set(event.payload) == {'history_id', 'revision'}
+                    assert event.payload['revision'] == 1
                     assert manager.get_run(run.run_id).lifecycle['execution_graph']['title'] == 'Copper'
             finally:
                 _current_invocation.reset(token)

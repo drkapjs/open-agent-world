@@ -22,6 +22,7 @@ from open_agent_world.plugin_api import (
 from open_agent_world.plugin_api.tool_execution import execute_tool
 from .native_card import NativeConfig
 from .native_environment import ENGINE, read_environment
+from .native_projection import project_history
 
 
 def _redact(value, secret):
@@ -98,21 +99,7 @@ class MatCreatorRuntime(RuntimeProvider):
         return {"tool": visible[cap].name, "result": result.response, "ok": result.ok}
 
     async def _snapshot(self, agent_id, run_id, value):
-        # Normalize engine identities here. The host graph knows no MatCreator types.
-        nodes = [{"id": "agent:" + agent['id'], "label": agent.get('label') or agent['id'],
-                  "kind": "agent", "status": agent.get('status') or 'pending',
-                  "parent_id": "agent:" + agent['parent_id'] if agent.get('parent_id') else None,
-                  "dependency_ids": ['agent:' + key for key in agent.get('dependency_ids', [])],
-                  "detail": str(agent.get('summary') or '')[:20000]} for agent in value.get('agents', [])]
-        graph = value.get('graph') or {}
-        for key, node in (graph.get('nodes') or {}).items():
-            nodes.append({'id': 'plan:' + key, 'label': node.get('label') or key, 'kind': 'plan',
-                          'status': node.get('status') or 'pending',
-                          'detail': str(node.get('action') or '')[:20000], 'result': str(node.get('result') or '')[:20000],
-                          'dependency_ids': ['plan:' + edge[0] for edge in graph.get('edges', []) if len(edge) == 2 and edge[1] == key]})
-        await self.provider.publish_execution(agent_id, run_id, {
-            'phase': value.get('phase') or 'idle', 'title': str(value.get('goal') or '')[:2000],
-            'nodes': nodes[:500], 'truncated': len(nodes) > 500})
+        await self.provider.publish_execution(agent_id, run_id, project_history(value))
 
     async def execute(self, config, context, runtime_input):
         settings = self._settings(config)
@@ -147,7 +134,7 @@ class MatCreatorRuntime(RuntimeProvider):
                     "--environment", str(managed),
                     cwd=root, env=env, stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-                    limit=4 * 1024 * 1024,
+                    limit=12 * 1024 * 1024,
                     **({"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}))
             except OSError as exc:
                 raise AgentDependencyError("Cannot start MatCreator Python. Repair the plugin dependency installation.") from exc

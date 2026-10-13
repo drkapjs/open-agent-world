@@ -19,6 +19,24 @@ logger = logging.getLogger(__name__)
 _SESSION_LOG_VIEWS = {"overview", "detail", "artifacts"}
 
 
+def read_execution_history(tool_context: ToolContext, before_sequence: Optional[int] = None, limit: int = 40) -> dict:
+    """Discover exact persisted step attempt IDs and result/artifact references.
+
+    Newest records are returned first. Pass next_before_sequence to page backward.
+    Use step_id in consumed_inputs; a label or execution ordinal is not a source ID.
+    """
+    from ..graph_logger import AgentGraphLogger
+    history = AgentGraphLogger(tool_context.state.get("session_id", "default"))
+    nodes = history.nodes_of_type("step")
+    nodes = sorted((node for node in nodes if before_sequence is None or node.get("sequence", 0) < before_sequence),
+                   key=lambda node: (node.get("sequence", 0), node.get("start_time") or ""), reverse=True)
+    count = min(max(limit, 1), 100)
+    selected = nodes[:count]
+    return {"steps": [{"step_id": node["id"], **{key: node.get(key) for key in (
+        "label", "status", "plan_id", "execution_id", "sequence", "summary", "artifacts")}} for node in selected],
+        "next_before_sequence": selected[-1].get("sequence") if len(nodes) > count and selected else None}
+
+
 def _state_dict(tool_context: ToolContext) -> dict:
     state = tool_context.state
     if hasattr(state, "to_dict"):

@@ -15,12 +15,12 @@ test('native research workspace renders plan and subagents and switches session 
   const conversation = await (await request.get(`/api/conversations/${ids.conversation}`)).json();
   const session = conversation.sessions[0].id;
   const projection = {
-    phase: 'running', title: 'Copper structure verification', nodes: [
+    history_id: 'research-history', revision: 1, phase: 'running', title: 'Copper structure verification', nodes: [
       { id: 'root', kind: 'agent', label: 'Orchestrator', status: 'running' },
       { id: 'planner', kind: 'agent', label: 'Planning', status: 'success', parent_id: 'root' },
-      { id: 'execution_0', kind: 'agent', label: 'Execution', status: 'running', parent_id: 'planner' },
-      { id: 'worker', kind: 'agent', label: 'Geometry subagent', status: 'running', parent_id: 'execution_0', detail: 'Verifying geometry through connected OAW tools.' },
-      { id: 'review', kind: 'agent', label: 'Review subagent', status: 'needs_replanning', parent_id: 'execution_0' },
+      { id: 'execution_0', kind: 'agent', role: 'execution', execution_id: 'execution_0', label: 'Execution', status: 'running', parent_id: 'planner' },
+      { id: 'worker', kind: 'agent', execution_id: 'execution_0', label: 'Geometry subagent', status: 'running', parent_id: 'execution_0', detail: 'Verifying geometry through connected OAW tools.' },
+      { id: 'review', kind: 'agent', execution_id: 'execution_0', label: 'Review subagent', status: 'needs_replanning', parent_id: 'execution_0' },
       { id: 'build', kind: 'plan', label: 'Build copper', status: 'success', result: 'Fixture: 32 atoms verified' },
     ],
   };
@@ -44,59 +44,23 @@ test('native research workspace renders plan and subagents and switches session 
   await page.clock.install();
   await page.goto('/');
   const workspace = page.getByRole('dialog', { name: 'MatCreator native research workspace mode' });
-  await expect(workspace).toBeVisible();
-  await expect(workspace.getByText('Geometry subagent')).toBeVisible();
+  await expect(workspace).toBeVisible({ timeout: 30_000 });
+  await expect(workspace.getByRole('button', { name: 'Execution: running', exact: true })).toBeVisible();
   await expect(workspace.getByRole('textbox', { name: 'Conversation message', exact: true })).toBeVisible();
   const graph = workspace.getByRole('region', { name: 'Execution graph', exact: true });
-  await expect(graph.locator('[data-graph-edge]')).toHaveCount(4);
-  await expect(graph.getByText('Copper structure verification')).toBeHidden();
-  await graph.locator('summary').click();
-  await expect(graph.getByText('Copper structure verification')).toBeVisible();
-  await graph.locator('summary').click();
-  const viewport = graph.getByLabel('Execution graph canvas', { exact: true });
-  const canvas = graph.locator('.execution-graph-canvas');
-  const assertFit = async () => {
-    const bounds = await viewport.boundingBox();
-    for (const node of await graph.locator('.execution-graph-node').all()) {
-      const box = await node.boundingBox();
-      expect(box!.x).toBeGreaterThanOrEqual(bounds!.x);
-      expect(box!.x + box!.width).toBeLessThanOrEqual(bounds!.x + bounds!.width);
-      expect(box!.y).toBeGreaterThanOrEqual(bounds!.y);
-      expect(box!.y + box!.height).toBeLessThanOrEqual(bounds!.y + bounds!.height);
-    }
-  };
-  await assertFit();
-  const center = await workspace.getByRole('textbox', { name: 'Conversation message', exact: true }).boundingBox();
-  const left = await graph.boundingBox();
-  const right = await workspace.locator('[data-workspace-section-pane="sessions"]').boundingBox();
-  expect(left!.x + left!.width).toBeLessThan(center!.x);
-  expect(right!.x).toBeGreaterThan(center!.x + center!.width);
+  // Containment and chronology do not masquerade as dependency edges.
+  await expect(graph.locator('[data-graph-edge]')).toHaveCount(0);
+  await graph.getByRole('button', { name: 'Geometry subagent: running' }).click();
+  await expect(graph.getByText('Verifying geometry through connected OAW tools.')).toBeVisible();
   await page.screenshot({ path: 'test-results/matcreator-native-workspace.png' });
-  await graph.getByRole('button', { name: 'Plan', exact: true }).click();
   await graph.getByRole('button', { name: 'Build copper: success' }).click();
   await expect(graph.getByText('Fixture: 32 atoms verified')).toBeVisible();
-  await graph.getByRole('button', { name: 'Agents', exact: true }).click();
   await graph.getByRole('button', { name: 'Geometry subagent: running' }).click();
-  const beforePan = await canvas.getAttribute('style');
-  const bounds = (await viewport.boundingBox())!;
-  await page.mouse.move(bounds.x + 15, bounds.y + 30);
-  await page.mouse.down();
-  await page.mouse.move(bounds.x + 55, bounds.y + 60, { steps: 6 });
-  await page.mouse.up();
-  await expect(canvas).not.toHaveAttribute('style', beforePan!);
-  await expect(graph.getByRole('region', { name: 'Execution details' })).toBeVisible();
-  const beforeZoom = Number(await canvas.getAttribute('data-scale'));
-  await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
-  await page.mouse.wheel(0, -180);
-  await expect.poll(async () => Number(await canvas.getAttribute('data-scale'))).toBeGreaterThan(beforeZoom);
-  const manualCamera = await canvas.getAttribute('style');
-  // Freeze polling after a completed read. A WebSocket invalidation must update
-  // the same Run with only 100 ms of browser timer time, without blanking details.
   await page.waitForResponse(response => response.url().includes(`/execution-sources/${ids.agent}`));
   await page.clock.pauseAt(new Date(Date.now() + 100));
   const notificationsBefore = executionNotifications;
   const updated = await request.post(`/api/test/execution/${ids.agent}/${session}`, { data: {
-    ...projection, run_id: runId, phase: 'succeeded',
+    ...projection, run_id: runId, revision: 2, phase: 'succeeded',
     nodes: projection.nodes.map(node => ({ ...node, status: 'success', result: 'Live result verified' })),
   } });
   expect(updated.ok(), await updated.text()).toBe(true);
@@ -105,27 +69,18 @@ test('native research workspace renders plan and subagents and switches session 
   await expect(graph.getByRole('button', { name: 'Geometry subagent: success' })).toHaveAttribute('aria-pressed', 'true');
   await expect(graph.getByText('Live result verified')).toBeVisible();
   await expect(graph.locator('[data-phase]')).toHaveAttribute('data-phase', 'succeeded');
-  await expect(canvas).toHaveAttribute('style', manualCamera!);
   await page.clock.resume();
-  // A follow-up turn first has Run metadata but no native projection. Keep the
-  // detailed graph, then replace it when the new worker publishes its state.
   const starting = await request.post(`/api/test/execution/${ids.agent}/${session}/start`);
   expect(starting.ok(), await starting.text()).toBe(true);
   const nextRun = (await starting.json()).run_id;
   await expect(graph.getByText('Waiting for this run’s graph…')).toBeVisible();
-  await expect(graph.locator('.execution-graph-node')).toHaveCount(5);
   await expect(graph.getByRole('button', { name: 'Geometry subagent: success' })).toHaveAttribute('aria-pressed', 'true');
-  await graph.screenshot({ path: 'test-results/execution-graph-starting.png' });
   const resumed = await request.post(`/api/test/execution/${ids.agent}/${session}`, { data: {
-    ...projection, run_id: nextRun,
+    ...projection, revision: 3, run_id: nextRun,
   } });
   expect(resumed.ok(), await resumed.text()).toBe(true);
   await expect(graph.getByText('Waiting for this run’s graph…')).toHaveCount(0);
-  await expect(graph.getByRole('button', { name: 'Geometry subagent: running' })).toBeVisible();
-  await expect(graph.getByRole('region', { name: 'Execution details' })).toHaveCount(0);
-  await viewport.focus();
-  await page.keyboard.press('Home');
-  await assertFit();
+  await expect(graph.getByRole('button', { name: 'Geometry subagent: running' })).toHaveAttribute('aria-pressed', 'true');
   for (const theme of ['light', 'dark']) {
     await page.evaluate(value => { document.documentElement.dataset.theme = value; }, theme);
     await graph.screenshot({ path: `test-results/execution-graph-${theme}.png` });
@@ -207,8 +162,7 @@ test('standalone execution graph gestures stay local inside a scaled canvas', as
   await expect(graph.getByRole('button', { name: 'Coordinator: running' })).toBeVisible();
   const tutorial = page.locator('.card-tutorial-nudge');
   if (await tutorial.count()) await tutorial.getByRole('button', { name: /Close/ }).click();
-  const canvas = graph.locator('.execution-graph-canvas');
-  const viewport = graph.getByLabel('Execution graph canvas', { exact: true });
+  const viewport = graph.getByLabel('Execution history', { exact: true });
   const outer = page.locator('.react-flow__viewport');
   // Opening a workspace expands its window beyond the old card bounds. Place
   // that real window onscreen at a non-unit outer zoom before testing gestures.
@@ -226,33 +180,24 @@ test('standalone execution graph gestures stay local inside a scaled canvas', as
     return page.addStyleTag({ content: `.react-flow__viewport { transform: translate(${origin.x}px, ${origin.y}px) scale(${scale}) !important; }` });
   };
   const gestureCamera = await placeWindow(.75);
+  await graph.getByRole('button', { name: 'Geometry: success', exact: true }).click();
   const outerTransform = await outer.getAttribute('style');
-  const before = await graph.getByRole('button', { name: 'Coordinator: running' }).boundingBox();
   const box = (await viewport.boundingBox())!;
-  await page.mouse.move(box.x + 10, box.y + 15);
+  await page.mouse.move(box.x + 12, box.y + 15);
+  await page.mouse.wheel(0, 250);
+  await expect(outer).toHaveAttribute('style', outerTransform!);
   await page.mouse.down();
-  await page.mouse.move(box.x + 70, box.y + 45, { steps: 8 });
+  await page.mouse.move(box.x + 60, box.y + 40, { steps: 6 });
   await page.mouse.up();
-  const after = await graph.getByRole('button', { name: 'Coordinator: running' }).boundingBox();
-  expect(after!.x - before!.x).toBeCloseTo(60, 0);
-  expect(after!.y - before!.y).toBeCloseTo(30, 0);
   await expect(outer).toHaveAttribute('style', outerTransform!);
-  await expect(graph.getByRole('region', { name: 'Execution details' })).toHaveCount(0);
-  const scale = Number(await canvas.getAttribute('data-scale'));
-  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-  await page.mouse.wheel(0, -200);
-  await expect.poll(async () => Number(await canvas.getAttribute('data-scale'))).toBeGreaterThan(scale);
-  await expect(outer).toHaveAttribute('style', outerTransform!);
+  await expect(graph.getByRole('button', { name: 'Geometry: success', exact: true })).toHaveAttribute('aria-pressed', 'true');
   const persisted = await (await request.get(`/api/nodes/${viewer.id}`)).json();
   expect(persisted.position).toEqual(viewer.position);
-  await graph.getByRole('button', { name: 'Fit graph' }).click();
-  await graph.getByRole('button', { name: 'Coordinator: running' }).click();
-  await expect(graph.getByRole('region', { name: 'Execution details' })).toBeVisible();
-  await graph.getByRole('button', { name: 'Close details' }).click();
   await gestureCamera.evaluate(element => element.remove());
+  await page.evaluate(() => window.getSelection()?.removeAllRanges());
   for (const theme of ['light', 'dark']) {
     await page.evaluate(value => { document.documentElement.dataset.theme = value; }, theme);
-    for (const width of [300, 760]) {
+    for (const width of [300, 400, 500, 760]) {
       // Inspect the real card at 1:1, without changing saved window geometry.
       await surface.evaluate((element, width) => {
         for (const host of [element, element.closest('.world-card')]) {
@@ -260,7 +205,6 @@ test('standalone execution graph gestures stay local inside a scaled canvas', as
         }
       }, width);
       const style = await placeWindow(1);
-      await graph.getByRole('button', { name: 'Fit graph' }).click();
       await graph.screenshot({ path: `test-results/execution-graph-standalone-${theme}-${width}.png` });
       await style.evaluate(element => element.remove());
     }

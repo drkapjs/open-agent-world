@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import uuid
+import hashlib
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -13,6 +16,7 @@ from ..execution_graph_state import get_execution_graph, set_execution_graph
 
 _RECOVERY_DIR = "recovery"
 _STALE_AFTER_SECONDS = int(os.environ.get("STEP_RECOVERY_STALE_AFTER", "60"))
+_attempt_lock = threading.Lock()
 
 # A job in one of these states is still doing work on the provider, so no
 # executor can make progress on it yet.  ``succeeded``/``collecting`` are
@@ -62,7 +66,7 @@ def _attempt_public_data(attempt: dict[str, Any]) -> dict[str, Any]:
 
 def _write_json(path: Path, data: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     tmp_path.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
     os.replace(tmp_path, path)
 
@@ -130,20 +134,26 @@ def start_node_attempt(
     prior_context: Optional[str],
     graph_id: Optional[str] = None,
     recovery_base_dir: Optional[str | Path] = None,
+    recovery_scope: Optional[str] = None,
+    scheduler_node: bool = True,
 ) -> dict[str, Any]:
     """Persist a durable running-attempt record for one graph node."""
-    node_dir = _recovery_root(session_id, recovery_base_dir) / _safe_id(node_id)
-    attempt_number = _next_attempt_number(node_dir)
-    attempt_path = node_dir / f"attempt-{attempt_number:03d}.json"
+    scope = hashlib.sha256(json.dumps([graph_id, recovery_scope, node_id]).encode()).hexdigest()[:24]
+    node_dir = _recovery_root(session_id, recovery_base_dir) / scope
+    with _attempt_lock:
+        attempt_number = len(list(node_dir.glob("attempt-*.json"))) + 1
+        attempt_path = node_dir / f"attempt-{uuid.uuid4().hex}.json"
     latest_path = node_dir / "latest.json"
     now = _now()
     attempt = {
         "session_id": session_id,
         "graph_id": graph_id,
+        "scheduler_node": scheduler_node,
         "node_id": node_id,
         "step_id": step_id,
         "step_number": step_number,
         "attempt": attempt_number,
+        "attempt_file": attempt_path.name,
         "status": "running",
         "pid": os.getpid(),
         "started_at": now,
@@ -197,7 +207,7 @@ def record_remote_job_reference(
         "recorded_at": _now(),
     }
     attempt["heartbeat_at"] = _now()
-    attempt_path = latest_path.parent / f"attempt-{int(attempt.get('attempt', 0)):03d}.json"
+    attempt_path = latest_path.parent / attempt.get("attempt_file", f"attempt-{int(attempt.get('attempt', 0)):03d}.json")
     attempt["_attempt_path"] = str(attempt_path)
     attempt["_latest_path"] = str(latest_path)
     _write_attempt(attempt)
@@ -242,7 +252,7 @@ def _mark_attempt_stale(latest_path: Path, attempt: dict[str, Any]) -> None:
     attempt["completed_at"] = now
     attempt["stale_at"] = now
     attempt["message"] = "Running attempt was stale after process restart or missed heartbeat."
-    attempt_path = latest_path.parent / f"attempt-{int(attempt.get('attempt', 0)):03d}.json"
+    attempt_path = latest_path.parent / attempt.get("attempt_file", f"attempt-{int(attempt.get('attempt', 0)):03d}.json")
     attempt["_attempt_path"] = str(attempt_path)
     attempt["_latest_path"] = str(latest_path)
     _write_attempt(attempt)
@@ -333,10 +343,19 @@ def reconcile_recovery_state(
     graph_id = graph.get("graph_id")
 
     actions: list[dict[str, Any]] = []
+    identity_changed = False
     session_id = state.get("session_id") if hasattr(state, "get") else None
     root = _recovery_root(session_id if isinstance(session_id, str) else None, recovery_base_dir)
-    for latest_path in sorted(root.glob("*/latest.json")):
-        attempt = _read_json(latest_path)
+    candidates = {}
+    for latest_path in root.glob("*/latest.json"):
+        candidate = _read_json(latest_path)
+        if candidate.get("scheduler_node") is False or (graph_id and candidate.get("graph_id") != graph_id):
+            continue
+        key = candidate.get("node_id")
+        previous = candidates.get(key)
+        if previous is None or candidate.get("started_at", "") > previous[1].get("started_at", ""):
+            candidates[key] = (latest_path, candidate)
+    for latest_path, attempt in candidates.values():
         if isinstance(session_id, str) and attempt.get("session_id") != session_id:
             continue
         # Node IDs are only unique within a graph.  Never apply a completed or
@@ -350,6 +369,16 @@ def reconcile_recovery_state(
             continue
 
         node = nodes[node_id]
+        if attempt.get("step_id"):
+            identity_changed = identity_changed or node.get("attempt_id") != attempt["step_id"]
+            node["attempt_id"] = attempt["step_id"]
+            if session_id and attempt.get("status") in {"success", "failed", "needs_replanning", "cancelled", "waiting"}:
+                from ..graph_logger import AgentGraphLogger
+                history = AgentGraphLogger(session_id)
+                history.log_node_complete(attempt["step_id"], attempt["status"],
+                    summary=_attempt_summary(attempt), artifacts=attempt.get("artifacts"))
+                if isinstance(attempt.get("result"), dict):
+                    history.log_result(attempt["step_id"], attempt["result"])
         node_status = node.get("status")
         attempt_status = attempt.get("status")
 
@@ -370,6 +399,10 @@ def reconcile_recovery_state(
                 actions.append({"node_id": node_id, "action": "wait_for_remote_job", "status": "waiting"})
                 continue
             _mark_attempt_stale(latest_path, attempt)
+            if session_id and attempt.get("step_id"):
+                from ..graph_logger import AgentGraphLogger
+                AgentGraphLogger(session_id).log_node_complete(attempt["step_id"], "failed",
+                    summary="Process ended before this attempt completed; recovered for retry")
             node["status"] = "pending"
             node["result"] = "Recovered stale running attempt; retrying node."
             node["recovery"] = {
@@ -435,6 +468,6 @@ def reconcile_recovery_state(
             }
             actions.append({"node_id": node_id, "action": "recover_completed", "status": recovered_status})
 
-    if actions:
+    if actions or identity_changed:
         set_execution_graph(state, graph)
     return actions

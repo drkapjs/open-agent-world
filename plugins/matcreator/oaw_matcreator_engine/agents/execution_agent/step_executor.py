@@ -102,13 +102,14 @@ async def run_sub_agent(
     suggested_skills: List[str],
     tool_context: ToolContext,
     prior_context: Optional[str] = None,
+    consumed_inputs: Optional[List[dict]] = None,
 ) -> dict:
     """Spawn a child step executor to handle a sub-task.
 
     Call once per sub-task. For truly independent sub-tasks, issue multiple
     `run_sub_agent` calls in a SINGLE response turn — the runtime executes them
     concurrently. For dependent sub-tasks, call sequentially and pass the returned
-    result as `prior_context` to the next call.
+    result's `step_id` through consumed_inputs=[{"step_id": "..."}] to the next call.
 
     Returns a result dict with keys: status, key_results, concise_summary, artifacts.
     If status is "cancelled", call submit_step_result with needs_replanning immediately.
@@ -121,14 +122,20 @@ async def run_sub_agent(
     """
     from .step_executor_runner import run_step_executor  # lazy import avoids circular dep
 
-    return await run_step_executor(
+    result = await run_step_executor(
         step_number=step_number,
         action=action,
         suggested_skills=suggested_skills,
         workspace_dir="",  # computed internally by run_step_executor
         prior_context=prior_context,
+        consumed_inputs=consumed_inputs,
         tool_context=tool_context,
     )
+    if result.get("step_id") and tool_context.state.get("_graph_exec_node_id"):
+        from ..graph_logger import AgentGraphLogger
+        AgentGraphLogger(tool_context.state.get("session_id", "default")).log_data_delivery(
+            result["step_id"], tool_context.state["_graph_exec_node_id"], evidence="child_result_returned")
+    return result
 
 
 async def submit_step_result(

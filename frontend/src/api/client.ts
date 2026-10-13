@@ -427,8 +427,11 @@ export const worldApi = {
   async executionSources(id: string): Promise<{sources: {id: string; name: string; type: string}[]}> {
     return request(`/nodes/${encodeURIComponent(id)}/execution-sources`);
   },
-  async executionSnapshot(id: string, source: string, sessionId: string | null): Promise<import('../plugins/executionSources').ExecutionSnapshot> {
-    return request(`/nodes/${encodeURIComponent(id)}/execution-sources/${encodeURIComponent(source)}`, { headers: stateSessionHeaders(sessionId) });
+  async executionSnapshot(id: string, source: string, sessionId: string | null, page?: import('../plugins/executionSources').ExecutionPage): Promise<import('../plugins/executionSources').ExecutionSnapshot> {
+    const query = new URLSearchParams();
+    if (page?.cursor) query.set('cursor', page.cursor);
+    if (page?.limit) query.set('limit', String(page.limit));
+    return request(`/nodes/${encodeURIComponent(id)}/execution-sources/${encodeURIComponent(source)}${query.size ? `?${query}` : ''}`, { headers: stateSessionHeaders(sessionId) });
   },
   async dataSourceSchemas(id: string, source: string, relationship: string): Promise<{schemas: import('../plugins/dataSources').DataSchema[]; truncated?: boolean}> {
     return request(`/nodes/${encodeURIComponent(id)}/data-source-schemas`, {

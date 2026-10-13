@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, ConfigDict, Field
 
 from backend.api.dependencies import get_services
@@ -16,8 +16,11 @@ async def execution_sources(node_id: str, services: ApplicationServices = Depend
 
 
 @router.get('/{node_id}/execution-sources/{source_id}')
-async def execution_snapshot(node_id: str, source_id: str, services: ApplicationServices = Depends(get_services)):
-    return await invoke_resource_action(services, source_id, 'execution', ResourceActionRequest(), execution_reader=node_id)
+async def execution_snapshot(node_id: str, source_id: str, limit: int | None = Query(None, ge=1, le=2000),
+                             cursor: str | None = Query(None, max_length=2048),
+                             services: ApplicationServices = Depends(get_services)):
+    return await invoke_resource_action(services, source_id, 'execution',
+        ResourceActionRequest(arguments={'limit': limit, 'cursor': cursor}), execution_reader=node_id)
 
 
 @router.get("/{node_id}/data-sources")

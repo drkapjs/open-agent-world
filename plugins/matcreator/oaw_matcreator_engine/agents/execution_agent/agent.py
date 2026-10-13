@@ -20,6 +20,7 @@ from ..thinking_agent.planning import (
     set_node_status,
     mark_dependents_blocked,
 )
+from ..execution_graph_state import get_execution_graph, set_execution_graph
 from .step_executor_runner import run_step_executor
 from .recovery import reconcile_recovery_state
 
@@ -123,17 +124,34 @@ async def run_node_executor(
         workspace_dir:    Absolute path to the session workspace.
         prior_context:    Brief summary of predecessor results for context.
     """
+    plan = get_execution_graph(tool_context.state) or {}
+    node = plan.get("nodes", {}).get(node_id)
+    ready = {value["node_id"] for value in get_ready_nodes(tool_context)["ready_nodes"]}
+    if node is None or node_id not in ready:
+        return {"status": "error", "message": "Node is not a ready member of the active plan"}
+    # Reserve before the first await so concurrent tool calls cannot dispatch
+    # the same logical node twice.
+    node["status"] = "running"
+    set_execution_graph(tool_context.state, plan)
     counter = tool_context.state.get("_node_exec_counter", 0) + 1
     tool_context.state["_node_exec_counter"] = counter
-    return await run_step_executor(
+    result = await run_step_executor(
         step_number=counter,
         action=action,
         suggested_skills=suggested_skills,
         workspace_dir=workspace_dir,
         prior_context=prior_context,
         node_id=node_id,
+        consumed_inputs=node.get("consumed_inputs", []),
         tool_context=tool_context,
     )
+    plan = get_execution_graph(tool_context.state) or {}
+    current = plan.get("nodes", {}).get(node_id)
+    if current is not None:
+        current["status"] = {"success": "success", "waiting": "waiting", "cancelled": "cancelled"}.get(result.get("status"), "failed")
+        current["result"] = result.get("concise_summary") or result.get("replan_reason") or result.get("message")
+        set_execution_graph(tool_context.state, plan)
+    return result
 
 
 # ---------------------------------------------------------------------------

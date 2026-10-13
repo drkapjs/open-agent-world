@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import uuid
 from contextlib import aclosing
 from typing import AsyncGenerator
 
@@ -80,31 +81,8 @@ def _is_graph_complete(state: dict) -> bool:
 
 
 def _get_planning_node_id(state: dict, graph: AgentGraphLogger) -> str:
-    """Return the graph node representing the session's current planner.
-
-    The orchestrator keeps one planning-agent instance for the session.  A
-    planning invocation is therefore activity on that agent, not evidence that
-    a new agent was created.  Persisting its graph id in session state keeps
-    execution/replanning loops attached to one node.  A future code path that
-    deliberately replaces the planning agent can clear this state key before
-    creating its replacement node.
-    """
-    node_id = state.get(_PLANNING_NODE_STATE_KEY)
-    if isinstance(node_id, str) and node_id:
-        return node_id
-
-    # Preserve the original planner node when resuming a graph written before
-    # this state key existed, rather than adding another planning node.
-    existing_planners = [
-        node for node in graph.nodes_of_type("planning")
-        if isinstance(node.get("id"), str)
-    ]
-    if existing_planners:
-        existing_planners.sort(key=lambda node: (node.get("start_time") or "", node["id"]))
-        node_id = existing_planners[0]["id"]
-    else:
-        node_id = "planning_0"
-
+    """Allocate an invocation identity; the underlying planner is still shared."""
+    node_id = f"planning_{uuid.uuid4().hex}"
     state[_PLANNING_NODE_STATE_KEY] = node_id
     return node_id
 
@@ -132,6 +110,17 @@ async def _stream_execution_with_recovery(
                     yield event
             return
         except json.JSONDecodeError:
+            history = AgentGraphLogger(ctx.session.id)
+            previous = ctx.session.state.get("_graph_exec_node_id")
+            if previous and history.node(previous):
+                history.log_node_complete(previous, "failed", summary="Malformed execution tool arguments")
+                if attempt < max_attempts:
+                    replacement = f"execution_{uuid.uuid4().hex}"
+                    old = history.node(previous)
+                    history.log_node_start(replacement, "execution", old["label"], old.get("parent_id"),
+                        plan_id=old.get("plan_id"), execution_id=replacement, retry_of=previous)
+                    ctx.session.state["_graph_exec_node_id"] = replacement
+                    ctx.session.state["_graph_execution_id"] = replacement
             recovered = reconcile_recovery_state(
                 ctx.session.state,
                 ctx.session.state.get("workdir") or get_workspace_root(),
@@ -186,6 +175,14 @@ async def _stream_planning_with_recovery(
                         break
             return
         except json.JSONDecodeError:
+            history = AgentGraphLogger(ctx.session.id)
+            previous = state.get(_PLANNING_NODE_STATE_KEY)
+            if previous and history.node(previous):
+                history.log_node_complete(previous, "failed", summary="Malformed planning tool arguments")
+                if attempt < max_attempts:
+                    replacement = _get_planning_node_id(state, history)
+                    history.log_node_start(replacement, "planning", "Planning", "orchestrator", retry_of=previous)
+                    state["_graph_exec_node_id"] = replacement
             logger.warning(
                 "[orchestrator] malformed planning tool arguments on attempt %d/%d; "
                 "retrying planning phase",
@@ -225,6 +222,7 @@ class PlanningExecutionOrchestrator(BaseAgent):
             state["session_workdir_initialized"] = True
 
         graph = AgentGraphLogger(ctx.session.id)
+        graph.mark_running_nodes_failed("Previous worker stopped before this activity completed")
         graph.log_node_start("orchestrator", "orchestrator", "Orchestrator")
 
         # Cheap and idempotent: repair the in-memory graph from durable step
@@ -234,18 +232,22 @@ class PlanningExecutionOrchestrator(BaseAgent):
             logger.warning("[orchestrator] recovered execution state: %s", recovered)
 
         loop_idx = graph.count_nodes_of_type("execution")
-        planning_id = _get_planning_node_id(state, graph)
 
         while True:
+            planning_id = _get_planning_node_id(state, graph)
             # ── Planning phase (always runs first) ───────────────────────────
             # Tools launched by the planning/O side (notably Flash steps) are
             # direct orchestrator work. Clear a previous execution round's
             # container before entering planning so those steps do not appear
             # to belong to a stale E node after replanning.
-            state["_graph_exec_node_id"] = "orchestrator"
+            state["_graph_exec_node_id"] = planning_id
+            state["_graph_execution_id"] = None
+            state["_graph_plan_id"] = None
             state["execution_approved"] = False
             logger.info("[orchestrator] entering planning phase")
-            graph.log_node_start(planning_id, "planning", "Planning", "orchestrator")
+            graph.log_node_start(planning_id, "planning", "Planning", "orchestrator",
+                replan_of=state.get("_graph_replan_source"), actor_id="planning", actor_label="Planner", workstream_id="planning")
+            state["_graph_replan_source"] = None
             # Approval is a hard handoff boundary. Yield the successful tool
             # response first so clients can persist/render it, then close the
             # planner stream before it can start another model/tool round.
@@ -254,6 +256,7 @@ class PlanningExecutionOrchestrator(BaseAgent):
             # endpoints (e.g. GLM-5.3) and retry the planning phase.
             async for event in _stream_planning_with_recovery(self.planning_agent, ctx):
                 yield event
+            planning_id = state[_PLANNING_NODE_STATE_KEY]
             graph.log_node_complete(planning_id, "success")
 
             # Flash mode: thinking agent handles everything; skip execution phase
@@ -292,11 +295,16 @@ class PlanningExecutionOrchestrator(BaseAgent):
                     # point directly at the original planner. The frontend
                     # uses it to place one planning round on one vine layer.
                     batch_id=f"{planning_id}:round:{loop_idx}",
+                    plan_id=execution_graph.get("graph_id"),
+                    execution_id=exec_id,
                 )
                 state["_graph_exec_node_id"] = exec_id
+                state["_graph_execution_id"] = exec_id
+                state["_graph_plan_id"] = execution_graph.get("graph_id")
 
                 async for event in _stream_execution_with_recovery(self.execution_agent, ctx):
                     yield event
+                exec_id = state["_graph_exec_node_id"]
 
                 interrupted = state.get("return_to_planner", False)
                 if interrupted:
@@ -306,6 +314,7 @@ class PlanningExecutionOrchestrator(BaseAgent):
                         reason,
                     )
                     graph.log_node_complete(exec_id, "failed", summary=f"Interrupted: {reason}")
+                    state["_graph_replan_source"] = exec_id
                     state["return_to_planner"] = False
                     state["return_to_planner_reason"] = None
                     clear_cancellation(state.get("session_id", ""))
@@ -326,6 +335,7 @@ class PlanningExecutionOrchestrator(BaseAgent):
                         "needs_replanning",
                         summary="Execution paused with graph nodes still pending, running, or waiting.",
                     )
+                    state["_graph_replan_source"] = exec_id
 
                 state["execution_approved"] = False
                 state["current_step"] = None

@@ -48,7 +48,8 @@ Plugin-specific documentation can remain in its own package or repository. These
 
 ## Developing a plugin
 
-Plugin API 1.30 adds the built-in Agent graph, `NodeExecutionSource`,
+Plugin API 1.31 adds typed execution edges, history revisions, attempt metadata
+and revision-bound pagination. Plugin API 1.30 adds the built-in Agent graph, `NodeExecutionSource`,
 `ExecutionNode` / `ExecutionSnapshot`, and `AgentCapabilityProvider.publish_execution`.
 See the [execution graph contract](developers/execution-graph.md) for runtime,
 Barracks, Summoning and custom-card sources. Frontend operations can reveal their

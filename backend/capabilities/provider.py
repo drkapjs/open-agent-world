@@ -323,23 +323,58 @@ class WorldAgentCapabilityProvider:
         self.services = services
 
     async def publish_execution(self, agent_id, run_id, snapshot):
-        from backend.plugins.execution_graph import ExecutionSnapshot
+        from backend.plugins.execution_graph import ExecutionSnapshot, MAX_EXECUTION_BYTES
         manager = self.services._require_run_manager()
         context = manager.current_context
         if context is None or context.agent_id != agent_id or context.run_id != run_id:
             raise ResourceValidationError('Execution projection requires the current agent run')
         value = ExecutionSnapshot.model_validate({**snapshot, 'run_id': run_id}).model_dump(mode='json')
+        if value['mode'] != 'full' or value['next_cursor'] is not None:
+            raise ResourceValidationError('Execution publications must be complete snapshots')
+        conversation_id, session_id = manager._conversation_scope(manager.get_run(run_id))
+        value['history_id'] = value['history_id'] or f'{agent_id}:{session_id or "default"}'
+        value['total_nodes'] = len(value['nodes'])
         import json
-        if len(json.dumps(value).encode()) > 2 * 1024 * 1024:
-            raise ResourceValidationError('Execution projection exceeds 2 MiB')
         async with self.services._node_mutation(read_only=True):
+            previous = manager.get_run(run_id).lifecycle.get('execution_graph') or {}
+            if previous.get('history_id') == value['history_id']:
+                previous_revision = previous.get('revision', 0)
+                # Delayed workers must not roll persisted state back. Legacy
+                # providers omit revision; the host sequences their full writes.
+                if value['revision'] and value['revision'] <= previous_revision:
+                    return
+            else:
+                previous_revision = 0
+            value['revision'] = value['revision'] or previous_revision + 1
+            if value['retention'] == 'history':
+                # Only explicit history providers opt in. Keep the durable
+                # activity identities even when a worker publishes a partial
+                # view of earlier work, including across turns in this scope.
+                prior = previous
+                if prior.get('history_id') != value['history_id']:
+                    prior = next((run.lifecycle['execution_graph'] for run in reversed(manager.list_runs(agent_id=agent_id))
+                        if run.run_id != run_id
+                        and run.runtime_provider_id == manager.get_run(run_id).runtime_provider_id
+                        and manager._conversation_scope(run) == (conversation_id, session_id)
+                        and run.lifecycle.get('execution_graph', {}).get('history_id') == value['history_id']
+                        and run.lifecycle['execution_graph'].get('retention') == 'history'), {})
+                for field in ('nodes', 'edges'):
+                    records = {item['id']: item for item in prior.get(field, [])}
+                    records.update({item['id']: item for item in value[field]})
+                    value[field] = list(records.values())
+                value['total_nodes'] = len(value['nodes'])
+                # Revalidate limits after the union, never silently discard old
+                # history to make room for a new publication.
+                value = ExecutionSnapshot.model_validate(value).model_dump(mode='json')
+            if len(json.dumps(value, ensure_ascii=False).encode()) > MAX_EXECUTION_BYTES:
+                raise ResourceValidationError('Execution projection exceeds 8 MiB')
             manager.store.update_lifecycle(run_id, execution_graph=value)
         # Invalidate only: reads still recheck the live connection and session.
         from backend.events.models import EventType
-        conversation_id, session_id = manager._conversation_scope(manager.get_run(run_id))
         await self.services.events.publish(EventType.EXECUTION_UPDATED,
             node_id=agent_id, agent_id=agent_id, run_id=run_id,
-            conversation_id=conversation_id, session_id=session_id)
+            conversation_id=conversation_id, session_id=session_id,
+            payload={'history_id': value['history_id'], 'revision': value['revision']})
 
     async def read_own_document(self, agent_id: str) -> dict[str, Any]:
         context = self.services._require_run_manager().current_context

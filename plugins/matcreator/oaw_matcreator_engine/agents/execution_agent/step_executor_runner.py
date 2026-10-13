@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import json
 import os
+import uuid
 from contextlib import aclosing
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,7 +18,8 @@ from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 
 from ...llm_cards import LLMCard, select_executor_llm_card
-from ...resources import split_verified_artifacts, emit_child_event
+from ...resources import split_verified_artifacts, emit_child_event, execution_context, read_artifact_input
+from ..consumed_inputs import validate_input_references
 from ...workspace import get_session_workdir
 from .step_executor import (
     STEP_EXECUTOR_AGENT_NAME,
@@ -216,14 +219,17 @@ def _graph_dependency_step_ids(
         # In the ordinary case the predecessor belongs to this execution
         # phase.  The lookup also handles a remote-job resume that starts a
         # fresh execution container after its predecessor completed earlier.
-        step_id = graph.find_step_node(predecessor_id)
+        step_id = (execution_graph.get("nodes", {}).get(predecessor_id) or {}).get("attempt_id")
+        if not step_id or graph.node(step_id) is None:
+            step_id = graph.find_step_node(predecessor_id, execution_graph.get("graph_id"),
+            None if execution_graph.get("graph_id") else execution_id)
         if not step_id:
-            step_id = f"{execution_id}__node_{predecessor_id}"
             logger.warning(
                 "[step_executor_runner] missing logged predecessor %s for %s",
                 predecessor_id,
                 node_id,
             )
+            continue
         if step_id not in resolved:
             resolved.append(step_id)
     return resolved
@@ -434,6 +440,7 @@ async def run_step_executor(
     workspace_dir: str,
     prior_context: Optional[str] = None,
     node_id: Optional[str] = None,
+    consumed_inputs: Optional[list[dict]] = None,
     *,
     tool_context: ToolContext,
 ) -> dict:
@@ -445,6 +452,7 @@ async def run_step_executor(
     """
     session_id = tool_context.state.get("session_id", "default")
     recursion_depth = tool_context.state.get("recursion_depth", 0)
+    scheduled_node = bool(node_id and tool_context.state.get("_graph_execution_id") and recursion_depth == 0)
 
     if recursion_depth >= MAX_RECURSION_DEPTH:
         return {
@@ -460,7 +468,7 @@ async def run_step_executor(
 
     # Deterministic re-attachment: a node that already owns a tracked remote job
     # must poll it rather than submit a replacement sandbox.
-    reattach_context = _remote_job_prior_context(tool_context, node_id)
+    reattach_context = _remote_job_prior_context(tool_context, node_id) if scheduled_node else None
     if reattach_context:
         prior_context = f"{reattach_context}\n\n{prior_context}" if prior_context else reattach_context
 
@@ -472,7 +480,12 @@ async def run_step_executor(
 
     graph = AgentGraphLogger(session_id)
     parent_id = tool_context.state.get("_graph_exec_node_id", "orchestrator")
-    step_id = f"{parent_id}__node_{effective_id}"
+    step_id = f"step_{uuid.uuid4().hex}"
+    plan = get_execution_graph(tool_context.state) or {}
+    plan_id = tool_context.state.get("_graph_plan_id", plan.get("graph_id"))
+    previous_id = graph.find_step_node(str(effective_id), plan_id, None if scheduled_node and plan_id else parent_id)
+    previous = graph.node(previous_id) if previous_id else None
+    retry_of = previous_id if previous and previous.get("status") in {"failed", "cancelled", "needs_replanning", "waiting"} else None
     parent_path = tool_context.state.get("_step_label_path", "")
     step_label_path = f"{parent_path}-{effective_id}" if parent_path else effective_id
     llm_card = select_executor_llm_card(
@@ -487,7 +500,7 @@ async def run_step_executor(
         llm_card.name,
         llm_card.model,
     )
-    dependency_ids = _graph_dependency_step_ids(graph, tool_context, node_id)
+    dependency_ids = _graph_dependency_step_ids(graph, tool_context, node_id) if scheduled_node else []
     await asyncio.to_thread(
         graph.log_node_start,
         step_id,
@@ -495,7 +508,47 @@ async def run_step_executor(
         f"Node {step_label_path}",
         parent_id,
         dependency_ids=dependency_ids,
+        plan_id=plan_id,
+        execution_id=tool_context.state.get("_graph_execution_id"),
+        logical_node_id=str(effective_id),
+        retry_of=retry_of,
+        actor_id=step_id,
+        actor_label=f"Executor {step_label_path}",
+        workstream_id=f"{plan_id}:{effective_id}" if scheduled_node and plan_id else f"{parent_id}:subtask:{effective_id}",
     )
+    # Record the observed launch, separately from scheduler/data dependencies.
+    # Only roots need a planning fork; later steps already name their recorded
+    # predecessors. Never manufacture a project merge on task completion.
+    launch_source = plan.get("planning_id") if scheduled_node else parent_id
+    if launch_source and not dependency_ids and not retry_of:
+        await asyncio.to_thread(graph.log_task_fork, launch_source, step_id)
+    if scheduled_node and node_id in plan.get("nodes", {}):
+        plan["nodes"][node_id].update(status="running", attempt_id=step_id)
+        set_execution_graph(tool_context.state, plan)
+
+    deliveries = []
+    try:
+        references = validate_input_references(consumed_inputs or [], graph, plan if plan_id else None, node_id)
+        for reference in references:
+            if reference.get("artifact_ref"):
+                with execution_context(session_id, step_id):
+                    value = await read_artifact_input(reference["artifact_ref"])
+                deliveries.append({**reference, "value": value})
+            else:
+                source_id = reference.get("step_id") or plan.get("nodes", {}).get(reference["node_id"], {}).get("attempt_id")
+                if not source_id and reference.get("node_id"):
+                    source_id = graph.find_step_node(reference["node_id"], plan_id)
+                source = graph.node(source_id) if source_id else None
+                if not source or source.get("status") != "success":
+                    raise ValueError("Input source has no successful recorded attempt in this plan")
+                deliveries.append({"step_id": source_id, "value": source.get("result") or {
+                    "concise_summary": source.get("summary"), "artifacts": source.get("artifacts", [])}})
+        if deliveries:
+            delivered_text = "Explicit input results:\n" + json.dumps(deliveries, ensure_ascii=False)
+            prior_context = f"{prior_context}\n\n{delivered_text}" if prior_context else delivered_text
+    except ValueError as exc:
+        graph.log_node_complete(step_id, "failed", summary=str(exc))
+        return {"status": "error", "step_id": step_id, "message": str(exc)}
 
     # Serialize input as user message (matches AgentTool input_schema path)
     step_input = StepExecutorInput(
@@ -524,6 +577,7 @@ async def run_step_executor(
         "suggested_skills": suggested_skills,
         "llm_card": public_llm_card,
         "input_images": input_image_paths,
+        "consumed_inputs": references,
     })
     step_input_log = {
         "node_id": effective_id,
@@ -552,13 +606,16 @@ async def run_step_executor(
         action=action,
         suggested_skills=suggested_skills,
         prior_context=prior_context,
-        graph_id=(get_execution_graph(tool_context.state) or {}).get("graph_id"),
+        graph_id=plan_id,
+        recovery_scope=parent_id if not scheduled_node else None,
+        scheduler_node=scheduled_node,
     )
-    if node_id:
+    if scheduled_node:
         graph_state = get_execution_graph(tool_context.state) or {}
         graph_nodes = graph_state.get("nodes") or {}
         if node_id in graph_nodes:
             graph_nodes[node_id]["status"] = "running"
+            graph_nodes[node_id]["attempt_id"] = step_id
             graph_nodes[node_id]["recovery"] = {
                 "status": "running",
                 "started_at": _now(),
@@ -572,7 +629,7 @@ async def run_step_executor(
             "[CANCEL] Node %s aborted before start (session=%s, reason=%s)",
             effective_id, session_id, reason,
         )
-        await asyncio.to_thread(graph.log_node_complete, step_id, "failed", summary=f"Cancelled before start: {reason}")
+        await asyncio.to_thread(graph.log_node_complete, step_id, "cancelled", summary=f"Cancelled before start: {reason}")
         clear_step_cancellation(session_id, step_number)
         append_session_log_entry(tool_context, {
             "kind": "step_complete",
@@ -588,6 +645,7 @@ async def run_step_executor(
         )
         return {
             "status": "cancelled",
+            "step_id": step_id,
             "message": f"Node {effective_id} skipped: execution cancellation was requested ({reason}).",
         }
     # Create runner with isolated session (mirrors AgentTool)
@@ -629,9 +687,14 @@ async def run_step_executor(
     # the current await point (including in-flight LLM HTTP calls).  A sibling
     # watcher task polls cancellation flags on a wall-clock interval and cancels
     # the inner task when a flag is detected.
-    inner_task = asyncio.create_task(
-        _stream_step_events(runner, session, content, step_id, tool_context, graph)
-    )
+    async def stream_with_context():
+        with execution_context(session_id, step_id):
+            for delivery in deliveries:
+                if delivery.get("step_id"):
+                    graph.log_data_delivery(delivery["step_id"], step_id)
+            return await _stream_step_events(runner, session, content, step_id, tool_context, graph)
+
+    inner_task = asyncio.create_task(stream_with_context())
     watcher = asyncio.create_task(
         _watch_for_cancellation(inner_task, session_id, step_number)
     )
@@ -679,7 +742,7 @@ async def run_step_executor(
         remote_job_reference = _remote_job_reference(waiting_remote_job)
         _mark_node_waiting_on_remote_job(
             tool_context,
-            node_id=node_id,
+            node_id=node_id if scheduled_node else None,
             remote_job=remote_job_reference,
             summary=job_summary,
         )
@@ -705,6 +768,7 @@ async def run_step_executor(
         )
         return {
             "status": "waiting",
+            "step_id": step_id,
             "remote_job": remote_job_reference,
             "message": job_summary,
         }
@@ -736,6 +800,7 @@ async def run_step_executor(
         )
         return {
             "status": "needs_replanning",
+            "step_id": step_id,
             "replan_reason": f"Step {step_number} timed out after {_SUB_STEP_TIMEOUT}s.",
         }
 
@@ -747,7 +812,7 @@ async def run_step_executor(
         )
         await asyncio.to_thread(
             graph.log_node_complete,
-            step_id, "failed", summary=f"Cancelled mid-step ({reason})"
+            step_id, "cancelled", summary=f"Cancelled mid-step ({reason})"
         )
         clear_step_cancellation(session_id, step_number)
         append_session_log_entry(tool_context, {
@@ -766,6 +831,7 @@ async def run_step_executor(
         )
         return {
             "status": "cancelled",
+            "step_id": step_id,
             "message": f"Step {step_number} cancelled ({reason}).",
         }
 
@@ -800,6 +866,7 @@ async def run_step_executor(
         clear_step_cancellation(session_id, step_number)
         return {
             "status": "error",
+            "step_id": step_id,
             "message": error_message,
         }
 
@@ -846,6 +913,8 @@ async def run_step_executor(
             artifacts=result.artifacts,
         )
         payload = result.model_dump(exclude_none=True)
+        payload["step_id"] = step_id
+        await asyncio.to_thread(graph.log_result, step_id, payload)
         if skill_refresh:
             payload["skill_registry_refresh"] = skill_refresh
         if missing_artifacts:
@@ -895,4 +964,4 @@ async def run_step_executor(
         artifacts=artifact_paths,
     )
     clear_step_cancellation(session_id, step_number)
-    return result.model_dump()
+    return {**result.model_dump(), "step_id": step_id}

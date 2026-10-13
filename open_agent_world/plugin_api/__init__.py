@@ -15,7 +15,7 @@ from backend.plugins.documents import NodeDocumentTransformation
 from backend.plugins.deployment import DeploymentSurface, NodeDeploymentDefinition
 from backend.plugins.resources import NodeResourceAction, NodeResourceContext
 from backend.plugins.data_sources import DataQuery, NodeDataConsumer, NodeDataSource
-from backend.plugins.execution_graph import ExecutionNode, ExecutionSnapshot, NodeExecutionSource
+from backend.plugins.execution_graph import ExecutionEdge, ExecutionNode, ExecutionSnapshot, NodeExecutionSource
 from backend.plugins.state import PluginStateSpec, ScopedStateSpec, StatelessStateSpec, CardStateStore
 from backend.plugins.containers import NodeContainerDefinition
 from backend.plugins.execution import ExecutionPolicy, NodeExecutionDefinition, WorkItem, WorkOutcome
@@ -92,7 +92,7 @@ from backend.world.models import Card, CardCreate, CardPatch, Edge
 __all__ = [
     "RuntimeModelConnection",
     "DataQuery", "NodeDataConsumer", "NodeDataSource",
-    "ExecutionNode", "ExecutionSnapshot", "NodeExecutionSource",
+    "ExecutionEdge", "ExecutionNode", "ExecutionSnapshot", "NodeExecutionSource",
     "TutorialDefinition", "TutorialStep",
     "PluginStateSpec", "ScopedStateSpec", "StatelessStateSpec", "CardStateStore",
     "DelegationRequest", "DelegationWait", "DelegationStop",

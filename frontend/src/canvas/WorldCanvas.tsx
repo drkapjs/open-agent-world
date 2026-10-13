@@ -960,6 +960,9 @@ export function WorldCanvas() {
       style={{"--shadow-hover-ms":`${SHADOW.hoverMs}ms`,"--shadow-expand-ms":`${SHADOW.expandMs}ms`,"--shadow-collapse-ms":`${SHADOW.collapseMs}ms`,"--shadow-absorb-ms":`${SHADOW.absorbMs}ms`,"--shadow-hover-px":`${SHADOW.hoverPx}px`,"--shadow-hover-deg":`${SHADOW.hoverDegrees}deg`} as CSSProperties}
       onWheelCapture={(event) => {
         const element = wrapper.current;
+        // Embedded surfaces own their wheel behavior. Do not stop capture
+        // before a local camera inside a scrollable panel receives the event.
+        if ((event.target as Element).closest('.nowheel')) return;
         if ((event.target as Element).closest('.react-flow')?.id !== 'oaw-world-map') return;
         if (element && isScrollableArea(event.target, element)) event.stopPropagation();
       }}

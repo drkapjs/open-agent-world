@@ -21,6 +21,7 @@ class Provider:
     def __init__(self, root, url='http://127.0.0.1:1/v1'):
         self.root, self.url = root, url
         self.calls = []
+        self.projections = []
         self.available = True
 
     def resolve_model(self, model):
@@ -40,6 +41,7 @@ class Provider:
     async def publish_execution(self, agent, run, snapshot):
         from open_agent_world.plugin_api import ExecutionSnapshot
         self.projection = ExecutionSnapshot.model_validate(snapshot)
+        self.projections.append((run, self.projection))
 
 
 def context(run='run1', session='session-a', agent='agent-a'):
@@ -222,8 +224,14 @@ async def test_pack_engine_planner_checkpoint_executor_recursive_child_and_oaw_t
     ]
     assert any(e.payload.get('subagent') for e in finished)
     assert any(node.kind == 'agent' and node.parent_id for node in provider.projection.nodes)
-    projected_step = next(node for node in provider.projection.nodes if node.id == 'plan:step_check')
+    projected_step = next(node for node in provider.projection.nodes if node.role == 'step' and node.plan_id)
     assert projected_step.status == 'success'
+    assert projected_step.execution_id and projected_step.started_at and projected_step.finished_at
+    assert provider.projection.history_id
+    current_publications = [value for run, value in provider.projections if run == 'run2']
+    assert current_publications[-1].phase == 'idle'
+    assert current_publications[-1].revision > max(
+        value.revision for value in current_publications if value.phase == 'running')
     checkpoint = next(tmp_path.rglob('session.json'))
     state = json.loads(checkpoint.read_text(encoding='utf-8'))['state']
     assert state['session_id'] == 'native'

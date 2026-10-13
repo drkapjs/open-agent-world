@@ -109,16 +109,19 @@ source setup; it does not add a new generic archive runtime installer.
 
 ## Workspace layout (revision 2)
 
-- Left: **Agent graph**, with parent/subagent links, status, zoom, and selectable
-  details. Switch to **Plan** for the native DAG and reported result summaries.
+- Left: **Agent graph**, a vertical execution history with bounded parallel
+  tracks, folded completed history and expandable execution steps. Select a
+  node to follow typed dependencies, inspect outputs or focus its local DAG.
 - Center: **Conversation**, **Skills & knowledge**, **Structure viewer**,
   **File preview**, **Research artifacts**, and **Research files & compute** tabs.
 - Right: **Sessions** above **Files**. Both stay visible while changing center tabs.
 
 **Agent graph** belongs to Core essentials and also works outside MatCreator.
 Connect it to ordinary Agents, Agent Barracks, equipped Summoning cards or a
-custom execution source, then select the source in its toolbar. Solid links mean
-parent calls; dashed links mean dependencies. Runtime producers and other Packs
+custom execution source, then select the source in its toolbar. History tracks
+show recorded time overlap, never dependencies. In the local DAG, solid edges
+mean control dependencies, dashed edges mean observed data delivery or artifact
+inspection, and dotted edges mean retry/replanning. Parentage remains containment. Runtime producers and other Packs
 can use the public [execution source API](../../docs/developers/execution-graph.md).
 
 Clicking a file reveals the detached File preview. A newly opened, valid structure
@@ -134,6 +137,38 @@ See [workspace navigation](../../docs/developers/workspace-design.md#activate-co
 
 Revision 2 is the default for new deployments. Existing saved layouts remain
 user-owned; redeploy the preset or arrange its tabs with **Edit layout**.
+
+## Execution history and dependency evidence
+
+Pack 0.7 requires OAW plugin API 1.31. The Pack records immutable Step attempts,
+plan identities, timestamps, retry/replan links and versioned artifact producers.
+The host stores a full read-only projection with each Run and exposes authorized,
+revision-consistent pages. A completed Conversation turn does not turn unfinished
+Steps into successes. New turns retain the previous graph until their first
+projection arrives; the stable history ID preserves selection across these turns.
+
+The default view uses at most three chronological tracks. Older completed groups
+fold automatically; running, failed and waiting work remains visible. Cross-execution
+references name their real sources without drawing long lines through unrelated
+history. Clicking one reveals its actual target Step and local dependencies.
+Execution expansion, Step graph, additional dependency hops, focus and return all
+use the same node identities. Virtualized history rows and a bounded local graph
+keep 300?500px panels usable. The local lens shows at most 160 nodes with an
+explicit limit notice; continue by selecting a related node.
+
+`consumed_inputs` explicitly names a successful `step_id`, a same-plan predecessor
+`node_id`, or a versioned `artifact_ref`. A data edge is recorded when the result
+is delivered, not merely when the plan declares it. Successful artifact inspection
+records access evidence; it does not prove that the model used the data in its
+reasoning. Free-form contextual references are not reconstructed. Sources outside
+this private Agent/session history have no fabricated producer node. Older records
+lack evidence that was never recorded; migration preserves known identities and
+explicit control dependencies without inventing historical provenance.
+
+The host accepts up to 10,000 nodes, 50,000 edges and 8 MiB per projection. The Pack
+preserves complete history on disk and declares presentation limits when necessary.
+History folding does not aggregate or rewrite real edges. Runtime scheduling,
+resource access and scientific execution remain Pack-owned.
 
 ## Skill package provenance
 

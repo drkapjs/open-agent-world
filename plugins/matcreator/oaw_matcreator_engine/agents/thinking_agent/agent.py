@@ -20,7 +20,7 @@ from .session_summary import write_session_summary
 from ...workspace import get_session_workdir
 from ...resources import BRIDGE_INSTRUCTION, resource_tools
 from ..execution_graph_state import get_execution_graph, set_execution_graph
-from .history_tools import read_session_log
+from .history_tools import read_session_log, read_execution_history
 
 
 logger = logging.getLogger(__name__)
@@ -138,6 +138,7 @@ async def run_flash_step(
     suggested_skills: list[str],
     tool_context: ToolContext,
     label: Optional[str] = None,
+    consumed_inputs: Optional[list[dict]] = None,
 ) -> dict:
     """Execute a step ad-hoc. No DAG or plan required.
 
@@ -171,6 +172,7 @@ async def run_flash_step(
         workspace_dir="",
         prior_context=None,
         node_id=node_id,
+        consumed_inputs=consumed_inputs,
         tool_context=tool_context,
     )
     # Surface the durable identity to transcript consumers.  In particular a
@@ -196,6 +198,10 @@ Previous findings: {summarize}
 2. Create a DAG with validate_graph. Edges mean a predecessor must succeed before
    the successor starts; never infer data provenance from execution order. Put OAW
    skill IDs, inputs and acceptance criteria in action; use suggested_skills=[].
+   Declare exact data inputs separately in each node's consumed_inputs: a prior
+   successful step_id, a same-plan predecessor node_id, or versioned artifact_ref.
+   Discover past step IDs with read_execution_history. Explicit inputs are resolved and
+   delivered by the runtime; free-form action or context text is not provenance.
 {confirmation_instruction}
 4. The execution orchestrator dispatches the plan. Review its actual results.
 5. For waiting work inspect existing OAW operations before resuming; never submit
@@ -268,7 +274,7 @@ thinking_agent = LlmAgent(
     tools=[FunctionTool(tool) for tool in (
         validate_graph, validate_intent, validate_summarize, write_session_summary,
         confirm_plan_and_start_execution, resume_execution, set_node_status,
-        run_flash_step, read_session_log,
+        run_flash_step, read_session_log, read_execution_history,
     )] + resource_tools(),
     before_agent_callback=before_agent_callback,
 )

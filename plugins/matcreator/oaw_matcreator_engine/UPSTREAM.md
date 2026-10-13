@@ -45,7 +45,17 @@ Sandbox operations, Artifact versions, state and read-only execution projections
 This Pack owns the research workflow. Third-party libraries are installed by the
 Pack setup hook; engine changes do not invalidate that dependency cache.
 
-Internalization does not itself implement the proposed Git-like history or
-Dependency Lens. The existing projection's history identity, data provenance,
-attempt export and pagination gaps remain follow-up contract work. No dependency
-relations have been synthesized to hide those gaps.
+The execution-history extension records stable plan/attempt identities, immutable
+retry attempts, explicit replan relations, timestamps and atomic history snapshots.
+Plan-scoped lookup replaces ambiguous global logical Step lookup. Explicit
+`consumed_inputs` delivers known prior results; resource instrumentation records
+versioned artifact publication and inspection. These changes remain entirely in
+this Pack. The generic host contract transports typed edges and paginated snapshots;
+the frontend owns chronological operation history, bounded tracks and direct
+dependency navigation. The launcher records task forks and executor ownership;
+the adapter exposes sanitized tool operations and retains planned definitions
+after their actual attempts begin. Task completion never manufactures a merge.
+
+Recorded access is evidence of delivery, not proof of the model's reasoning.
+Unstructured context and pre-migration history cannot provide exact provenance.
+The extension does not introduce cross-session result retrieval or a new scheduler.

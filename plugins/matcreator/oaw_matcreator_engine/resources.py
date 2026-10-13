@@ -6,6 +6,8 @@ world database, Sandbox driver, credentials store or generic OAW service.
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
+from contextvars import ContextVar
 
 from google.adk.tools.function_tool import FunctionTool
 from google.genai import types
@@ -25,6 +27,23 @@ Use the planner/executor/subagent tools for orchestration, not a second schedule
 """
 
 _bridge = None
+_execution_context = ContextVar("matcreator_execution_context", default=None)
+
+
+@contextmanager
+def execution_context(session_id, node_id):
+    token = _execution_context.set((session_id, node_id))
+    try:
+        yield
+    finally:
+        _execution_context.reset(token)
+
+
+def _record_artifact(reference, *, produced=False):
+    context = _execution_context.get()
+    if context:
+        from .agents.graph_logger import AgentGraphLogger
+        AgentGraphLogger(context[0]).log_artifact(context[1], reference, produced=produced)
 
 
 def configure(rpc, emit_event):
@@ -64,6 +83,11 @@ class ResourceBridge:
         value = unpack(response)
         if response.get("tool") == "publish_artifact" and isinstance(value, dict) and value.get("state") == "ready":
             value = {**value, "oaw_artifact_ref": "oaw:artifact:" + arguments["collection"] + ":" + value["version_id"]}
+            _record_artifact(value["oaw_artifact_ref"], produced=True)
+        if response.get("tool") == "inspect_artifacts" and isinstance(value, dict) and value.get("state") == "ready":
+            version = value.get("version_id") or arguments.get("version_id")
+            if arguments.get("collection") and version:
+                _record_artifact(f"oaw:artifact:{arguments['collection']}:{version}")
         images = []
         for item in response.get("result", []):
             if item.get("type") == "inputImage":
@@ -76,6 +100,23 @@ class ResourceBridge:
 def resource_tools():
     value = bridge()
     return [FunctionTool(value.oaw_list_tools), FunctionTool(value.oaw_invoke_tool)]
+
+
+async def read_artifact_input(reference):
+    """Resolve and reauthorize a version before delivering metadata to an agent."""
+    pieces = reference.split(":")
+    tools = await bridge().rpc("list_tools")
+    tool = next((item for item in tools if item["name"] == "inspect_artifacts"), None)
+    if tool is None:
+        raise ValueError("Artifact read access is missing or revoked")
+    response = await bridge().oaw_invoke_tool(tool["capability_id"], {"collection": pieces[2], "version_id": pieces[3]})
+    value = response.get("result")
+    if not response.get("ok") or not isinstance(value, dict) or value.get("state") != "ready":
+        raise ValueError("Input artifact is unavailable or not ready")
+    # Some host versions omit the tool name in replies. Resolution itself is
+    # direct access evidence and can be recorded without guessing that name.
+    _record_artifact(reference)
+    return value
 
 
 async def validate_artifacts(references):

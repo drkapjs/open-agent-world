@@ -74,7 +74,7 @@ async def run(request, reader, start_reader):
     from google.adk.runners import Runner
     from google.adk.sessions import InMemorySessionService, Session
     from google.genai import types
-    from native_adapter import install, read_agent_graph
+    from native_adapter import install, read_agent_history
 
     pending = {}
     stopped = False
@@ -146,10 +146,48 @@ async def run(request, reader, start_reader):
         if isinstance(graph, list):
             graph = graph[0] if graph else {}
         graph_path = root / "home" / ".adk" / "agent_graphs" / "native.json"
-        agents = read_agent_graph(graph_path)
-        if agents is None:
-            return  # Incomplete in-place write; retain the last published graph.
-        value = {"phase": phase, "goal": str(stored.state.get("goal") or ""), "graph": graph, "agents": agents}
+        history = read_agent_history(graph_path)
+        if history is None:
+            return  # Retain the last published graph while history is unavailable.
+        from oaw_matcreator_engine.agents.graph_logger import AgentGraphLogger
+        goal = str(stored.state.get("goal") or "")
+        try:
+            if AgentGraphLogger(session.id).log_snapshot_context(phase, goal):
+                history = read_agent_history(graph_path)
+        except (OSError, ValueError):
+            marker = "history_revision_unavailable"
+            if last_snapshot != marker:
+                send({"type": "event", "event": "agent_progress", "payload": {
+                    "message": "Execution graph update is temporarily unavailable; work continues.",
+                    "history_snapshot_unavailable": True}})
+            last_snapshot = marker
+            return
+        if history is None:
+            return
+        value = {"phase": phase, "goal": goal, "graph": graph,
+                 "history": {**history, "history_id": root.name}}
+        # Detail is optional; topology and identities are never silently cut.
+        # Keep comfortably below the parent's JSON-lines transport budget.
+        if len(json.dumps(value, ensure_ascii=False, default=str).encode("utf-8")) > 8 * 1024 * 1024:
+            for node in history["nodes"].values():
+                node.pop("summary", None)
+            for plan in history.get("plans", {}).values():
+                for node in plan.get("nodes", {}).values():
+                    for field in ("action", "result"):
+                        node.pop(field, None)
+            value["history"]["detail_omitted"] = True
+            value["graph"] = {}
+        if len(json.dumps(value, ensure_ascii=False, default=str).encode("utf-8")) > 10 * 1024 * 1024:
+            # Observation must never abort scheduled work. Keep the last valid
+            # projection; full history is still durable in the Pack directory.
+            marker = "history_transport_limit"
+            if last_snapshot != marker:
+                send({"type": "event", "event": "agent_progress", "payload": {
+                    "message": "Execution history exceeds the live graph transport limit; complete history remains saved.",
+                    "history_snapshot_unavailable": True,
+                    "total_nodes": len(history["nodes"])}})
+            last_snapshot = marker
+            return
         serialized = json.dumps(value, sort_keys=True, default=str)
         if serialized != last_snapshot:
             send({"type": "snapshot", "value": value})
@@ -186,9 +224,13 @@ async def run(request, reader, start_reader):
         snapshot("idle")
         send({"type": "completed", "text": final_text})
     except asyncio.CancelledError:
+        from oaw_matcreator_engine.agents.graph_logger import AgentGraphLogger
+        AgentGraphLogger(session.id).mark_running_nodes_cancelled()
         snapshot("interrupted")
         raise
     except Exception:
+        from oaw_matcreator_engine.agents.graph_logger import AgentGraphLogger
+        AgentGraphLogger(session.id).mark_running_nodes_failed()
         snapshot("error")
         raise
     finally:

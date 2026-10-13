@@ -2,7 +2,7 @@ import type { ComponentType } from "react";
 import type { NodeSurfaceLevel, NodeTypeCatalogItem, WorldCard } from "../types/world";
 export type { TutorialDefinition, TutorialStep, TutorialText } from '../tutorials/types';
 export type { DataConsumer, DataSchema, DataQuery, Dataset, DataSourceHost } from './dataSources';
-export type { ExecutionNode, ExecutionSnapshot, ExecutionSourceHost } from './executionSources';
+export type { ExecutionNode, ExecutionEdge, ExecutionPage, ExecutionSnapshot, ExecutionSourceHost } from './executionSources';
 export type { NodePresentation, NodeSurfaceLevel, PluginStateSpec } from "../types/world";
 export { SchemaFields } from "./SchemaFields";
 export { CardFace, CardStock } from '../components/CardFace';

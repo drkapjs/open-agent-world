@@ -6,11 +6,27 @@ import { useWorldStore } from '../state/worldStore';
 export interface ExecutionNode {
   id: string; label: string; kind: 'agent' | 'plan' | 'tool'; status: string;
   parent_id?: string | null; dependency_ids?: string[]; detail?: string; result?: string;
+  role?: string; execution_id?: string | null; plan_id?: string | null; sequence?: number;
+  started_at?: string | null; finished_at?: string | null; attempt?: number;
+  retry_of?: string | null; replan_of?: string | null; artifact_refs?: string[];
+  actor_id?: string | null; actor_label?: string; workstream_id?: string | null; workstream_label?: string;
+  operation?: string; record_type?: 'activity' | 'context' | 'planned'; realized_by?: string | null;
 }
-export interface ExecutionSnapshot { run_id?: string; previous_run_id?: string; title: string; phase: string; nodes: ExecutionNode[]; truncated?: boolean }
+export interface ExecutionEdge {
+  id: string; source: string; target: string; kind: 'control' | 'data' | 'retry' | 'replan' | 'fork' | 'merge';
+  artifact_ref?: string | null; evidence?: string | null;
+}
+export interface ExecutionPage { cursor?: string; limit?: number }
+export interface ExecutionSnapshot {
+  run_id?: string; previous_run_id?: string; history_id?: string; revision?: string | number;
+  title: string; phase: string; nodes: ExecutionNode[]; edges?: ExecutionEdge[];
+  mode?: 'full' | 'page';
+  retention?: 'snapshot' | 'history';
+  truncated?: boolean; next_cursor?: string | null; total_nodes?: number | null;
+}
 export interface ExecutionSourceHost {
   list(): Promise<{ sources: { id: string; name: string; type: string }[] }>;
-  read(source: string): Promise<ExecutionSnapshot>;
+  read(source: string, page?: ExecutionPage): Promise<ExecutionSnapshot>;
   subscribe(listener: (reason?: 'connections' | 'execution') => void): () => void;
 }
 
@@ -19,7 +35,7 @@ export function useExecutionSources(cardId: string, disabled = false): Execution
   const session = useCardStateSession(cardId);
   return useMemo(() => disabled ? undefined : {
     list: () => worldApi.executionSources(cardId),
-    read: source => worldApi.executionSnapshot(cardId, source, session ?? null),
+    read: (source, page) => worldApi.executionSnapshot(cardId, source, session ?? null, page),
     subscribe: listener => useWorldStore.subscribe((next, previous) => {
       const links = (state: typeof next) => state.edges.filter(edge => edge.source === cardId)
         .map(edge => `${edge.id}:${edge.target}:${edge.relationship}:${edge.direction}`).sort().join('|');

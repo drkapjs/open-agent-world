@@ -30,10 +30,8 @@ async def invoke_resource_action(services, node_id, action, request, *, capabili
             if node_id not in {item['id'] for item in connected_sources(services, execution_reader)}:
                 raise PermissionDeniedError('Connect this execution source before reading it')
             def read_execution(context, arguments):
-                result = snapshot(services, node_id, context)
-                if len(json.dumps(result, ensure_ascii=False).encode()) > 2 * 1024 * 1024:
-                    raise ResourceValidationError('Execution projection exceeds 2 MiB')
-                return result
+                return snapshot(services, node_id, context,
+                                limit=arguments.get('limit'), cursor=arguments.get('cursor'))
             operation = NodeResourceAction(read_execution)
         if data_reader is not None:
             from backend.data_sources import connected_sources

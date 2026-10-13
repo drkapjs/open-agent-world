@@ -41,4 +41,7 @@ def get_execution_graph(state: Any) -> dict | None:
 def set_execution_graph(state: Any, graph: dict) -> dict:
     """Persist *graph* as an atomic JSON Merge Patch value and return it."""
     state[EXECUTION_GRAPH_STATE_KEY] = [graph]
+    if state.get("session_id") and graph.get("graph_id"):
+        from .graph_logger import AgentGraphLogger
+        AgentGraphLogger(state["session_id"]).log_plan(graph)
     return graph
