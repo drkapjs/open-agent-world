@@ -23,7 +23,7 @@ from open_agent_world.plugin_api import (
 
 from open_agent_world.plugin_api.tool_execution import execute_tool
 
-from .transport import AppServer
+from .transport import AppServer, AppServerRequestError
 from .discovery import discover
 
 
@@ -191,6 +191,33 @@ class CodexRuntime(RuntimeProvider):
         if any(owner == config.agent_id for owner, _ in self.active.values()):
             raise AgentStateError("Codex Agent already has an active Run")
         agent_id, run_id = config.agent_id, context.run_id
+        input_lock = asyncio.Lock()
+        next_input_check = 0.0
+        input_rejected = False
+
+        async def steer_pending(*, force=False):
+            nonlocal next_input_check, input_rejected
+            if not thread_id or not turn_id or input_rejected or not hasattr(self.capabilities, 'pending_conversation_input'):
+                return
+            async with input_lock:
+                if input_rejected or (not force and time.monotonic() < next_input_check):
+                    return
+                next_input_check = time.monotonic() + .1
+                pending = await self.capabilities.pending_conversation_input(agent_id, run_id)
+                if not pending:
+                    return
+                try:
+                    await server.request('turn/steer', {
+                        'threadId': thread_id, 'expectedTurnId': turn_id,
+                        'input': [{'type': 'text', 'text': item['text'], 'text_elements': []} for item in pending],
+                    })
+                except AppServerRequestError:
+                    # A just-completed turn (or an older server) can reject the
+                    # steer. Keep input queued for the next turn, never drop it.
+                    input_rejected = True
+                    return
+                await self.capabilities.acknowledge_conversation_input(
+                    agent_id, run_id, [item['id'] for item in pending])
 
         def event(kind: AgentEventType, payload: dict, status: str | None = None) -> AgentEvent:
             return AgentEvent(agent_id, run_id, kind, payload, run_status=status)
@@ -211,6 +238,8 @@ class CodexRuntime(RuntimeProvider):
                 serialize=codex_tool_content,
             )
             content = outcome.response
+            # Queue user input before releasing this tool result to Codex.
+            await steer_pending(force=True)
             text, success = content[0]["text"], outcome.ok
             await server.events.put({"oaw_event": event(AgentEventType.TOOL_COMPLETED, {
                 "name": name, "call_id": call_id, "response": text[:16000], "success": success,
@@ -261,9 +290,16 @@ class CodexRuntime(RuntimeProvider):
             texts: dict[str, str] = {}
             final_text = ""
             while True:
-                message = await server.events.get()
+                await steer_pending()
+                try:
+                    message = await asyncio.wait_for(server.events.get(), timeout=.1)
+                except TimeoutError:
+                    continue
                 if isinstance(message, Exception):
                     raise message
+                if message.get('oaw_input'):
+                    await steer_pending(force=True)
+                    continue
                 if "oaw_event" in message:
                     yield message["oaw_event"]
                     continue
@@ -328,3 +364,8 @@ class CodexRuntime(RuntimeProvider):
         if active:
             await active[1].events.put(AgentRuntimeError("Codex Run stopped"))
             await active[1].close()
+
+    async def notify_input(self, run_id: str) -> None:
+        active = self.active.get(run_id)
+        if active:
+            await active[1].events.put({'oaw_input': True})

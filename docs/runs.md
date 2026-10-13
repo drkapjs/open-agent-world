@@ -151,13 +151,15 @@ characters. `PATCH /api/conversations/{id}/sessions/{session_id}` accepts a
 manual `title` (up to 200 characters). Renaming does not change group identity
 or the default session's deletion protection.
 
-Provider-visible text and tool start/completion records in Conversation runs
-are committed to `conversation_messages` before notification. Tool argument and
-response details are retained; provider-private reasoning is not projected.
+Provider-visible text in Conversation runs is committed to
+`conversation_messages` before notification. Successive snapshots with the same
+`provider_message_id` update that message in place. Distinct messages remain in
+the timeline, including text emitted before a follow-up from the user. Tool
+start/completion details remain in the Run trace; provider-private reasoning is
+not projected.
 Each record has an immutable ID and a per-session increasing `sequence`.
-Final replies reference the originating text record through the Run's
-`output_message_id`; finalization marks that record instead of duplicating or
-matching its content. Live graph and session participation checks also apply
+Final replies reuse the Run's `output_message_id` when it already contains that
+reply; a separate completion reply gets its own row. Live graph and session participation checks also apply
 to intermediate records, including delegated runs.
 
 `GET /api/conversations/{id}/sessions/{session_id}/timeline` returns `items`,
@@ -190,3 +192,18 @@ retry protocol. Unconfirmed sends remain visible with their text; responses do
 not clear a subsequent draft. Title updates do not gate rendering. Timeline
 invalidations arriving during a fetch are coalesced and drained after that fetch
 instead of being dropped until the next polling interval.
+
+Addressed follow-ups are durable immediately. During an active Run in the same
+session, ADK consumes them just before its next model call, after available tool
+results. Codex uses `turn/steer`; MatCreator's native planner and executors receive
+updates in their model callbacks. These paths continue the current Run. A new
+Run in the same session is not admitted just because the Agent has spare capacity.
+Inputs arriving after the last model boundary, or targeting a provider without
+live-input support, remain queued for a subsequent Run.
+
+Runtime adapters read `pending_conversation_input(agent_id, run_id)` from their
+`AgentCapabilityProvider` and call `acknowledge_conversation_input(...)` with
+message IDs only after including or accepting the input. Reads and acknowledgements
+check the current Run, session membership and graph connection again. Inputs for
+other sessions or Agents are never returned. Optional `RuntimeProvider.notify_input`
+wakes event-driven adapters; it is not a delivery acknowledgement.

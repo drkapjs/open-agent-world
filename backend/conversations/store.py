@@ -391,12 +391,16 @@ class ConversationStore:
             connection.execute('UPDATE conversation_messages SET is_final = 1 WHERE id = ?', (message_id,))
         return self.get_message(message_id)
 
+    def finalize_run_messages(self, run_id: str) -> None:
+        with self.database.transaction(immediate=True) as connection:
+            connection.execute('UPDATE conversation_messages SET is_final=1 WHERE run_id=? AND is_final=0', (run_id,))
+
     def page_messages(self, conversation_id: str, session_id: str, *, before: int | None = None,
                       after: int | None = None, limit: int = 50) -> ConversationMessagePage:
         self.get_session(conversation_id, session_id)
         if before is not None and after is not None:
             raise ConversationValidationError("use either before or after")
-        clauses = 'conversation_id = ? AND session_id = ? AND is_final = 1'
+        clauses = 'conversation_id = ? AND session_id = ?'
         values: list = [conversation_id, session_id]
         if before is not None:
             clauses += ' AND sequence < ?'
@@ -412,8 +416,8 @@ class ConversationStore:
                 rows = list(reversed(rows))
             low = rows[0]['sequence'] if rows else (after or before or 0)
             high = rows[-1]['sequence'] if rows else (after or before or 0)
-            has_before = connection.execute('SELECT 1 FROM conversation_messages WHERE session_id = ? AND is_final = 1 AND sequence < ? LIMIT 1', (session_id, low)).fetchone() is not None
-            has_after = connection.execute('SELECT 1 FROM conversation_messages WHERE session_id = ? AND is_final = 1 AND sequence > ? LIMIT 1', (session_id, high)).fetchone() is not None
+            has_before = connection.execute('SELECT 1 FROM conversation_messages WHERE session_id = ? AND sequence < ? LIMIT 1', (session_id, low)).fetchone() is not None
+            has_after = connection.execute('SELECT 1 FROM conversation_messages WHERE session_id = ? AND sequence > ? LIMIT 1', (session_id, high)).fetchone() is not None
             active = connection.execute("""SELECT * FROM runs WHERE
                 caller_kind = 'conversation' AND caller_id = ? AND context_id = ?
                 AND status IN ('created', 'running', 'waiting')

@@ -55,9 +55,10 @@ const ActivityRow = memo(function ActivityRow({ item, active }: { item: RunActiv
   </div>;
 });
 
-export function RunActivityStream({ activity, active = false, waiting = false, stopping = false, onStop }: {
+export function RunActivityStream({ activity, active = false, running = active, waiting = false, stopping = false, onStop }: {
   activity?: RunActivityState;
   active?: boolean;
+  running?: boolean;
   waiting?: boolean;
   stopping?: boolean;
   onStop?: () => void;
@@ -66,7 +67,7 @@ export function RunActivityStream({ activity, active = false, waiting = false, s
   return <div className="run-activity-stream">
     {activity?.truncated ? <small className="run-activity-note">{t("Earlier activity is no longer in this live view")}</small> : null}
     <div className="run-activity-items">
-      {activity?.items.map(item => <ActivityRow key={item.id} item={item} active={active} />)}
+      {activity?.items.map(item => <ActivityRow key={item.id} item={item} active={running} />)}
     </div>
     {active ? <div className="run-activity-footer">
       {onStop ? <button type="button" className="run-stop-button" disabled={stopping} onClick={onStop}>
@@ -80,14 +81,17 @@ export function RunActivityStream({ activity, active = false, waiting = false, s
   </div>;
 }
 
-export function RunActivityDetails({ run, activity, finalReply }: {
+export function RunActivityDetails({ run, activity, finalReply, messageIds }: {
   run?: ConversationRunSummary;
   activity?: RunActivityState;
   finalReply?: string;
+  messageIds?: Set<string>;
 }) {
   useLocale();
   const [open, setOpen] = useState(false);
-  const detailsActivity = withoutFinalReply(activity, finalReply);
+  const detailsActivity = withoutFinalReply(activity && messageIds
+    ? { ...activity, items: activity.items.filter(item => !item.conversation_message_id || !messageIds.has(item.conversation_message_id)) }
+    : activity, finalReply);
   const count = run?.tool_count ?? activity?.items.filter(item => item.type.startsWith("tool_")).length ?? 0;
   const seconds = run?.started_at && run.finished_at
     ? Math.max(0, Math.round((Date.parse(run.finished_at) - Date.parse(run.started_at)) / 1000)) : undefined;

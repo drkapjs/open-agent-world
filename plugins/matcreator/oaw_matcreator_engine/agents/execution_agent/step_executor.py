@@ -11,7 +11,7 @@ from google.adk.tools.tool_context import ToolContext
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from ...llm_cards import LLMCard
-from ...resources import BRIDGE_INSTRUCTION, resource_tools, validate_artifacts
+from ...resources import BRIDGE_INSTRUCTION, resource_tools, validate_artifacts, before_model_conversation_input
 
 logger = logging.getLogger(__name__)
 
@@ -187,6 +187,7 @@ def build_step_executor_agent(llm_card: LLMCard) -> LlmAgent:
         description="Executes a research step with connected OAW resources.",
         instruction=_STEP_EXECUTOR_INSTRUCTION,
         input_schema=StepExecutorInput,
+        before_model_callback=before_model_conversation_input,
         tools=[ResilientFunctionTool(run_sub_agent), ResilientFunctionTool(submit_step_result), *resource_tools()],
         on_tool_error_callback=on_tool_error,
     )

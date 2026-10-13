@@ -12,6 +12,7 @@ from backend.main import create_app
 from backend.services import create_services
 from backend.world.models import CardCreate, EdgeCreate
 from backend.tests.test_conversations import _create
+from backend.tests.conversation_helpers import wait_for_conversation_delivery
 
 
 def test_groups_sessions_naming_and_bidirectional_pages_survive_restart(data_root: Path):
@@ -68,7 +69,7 @@ class TranscriptRuntime(MockAgentRuntime):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("fail", [False, True])
-async def test_provider_stream_is_live_only_and_terminal_history_is_durable(data_root: Path, fail: bool):
+async def test_provider_messages_and_terminal_history_are_durable(data_root: Path, fail: bool):
     settings = Settings.for_data_root(data_root)
     services = create_services(settings)
     runtime = TranscriptRuntime(WorldAgentCapabilityProvider(services))
@@ -80,15 +81,13 @@ async def test_provider_stream_is_live_only_and_terminal_history_is_durable(data
         await services.create_edge(EdgeCreate(source=agent.id, target=room.id, relationship='participate'))
         session = await services.create_conversation_session(room.id, ConversationSessionCreate(participant_ids=[agent.id]))
         await services.post_conversation_message(room.id, session.id, ConversationPost(content='Start', mention_agent_ids=[agent.id]))
-        for _ in range(100):
-            await asyncio.sleep(0.01)
-            history = services.conversations.list_messages(room.id, session.id)
-            if len(history) == 2:
-                break
+        await wait_for_conversation_delivery(services, room.id, session.id)
+        history = services.conversations.list_messages(room.id, session.id)
         page = services.conversations.page_messages(room.id, session.id)
         timeline = page.items
         assert timeline[0].content == 'Start'
-        assert len(timeline) == 2
+        assert len(timeline) == (5 if fail else 4)
+        assert [m.content for m in timeline[1:4]] == ['Checking', 'Checking', 'Done']
         assert all(m.is_final for m in timeline)
         assert not any(m.kind.startswith('tool_') for m in timeline)
         assert history[-1].id == timeline[-1].id
@@ -100,11 +99,11 @@ async def test_provider_stream_is_live_only_and_terminal_history_is_durable(data
             assert summary.tool_count == 1
             assert [item['name'] for item in summary.tool_trace] == ['read', 'read']
         with services.database.locked() as db:
-            # Streaming snapshots and tool activity no longer become messages.
+            # Text remains chronological; tool details stay in the Run trace.
             assert db.execute(
                 "SELECT COUNT(*) FROM conversation_messages WHERE session_id=?",
                 (session.id,),
-            ).fetchone()[0] == 2
+            ).fetchone()[0] == len(timeline)
         ids = [m.id for m in timeline]
     finally:
         await services.shutdown()

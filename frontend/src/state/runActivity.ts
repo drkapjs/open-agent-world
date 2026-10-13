@@ -6,6 +6,7 @@ export interface RunActivityItem {
   timestamp?: string;
   text?: string;
   provider_message_id?: string;
+  conversation_message_id?: string;
   call_id?: string;
   name?: string;
   arguments?: unknown;
@@ -69,7 +70,8 @@ export function mergeRunActivity(
       if (!content?.trim()) continue;
       if (providerId) index = items.findIndex(item => item.type === type && item.provider_message_id === providerId);
       const item: RunActivityItem = { id: event.id, type, timestamp: event.timestamp,
-        text: content.slice(0, 100_000), provider_message_id: providerId, truncated: content.length > 100_000 };
+        text: content.slice(0, 100_000), provider_message_id: providerId,
+        conversation_message_id: text(payload.conversation_message_id), truncated: content.length > 100_000 };
       if (index < 0) items.push(item);
       else items[index] = { ...item, id: items[index].id, timestamp: items[index].timestamp };
       continue;

@@ -777,6 +777,9 @@ async def test_restart_requeues_an_interrupted_claimed_delivery(
     assert services.deliveries.claim_batch(
         conversation.id, session.id, atlas.id, fake_run_id, [message.id]
     ) == [message.id]
+    services.conversations.add_message(conversation.id, session.id,
+        sender_kind='agent', sender_id=atlas.id, sender_name=atlas.name,
+        content='I am still working.', run_id=fake_run_id)
     services.close()
 
     restored = create_services(settings)
@@ -789,9 +792,11 @@ async def test_restart_requeues_an_interrupted_claimed_delivery(
             history = restored.list_conversation_messages(conversation.id, session.id)
             if history and history[-1].sender_kind == "agent":
                 break
+        await wait_for_conversation_delivery(restored, conversation.id, session.id)
         history = restored.list_conversation_messages(conversation.id, session.id)
-        assert [item.sender_kind for item in history] == ["user", "system", "agent"]
-        assert "interrupted by a backend restart" in history[1].content
+        assert [item.sender_kind for item in history] == ["user", "agent", "system", "agent"]
+        assert history[1].content == 'I am still working.'
+        assert "interrupted by a backend restart" in history[2].content
         assert "Resume this after restart" in history[-1].content
         assert restored.conversations.page_messages(
             conversation.id, session.id

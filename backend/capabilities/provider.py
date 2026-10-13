@@ -322,6 +322,51 @@ class WorldAgentCapabilityProvider:
     def __init__(self, services: ApplicationServices) -> None:
         self.services = services
 
+    def _conversation_input_scope(self, agent_id, run_id):
+        from backend.runs.models import TERMINAL_RUN_STATUSES
+        manager = self.services._require_run_manager()
+        context = manager.current_context
+        if context is None or (context.agent_id, context.run_id) != (agent_id, run_id):
+            raise ResourceValidationError('Conversation input requires the current agent run')
+        run = manager.get_run(run_id)
+        if run.status in TERMINAL_RUN_STATUSES:
+            return None
+        conversation_id, session_id = manager._conversation_scope(run)
+        if not conversation_id or not session_id:
+            return None
+        session = self.services.conversations.get_session(conversation_id, session_id)
+        self.services._require_session_participant(session, agent_id)
+        self.services._require_conversation_connection(agent_id, conversation_id)
+        return conversation_id, session_id
+
+    async def pending_conversation_input(self, agent_id, run_id):
+        scope = self._conversation_input_scope(agent_id, run_id)
+        if scope is None:
+            return []
+        result = []
+        for message_id in self.services.deliveries.pending_messages(agent_id, *scope):
+            message = self.services.conversations.get_message(message_id)
+            text = f"{message.sender_name}: {message.content}"
+            for attachment in message.attachments:
+                text += (f"\n[Attachment: {attachment.name}; version_id={attachment.version_id}; "
+                         f"path={attachment.path}; {attachment.size_bytes} bytes]")
+            result.append({"id": message.id, "text": text, "sequence": message.sequence})
+        return result
+
+    async def acknowledge_conversation_input(self, agent_id, run_id, message_ids):
+        scope = self._conversation_input_scope(agent_id, run_id)
+        if scope is None:
+            return
+        claimed = self.services.deliveries.claim_batch(*scope, agent_id, run_id, message_ids)
+        if claimed:
+            manager = self.services._require_run_manager()
+            lifecycle = manager.get_run(run_id).lifecycle
+            manager.store.update_lifecycle(run_id,
+                delivery_message_ids=list(dict.fromkeys([*lifecycle.get('delivery_message_ids', []), *claimed])),
+                conversation_max_sequence=max(self.services.conversations.get_message(mid).sequence for mid in claimed))
+            # Refresh delivery badges without manufacturing another chat message.
+            await self.services._publish_conversation_message(self.services.conversations.get_message(claimed[-1]))
+
     async def publish_execution(self, agent_id, run_id, snapshot):
         from backend.plugins.execution_graph import ExecutionSnapshot, MAX_EXECUTION_BYTES
         manager = self.services._require_run_manager()

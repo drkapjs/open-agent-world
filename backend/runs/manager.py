@@ -103,6 +103,7 @@ class RunManager:
     admission_check: Any = None
     cleanup_execution: Callable[[str], Awaitable[None]] | None = None
     execution_settled: Callable[[], None] | None = None
+    conversation_event: Callable[[AgentEvent, RunRecord], Awaitable[str | None]] | None = None
     shutting_down: bool = False
 
     def __post_init__(self):
@@ -113,6 +114,16 @@ class RunManager:
     @property
     def current_context(self) -> InvocationContext | None:
         return _current_invocation.get()
+
+    async def notify_conversation_input(self, agent_id: str, conversation_id: str, session_id: str) -> None:
+        for run in self.list_runs(agent_id=agent_id):
+            if run.status not in TERMINAL_RUN_STATUSES and self._conversation_scope(run) == (conversation_id, session_id):
+                try:
+                    await self._provider(run.runtime_provider_id).notify_input(run.run_id)
+                except Exception:
+                    # Input is already durable. A wakeup is best-effort; leave
+                    # delivery to the next model boundary or queued Run.
+                    logger.exception('Failed to wake provider for conversation input in run %s', run.run_id)
 
     def provider_for_agent_configuration(
         self, provider_id: str
@@ -746,8 +757,8 @@ class RunManager:
                     event_kind = event.type.value
                     text = event.payload.get("text")
                     if event_kind == "agent_message" and isinstance(text, str):
-                        # Streaming snapshots are live Run state. Keep them out of
-                        # SQLite until the provider turn reaches a terminal result.
+                        # Conversation owns message persistence; Run output keeps
+                        # the latest snapshot for terminal-result consumers.
                         self._live_output[record.run_id] = text
                     elif event_kind == "agent_progress":
                         progress = text if isinstance(text, str) else event.payload.get("status")
@@ -1063,6 +1074,10 @@ class RunManager:
         payload = (public_tool_payload(event.payload)
                    if event.type.value in {"tool_started", "tool_completed"}
                    else dict(event.payload))
+        if self.conversation_event is not None:
+            message_id = await self.conversation_event(event, record)
+            if message_id:
+                payload['conversation_message_id'] = message_id
         return await self.events.publish(
             EventType(event.type.value),
             node_id=record.agent_id,

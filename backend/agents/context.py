@@ -248,9 +248,11 @@ This is session continuation, not long-term memory. Return only the checkpoint.
 class ManagedContext:
     """One serialized invocation; hooks run before every ADK model call."""
     def __init__(self, store: ContextStore, agent_id: str, context_id: str,
-                 run_id: str, model: Any, prompt: str, *, budget: ContextBudget | None = None) -> None:
+                 run_id: str, model: Any, prompt: str, *, budget: ContextBudget | None = None,
+                 input_provider: Any = None) -> None:
         self.store, self.agent_id, self.context_id = store, agent_id, context_id
         self.run_id, self.model, self.prompt = run_id, model, prompt
+        self.input_provider = input_provider
         self.checkpoint = store.load(agent_id, context_id)
         self.budget = budget or ContextBudget.for_model(model.model)
         self.overhead = 0
@@ -337,6 +339,15 @@ class ManagedContext:
         if current and current[0].get("role") == "user" and current[0].get("parts") == [{"text": self.prompt}]:
             current = current[1:]
         self._ingest(current, snapshot=True)
+        pending = []
+        if self.input_provider is not None:
+            pending = await self.input_provider.pending_conversation_input(self.agent_id, self.run_id)
+        if pending:
+            # Tool results are ingested first; new user messages follow them in
+            # this same model request, with the canonical cursor preventing replay.
+            self.checkpoint.contents.extend(self.store.conversation_delta(
+                self.checkpoint, self.agent_id, self.context_id,
+                max_sequence=max(message['sequence'] for message in pending)))
         self.overhead = estimate(llm_request.config.model_dump(mode="json", exclude_none=True))
         self.publish()
         fixed = estimate([text_content(self.prompt)]) + self.overhead
@@ -348,6 +359,9 @@ class ManagedContext:
         if self.budget.known and self.tokens() >= self.budget.input:
             raise RuntimeError("Context remains too large after compaction. The current message or tool definitions exceed the model's safe input window; history has been retained.")
         llm_request.contents = [types.Content.model_validate(item) for item in self.rendered()]
+        if pending:
+            await self.input_provider.acknowledge_conversation_input(
+                self.agent_id, self.run_id, [message['id'] for message in pending])
         self._input_estimate = estimate(self.rendered()) + self.overhead
         if llm_request.config.max_output_tokens is None:
             llm_request.config.max_output_tokens = self.budget.output

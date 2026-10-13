@@ -43,6 +43,41 @@ class Provider:
         self.projection = ExecutionSnapshot.model_validate(snapshot)
         self.projections.append((run, self.projection))
 
+    async def pending_conversation_input(self, agent, run):
+        return []
+
+    async def acknowledge_conversation_input(self, agent, run, message_ids):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_native_models_receive_followups_after_tool_results_and_share_them_with_children(monkeypatch):
+    monkeypatch.syspath_prepend(str(Path(__file__).parents[1]))
+    from oaw_matcreator_engine.resources import ResourceBridge
+    from google.adk.models.llm_request import LlmRequest
+    from google.genai import types
+    pending = [{'id': 'update', 'text': 'You: skip c', 'sequence': 2}]
+    acknowledged = []
+
+    async def rpc(method, **arguments):
+        if method == 'pending_conversation_input':
+            return list(pending)
+        assert method == 'acknowledge_conversation_input'
+        acknowledged.extend(arguments['message_ids'])
+        pending.clear()
+        return {'ok': True}
+
+    bridge = ResourceBridge(rpc, lambda *args: None)
+    request = LlmRequest(contents=[types.Content(role='user', parts=[
+        types.Part.from_function_response(name='b', response={'result': 'b returned'})])])
+    await bridge.before_model(None, request)
+    assert request.contents[0].parts[0].function_response.name == 'b'
+    assert request.contents[1].parts[0].text == 'You: skip c'
+    child = LlmRequest(contents=[])
+    await bridge.before_model(None, child)
+    assert child.contents[0].parts[0].text == 'You: skip c'
+    assert acknowledged == ['update']
+
 
 def context(run='run1', session='session-a', agent='agent-a'):
     return SimpleNamespace(run_id=run, context_id=session, agent_id=agent)

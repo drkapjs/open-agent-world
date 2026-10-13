@@ -219,9 +219,26 @@ class GoogleAdkAgentRuntime(RuntimeProvider):
                 selected_model = model
                 managed = ManagedContext(self.context_store, agent_id, context.context_id or "",
                                          run_id, model, prompt.strip(),
-                                         budget=self._context_budget(record.config.model, model.model))
+                                         budget=self._context_budget(record.config.model, model.model),
+                                         input_provider=self._provider if hasattr(self._provider, 'pending_conversation_input') else None)
                 context_options = {"before_model_callback": managed.before_model,
                                    "after_model_callback": managed.after_model, "include_contents": "none"}
+            elif hasattr(self._provider, 'pending_conversation_input'):
+                injected = []
+
+                async def before_model(callback_context, llm_request):
+                    del callback_context
+                    pending = await self._provider.pending_conversation_input(agent_id, run_id)
+                    injected.extend(self._adk.types.Content(role='user', parts=[
+                        self._adk.types.Part.from_text(text=message['text'])]) for message in pending)
+                    # ADK rebuilds its request each step; retain all accepted
+                    # follow-ups for the remainder of this invocation.
+                    llm_request.contents.extend(injected)
+                    if pending:
+                        await self._provider.acknowledge_conversation_input(
+                            agent_id, run_id, [message['id'] for message in pending])
+
+                context_options = {'before_model_callback': before_model}
             agent = self._adk.Agent(
                 name=self._adk_agent_name(agent_id),
                 description=record.config.name,
@@ -275,7 +292,7 @@ class GoogleAdkAgentRuntime(RuntimeProvider):
     ) -> AsyncIterator[AgentEvent]:
         content = getattr(event, "content", None)
         parts = getattr(content, "parts", None) or []
-        for part in parts:
+        for index, part in enumerate(parts):
             function_call = getattr(part, "function_call", None)
             if function_call is not None:
                 yield AgentEvent(
@@ -311,7 +328,8 @@ class GoogleAdkAgentRuntime(RuntimeProvider):
                     record.config.agent_id,
                     run_id,
                     AgentEventType.MESSAGE,
-                    {"text": text, "final": is_final},
+                    {"text": text, "final": is_final,
+                     **({'provider_message_id': f'{event.id}:{index}'} if getattr(event, 'id', None) else {})},
                 )
 
     async def stop(self, run_id: str) -> None:

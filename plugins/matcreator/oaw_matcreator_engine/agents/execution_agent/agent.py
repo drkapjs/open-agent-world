@@ -13,7 +13,7 @@ from google.adk.tools.tool_context import ToolContext
 from ...constants import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
 from ...adk_compat import install_lenient_tool_argument_parsing
 from ...workspace import get_session_workdir
-from ...resources import BRIDGE_INSTRUCTION, resource_tools
+from ...resources import BRIDGE_INSTRUCTION, resource_tools, before_model_conversation_input
 from ..thinking_agent.summarize import validate_summarize
 from ..thinking_agent.planning import (
     get_ready_nodes,
@@ -198,6 +198,7 @@ execution_agent = LlmAgent(
         api_key=_model_api_key,
     ),
     include_contents="none",
+    before_model_callback=before_model_conversation_input,
     description=(
         "Orchestrates execution of a DAG-based plan by spawning isolated step_executor sub-agents. "
         "Handles parallel node dispatch, status tracking, and error escalation to the planner."

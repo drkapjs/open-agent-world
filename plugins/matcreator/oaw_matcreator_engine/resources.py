@@ -5,6 +5,7 @@ world database, Sandbox driver, credentials store or generic OAW service.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -76,6 +77,24 @@ class ResourceBridge:
         self.rpc = rpc
         self.emit_event = emit_event
         self.verified = set()
+        self.input_lock = asyncio.Lock()
+        self.conversation_input = {}
+
+    async def before_model(self, callback_context, llm_request):
+        # One worker hosts the native planner and recursive executors. Broadcast
+        # accepted updates to each model context without replacing orchestration.
+        async with self.input_lock:
+            pending = await self.rpc('pending_conversation_input')
+            if not isinstance(pending, list):
+                raise RuntimeError('Conversation input bridge failed')
+            for message in pending:
+                self.conversation_input[message['id']] = message
+            llm_request.contents.extend(types.Content(role='user', parts=[
+                types.Part.from_text(text=message['text'])]) for message in self.conversation_input.values())
+            if pending:
+                result = await self.rpc('acknowledge_conversation_input', message_ids=[m['id'] for m in pending])
+                if not isinstance(result, dict) or result.get('ok') is not True:
+                    raise RuntimeError('Conversation input acknowledgement failed')
 
     async def oaw_list_tools(self) -> dict:
         """Discover currently connected OAW tools and their argument schemas."""
@@ -109,6 +128,10 @@ class ResourceBridge:
                 header, data = item["imageUrl"].split(",", 1)
                 images.append(types.Part.from_bytes(data=base64.b64decode(data), mime_type=header[5:].split(";")[0]))
         return {"ok": True, "result": value, **({"media": images} if images else {})}
+
+
+async def before_model_conversation_input(callback_context, llm_request):
+    await bridge().before_model(callback_context, llm_request)
 
 
 def resource_tools():

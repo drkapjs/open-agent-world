@@ -4,6 +4,7 @@ import { useWorkspaceAccess } from '../workspace/WorkspaceAccess';
 import { t, useLocale } from "../i18n";
 import { useConversationTimeline } from "../state/useConversationTimeline";
 import { useRunActivity } from "../state/useRunActivity";
+import { conversationTranscript } from '../state/conversationTranscript';
 import { RunActivityDetails, RunActivityStream } from "./RunActivityStream";
 import { MarkdownMessage } from "./MarkdownMessage";
 import { ConversationAttachments } from "./ConversationAttachments";
@@ -178,6 +179,7 @@ export function ConversationWorkspace({ card }: { card: WorldCard }) {
   }, [outgoing]);
   const activeRuns = history.activeRuns;
   const runActivities = useRunActivity(card.id, activeSessionId, runtimeEvents, activeRuns, history.runSummaries);
+  const transcriptEntries = conversationTranscript(messages, activeRuns, runActivities);
   const deliveryAgents = new Map(agents.map((agent) => [agent.id, agent.name]));
   const activeGroupId = activeSession?.group_id ?? activeSession?.id;
   useEffect(() => {
@@ -566,12 +568,23 @@ export function ConversationWorkspace({ card }: { card: WorldCard }) {
           {!error && messages.length === 0 && activeRuns.length === 0 && !history.loading ? (
             <WorkspaceEmptyState className="conversation-empty" icon={<MessageSquare size={24} />} title={t("This session is ready")} description={t("Select a participant, type an explicit @name, or keep an unaddressed note.")} />
           ) : null}
-          {messages.map((message) => (
+          {transcriptEntries.map((entry) => {
+            if (entry.kind === 'activity') return <article className="workspace-message is-agent" key={entry.id}
+              data-activity-id={entry.item.id}>
+              <span><Bot size={13} /></span>
+              <RunActivityStream activity={{ items: [entry.item], seen: [], truncated: false }} running />
+            </article>;
+            const message = entry.message;
+            const runMessages = messages.filter(item => item.run_id && item.run_id === message.run_id);
+            const showRunDetails = message.run_id && !activeRuns.some(run => run.run_id === message.run_id)
+              && runMessages.at(-1)?.id === message.id;
+            return (
             <article className={`workspace-message is-${message.sender_kind}`} key={message.id} data-message-id={message.id}>
               <span>{message.sender_kind === "agent" ? <Bot size={13} /> : message.sender_kind === "system" ? <Info size={13} /> : <UserRound size={13} />}</span>
               <div><strong>{message.sender_name}</strong>
-                {message.run_id && (history.runSummaries[message.run_id] || runActivities.get(message.run_id)?.items.length) ?
+                {showRunDetails && message.run_id && (history.runSummaries[message.run_id] || runActivities.get(message.run_id)?.items.length) ?
                   <RunActivityDetails run={history.runSummaries[message.run_id]} activity={runActivities.get(message.run_id)}
+                    messageIds={new Set(runMessages.map(item => item.id))}
                     finalReply={message.sender_kind === "agent" && message.is_final !== false ? message.content : undefined} /> : null}
                 {message.kind?.startsWith("tool_")
                   ? <details className="conversation-tool-message"><summary>{message.content.split("\n")[0]}</summary><pre>{message.content.split("\n").slice(1).join("\n").trim() || t("No additional details")}</pre></details>
@@ -606,7 +619,7 @@ export function ConversationWorkspace({ card }: { card: WorldCard }) {
                 </div> : null}
               </div>
             </article>
-          ))}
+          ); })}
           {history.hasAfter ? <button type="button" disabled={history.loading} onClick={() => void history.loadNewer()}>{t("Load newer messages")}</button> : null}
           {!error ? activeRuns.map((run) => {
             const agent = agents.find((item) => item.id === run.agent_id);
@@ -616,7 +629,7 @@ export function ConversationWorkspace({ card }: { card: WorldCard }) {
                 data-responding-agent-id={run.agent_id}
                 aria-label={t("{v0} is responding", { v0: String(agent?.name ?? run.agent_id) })}>
                 <span title={agent?.name}><Bot size={13} /></span>
-                <RunActivityStream activity={runActivities.get(run.run_id)} active
+                <RunActivityStream active
                   waiting={run.status === "waiting"} stopping={stopping}
                   onStop={() => void stopRun(run.run_id)} />
               </article>

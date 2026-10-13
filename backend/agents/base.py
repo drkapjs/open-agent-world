@@ -33,6 +33,14 @@ class AgentCapabilityProvider(Protocol):
 
     async def list_tools(self, agent_id: str) -> Sequence[ScopedToolDefinition]: ...
 
+    async def pending_conversation_input(self, agent_id: str, run_id: str) -> list[dict[str, Any]]:
+        """Read queued input for this Run's session, rechecking live access."""
+        ...
+
+    async def acknowledge_conversation_input(self, agent_id: str, run_id: str, message_ids: list[str]) -> None:
+        """Claim input only after the runtime has included/accepted it."""
+        ...
+
     async def invoke_tool(
         self,
         agent_id: str,
@@ -43,6 +51,13 @@ class AgentCapabilityProvider(Protocol):
 
 class RuntimeProvider(ABC):
     """Provider-neutral runtime boundary; provider SDK objects never cross it."""
+
+    async def notify_input(self, run_id: str) -> None:
+        """Wake an active provider after durable input arrives; no receipt implied.
+
+        Pull-based model callbacks need no wakeup. Event-driven runtimes may
+        override this and use the capability provider's input/acknowledgement API.
+        """
 
     @abstractmethod
     async def create_agent(self, config: AgentConfig) -> AgentInfo:

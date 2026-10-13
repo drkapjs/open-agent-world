@@ -18,7 +18,7 @@ from .intent import validate_intent
 from .summarize import validate_summarize
 from .session_summary import write_session_summary
 from ...workspace import get_session_workdir
-from ...resources import BRIDGE_INSTRUCTION, resource_tools
+from ...resources import BRIDGE_INSTRUCTION, resource_tools, before_model_conversation_input
 from ..execution_graph_state import get_execution_graph, set_execution_graph
 from .history_tools import read_session_log, read_execution_history
 
@@ -277,5 +277,6 @@ thinking_agent = LlmAgent(
         run_flash_step, read_session_log, read_execution_history,
     )] + resource_tools(),
     before_agent_callback=before_agent_callback,
+    before_model_callback=before_model_conversation_input,
     on_tool_error_callback=on_tool_error,
 )

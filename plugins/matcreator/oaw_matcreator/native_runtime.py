@@ -157,7 +157,14 @@ class MatCreatorRuntime(RuntimeProvider):
 
             async def respond(message):
                 try:
-                    result = await self._bridge(config.agent_id, message)
+                    if message['method'] == 'pending_conversation_input':
+                        result = await self.provider.pending_conversation_input(config.agent_id, context.run_id)
+                    elif message['method'] == 'acknowledge_conversation_input':
+                        await self.provider.acknowledge_conversation_input(
+                            config.agent_id, context.run_id, message['message_ids'])
+                        result = {'ok': True}
+                    else:
+                        result = await self._bridge(config.agent_id, message)
                 except asyncio.CancelledError:
                     raise
                 except Exception:

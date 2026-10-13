@@ -48,6 +48,15 @@ class ConversationDeliveryStore:
             ).fetchall()
         return [str(row["agent_id"]) for row in rows]
 
+    def pending_messages(self, agent_id: str, conversation_id: str, session_id: str) -> list[str]:
+        with self.database.locked() as db:
+            rows = db.execute(
+                """SELECT message_id FROM conversation_deliveries
+                WHERE agent_id=? AND conversation_id=? AND session_id=? AND status='queued'
+                ORDER BY id""", (agent_id, conversation_id, session_id),
+            ).fetchall()
+        return [str(row["message_id"]) for row in rows]
+
     def claim_batch(
         self,
         conversation_id: str,

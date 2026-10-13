@@ -30,13 +30,27 @@ while True:
     result = {}
     if method in ('thread/start', 'thread/resume'):
         result = {'thread': {'id': request['params'].get('threadId', 'thread-fixture')}}
+    elif method == 'turn/steer':
+        assert request['params']['expectedTurnId'] == 'turn-fixture'
+        assert request['params']['input'][0]['text'] == 'Skip c'
+        if prompt == 'reject-steer':
+            send({'id': request['id'], 'error': {'code': -32600, 'message': 'No active turn'}})
+            send({'method': 'turn/completed', 'params': {**scope, 'turn': {'id': 'turn-fixture', 'status': 'completed'}}})
+            continue
+        send({'id': request['id'], 'result': {'turnId': 'turn-fixture'}})
+        send({'method': 'item/completed', 'params': {**scope, 'item': {
+            'type': 'commandExecution', 'id': 'cmd1', 'status': 'completed', 'exitCode': 0}}})
+        send({'method': 'item/completed', 'params': {**scope, 'item': {
+            'type': 'agentMessage', 'id': 'msg1', 'text': 'Skipped c after b'}}})
+        send({'method': 'turn/completed', 'params': {**scope, 'turn': {'id': 'turn-fixture', 'status': 'completed'}}})
+        continue
     elif method == 'turn/start':
         prompt = request['params']['input'][0]['text']
         send({'id': request['id'], 'result': {'turn': {'id': 'turn-fixture'}}})
         scope = {'threadId': 'thread-fixture', 'turnId': 'turn-fixture'}
         if prompt == 'crash':
             sys.exit(7)
-        if prompt == 'hang':
+        if prompt in ('hang', 'reject-steer'):
             send({'method': 'item/started', 'params': {**scope, 'item': {'type': 'commandExecution', 'id': 'cmd1', 'command': 'sleep'}}})
             continue
         if prompt == 'approval':

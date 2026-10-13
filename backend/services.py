@@ -12,7 +12,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path, PureWindowsPath, PurePosixPath
 from typing import TYPE_CHECKING, Any, TypeVar
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from backend.spatial import Rectangle
 
@@ -693,12 +693,13 @@ class ApplicationServices:
                 or not session_id
             ):
                 continue
+            self.conversations.finalize_run_messages(run.run_id)
             with self.database.locked() as db:
                 already_visible = db.execute(
                     """SELECT 1 FROM conversation_messages
                     WHERE run_id=? AND session_id=? AND is_final=1
-                    AND sender_kind IN ('agent','system') LIMIT 1""",
-                    (run.run_id, session_id),
+                    AND (kind='run_outcome' OR (?='succeeded' AND sender_kind='agent' AND content=?)) LIMIT 1""",
+                    (run.run_id, session_id, run.status, manager.final_text(run.run_id)),
                 ).fetchone()
             if already_visible is not None:
                 continue
@@ -2613,6 +2614,7 @@ class ApplicationServices:
         await self._publish_conversation_message(message)
 
         for agent_id in mentions:
+            await self._require_run_manager().notify_conversation_input(agent_id, conversation_id, session_id)
             task = asyncio.create_task(self._drain_conversation_agent(agent_id))
             task.add_done_callback(self._consume_background_task)
         return ConversationPostResult(
@@ -2663,6 +2665,13 @@ class ApplicationServices:
             conversation_id, session_id, message_ids, max_sequence = batch
             manager = self._require_run_manager()
             try:
+                # Follow-ups belong to the current session's Run even if this
+                # Agent has spare slots for other sessions. Providers pull them
+                # at a model boundary; unsupported providers retain the queue.
+                if any(run.status not in TERMINAL_RUN_STATUSES
+                       and manager._conversation_scope(run) == (conversation_id, session_id)
+                       for run in manager.list_runs(agent_id=agent_id)):
+                    raise RuntimeUnavailableError('Conversation session is already running')
                 manager.assert_can_start(agent_id)
             except RuntimeUnavailableError:
                 runs = manager.list_runs(agent_id=agent_id)
@@ -3357,6 +3366,7 @@ class ApplicationServices:
             except Exception:
                 terminal = False
             if terminal:
+                self.conversations.finalize_run_messages(run_id)
                 self.deliveries.mark_run_done(run_id)
                 try:
                     await self._drain_conversation_agent(agent_id)
@@ -3393,10 +3403,32 @@ class ApplicationServices:
         )
         await self._publish_conversation_message(message)
 
+    async def _persist_conversation_event(self, event, record) -> str | None:
+        if event.type.value != 'agent_message' or not str(event.payload.get('text') or '').strip():
+            return None
+        manager = self._require_run_manager()
+        conversation_id, session_id = manager._conversation_scope(record)
+        if not conversation_id or not session_id or not self._can_agent_post_to_conversation_session(
+                record.agent_id, conversation_id, session_id):
+            return None
+        provider_id = event.payload.get('provider_message_id') or str(uuid4())
+        message_id = str(uuid5(NAMESPACE_URL, f'{conversation_id}/{session_id}/{record.run_id}/{provider_id}'))
+        message = self.conversations.update_provider_message(conversation_id, session_id,
+            message_id=message_id, run_id=record.run_id, sender_id=record.agent_id,
+            sender_name=self.world.get_card(record.agent_id).name, content=event.payload['text'])
+        if event.payload.get('final'):
+            message = self.conversations.finalize_message(message.id, record.run_id, session_id)
+        scope = self.state.get_scope('run', record.run_id)
+        if self.state.get(scope, 'output_message_id') != message.id:
+            self.state.set(scope, 'output_message_id', message.id)
+        await self._publish_conversation_message(message)
+        return message.id
+
     def _conversation_final_message(self, conversation_id: str, session_id: str, *, run_id: str,
                                     sender_id: str, sender_name: str, content: str) -> ConversationMessage:
+        self.conversations.finalize_run_messages(run_id)
         message_id = self.state.get(self.state.get_scope("run", run_id), "output_message_id")
-        if message_id:
+        if message_id and self.conversations.get_message(str(message_id)).content == content.strip():
             return self.conversations.finalize_message(str(message_id), run_id, session_id)
         return self.conversations.add_message(conversation_id, session_id, sender_kind="agent",
             sender_id=sender_id, sender_name=sender_name, content=content, run_id=run_id)
@@ -3850,6 +3882,7 @@ def create_services(
         state=state,
         cleanup_execution=services.sandbox_operations.cancel_run,
         execution_settled=services.node_execution.signal_continuations,
+        conversation_event=services._persist_conversation_event,
         default_runtime_provider_id=(
             default_runtime_provider_id
             if default_runtime_provider_id is not None
