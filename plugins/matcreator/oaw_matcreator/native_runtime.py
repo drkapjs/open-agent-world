@@ -1,4 +1,4 @@
-"""OAW Run adapter for an isolated, pinned MatCreator worker.
+"""OAW Run adapter for the isolated, Pack-owned MatCreator engine.
 
 Only this process owns graph authorization. The worker receives no world DB,
 Sandbox paths or HTTP credentials, and every reverse tool RPC is reauthorized.
@@ -20,8 +20,8 @@ from open_agent_world.plugin_api import (
     codex_tool_content,
 )
 from open_agent_world.plugin_api.tool_execution import execute_tool
-from .native_card import NativeConfig, UPSTREAM_REVISION
-from .native_environment import read_environment
+from .native_card import NativeConfig
+from .native_environment import ENGINE, read_environment
 
 
 def _redact(value, secret):
@@ -43,9 +43,6 @@ class MatCreatorRuntime(RuntimeProvider):
     def _settings(self, config):
         values = NativeConfig.model_validate({**dict(config.provider_config), "model": config.model,
             "system_instruction": config.system_instruction, "max_concurrent_runs": config.max_concurrent_runs})
-        for value in (values.python_executable, values.source_directory):
-            if value and not Path(value).is_absolute():
-                raise AgentConfigurationError("MatCreator Python and checkout paths must be absolute")
         return values
 
     async def create_agent(self, config):
@@ -77,16 +74,12 @@ class MatCreatorRuntime(RuntimeProvider):
             raise AgentNotFoundError(agent_id)
         record = self.records[agent_id]
         settings = self._settings(record.config)
-        environment = {"status": "override", "python": settings.python_executable}
-        if not settings.python_executable:
-            try:
-                executable, directory = read_environment()
-                environment = {"status": "ready", "python": executable, "directory": str(directory)}
-            except RuntimeError as exc:
-                environment = {"status": "missing", "error": str(exc)}
-        return replace(record, details={"upstream": "AI4MS/MatCreator devel", "revision": UPSTREAM_REVISION,
-            "python": settings.python_executable or "Managed by the MatCreator plugin",
-            "source": settings.source_directory or "pack-managed matcreator package",
+        try:
+            executable, directory = read_environment()
+            environment = {"status": "ready", "python": executable, "directory": str(directory)}
+        except RuntimeError as exc:
+            environment = {"status": "missing", "error": str(exc)}
+        return replace(record, details={"engine": "Pack-owned MatCreator", "source": str(ENGINE),
             "mode": settings.agent_mode, "environment": environment})
 
     async def _bridge(self, agent_id, request):
@@ -105,7 +98,7 @@ class MatCreatorRuntime(RuntimeProvider):
         return {"tool": visible[cap].name, "result": result.response, "ok": result.ok}
 
     async def _snapshot(self, agent_id, run_id, value):
-        # Normalize upstream identities here. The host graph knows no MatCreator types.
+        # Normalize engine identities here. The host graph knows no MatCreator types.
         nodes = [{"id": "agent:" + agent['id'], "label": agent.get('label') or agent['id'],
                   "kind": "agent", "status": agent.get('status') or 'pending',
                   "parent_id": "agent:" + agent['parent_id'] if agent.get('parent_id') else None,
@@ -133,15 +126,12 @@ class MatCreatorRuntime(RuntimeProvider):
         root = self.provider.runtime_state_directory(config.agent_id) / "matcreator" / scope
         root.mkdir(parents=True, exist_ok=True)
         worker = Path(__file__).with_name("native_worker.py")
-        managed = None
-        executable = settings.python_executable
-        if not executable:
-            try:
-                executable, managed = read_environment()
-            except RuntimeError as exc:
-                raise AgentDependencyError(str(exc)) from exc
+        try:
+            executable, managed = read_environment()
+        except RuntimeError as exc:
+            raise AgentDependencyError(str(exc)) from exc
         # Runtime-specific configuration is constructed inside the worker before
-        # importing upstream. Do not inherit ambient model or MatCreator settings.
+        # importing the engine. Do not inherit ambient model or MatCreator settings.
         env = {k: v for k, v in os.environ.items() if not k.startswith((
             "MATCREATOR_", "MATCLAW_", "LLM_", "KDG_", "BOHRIUM_", "OPENAI_", "ANTHROPIC_", "GEMINI_", "GOOGLE_API_"))}
         env.update(PYTHONUTF8="1", PYTHONUNBUFFERED="1")
@@ -153,14 +143,14 @@ class MatCreatorRuntime(RuntimeProvider):
         try:
             try:
                 process = await asyncio.create_subprocess_exec(executable,
-                    *(["-I", "-S"] if managed else []), "-X", "utf8", "-u", str(worker),
-                    *(["--environment", str(managed)] if managed else []),
+                    "-I", "-S", "-X", "utf8", "-u", str(worker),
+                    "--environment", str(managed),
                     cwd=root, env=env, stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                     limit=4 * 1024 * 1024,
                     **({"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}))
             except OSError as exc:
-                raise AgentDependencyError("Cannot start MatCreator Python. Repair the plugin installation or check the optional Python override.") from exc
+                raise AgentDependencyError("Cannot start MatCreator Python. Repair the plugin dependency installation.") from exc
             self.active[context.run_id] = (config.agent_id, process)
 
             async def write(value):
@@ -174,7 +164,7 @@ class MatCreatorRuntime(RuntimeProvider):
                     pass
 
             stderr_task = asyncio.create_task(drain_stderr())
-            await write({"type": "start", "root": str(root), "source_directory": settings.source_directory,
+            await write({"type": "start", "root": str(root),
                 "model": asdict(model), "mode": settings.agent_mode, "instruction": config.system_instruction,
                 "prompt": runtime_input.prompt, "run_id": context.run_id})
 

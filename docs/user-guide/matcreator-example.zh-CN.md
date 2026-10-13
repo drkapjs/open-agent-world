@@ -3,7 +3,7 @@
 [English documentation](../../plugins/matcreator/README.md) | **简体中文**
 
 MatCreator 卡包提供专属 **MatCreator Agent** 和 **MatCreator native research** Legion。
-专属卡片使用上游 `devel` 分支的规划器、执行协调器和递归子 Agent；计算、知识、产物和展示通过 OAW 卡片连接。
+规划器、执行协调器和递归子 Agent 的源码由本项目的 MatCreator Pack 独立维护；计算、知识、产物和展示通过 OAW 卡片连接。
 原来的拼装式 Legion、专用研究任务板和示例创建脚本已移除，卡包不再依赖 Barracks。
 
 ## 安装与部署
@@ -12,15 +12,16 @@ MatCreator 卡包提供专属 **MatCreator Agent** 和 **MatCreator native resea
 也无需填写卡片的 Python 路径。首次安装需要联网下载依赖，后续复用已验证的环境。
 运行环境由卡包管理并与 OAW 的 Python 依赖隔离；主程序 Python 低于 3.12 时会自动准备所需解释器。
 
-安装时会准备依赖和 LiteLLM 的公开分词缓存。运行时固定为 `devel` 的
-`0328c8b814499cbf3e49116323cee050145fa08f`；源码不匹配时会明确报错。
+安装时只准备第三方依赖和 LiteLLM 的公开分词缓存，不再下载或安装外部 MatCreator。
+执行内核位于 `plugins/matcreator/oaw_matcreator_engine/`，随 Pack 一起分发，修改后在下一个 worker 生效。
+原始来源和适配范围见 [Pack 内核说明](../../plugins/matcreator/oaw_matcreator_engine/UPSTREAM.md)。
 
 1. 重启后端并重建或重新加载前端。
 2. 在 Library 打开 MatCreator 卡包，将 **MatCreator native research** 加入牌组并放到画布。
 3. 打开 Legion 的 **Workspace mode**。
 4. 在 **Settings → Models** 设置默认模型，并配置连接的 Sandbox。
 
-卡片的 **MatCreator Python override** 和 **MatCreator checkout** 是开发调试用的可选覆盖项，通常留空。
+外部 Python 和 MatCreator checkout 覆盖项已移除；加载旧卡片时会忽略这两个字段。
 安装和启动必须使用同一个 Python 环境。Windows 的 `scripts/dev.ps1` 已统一使用
 `backend/.venv/Scripts/python.exe`，不会再通过 `uv run --with-editable` 创建临时后端环境。
 若提示卡包安装不完整，错误中会列出后端 Python 和查找目录；先核对启动环境，避免反复安装到另一个环境。

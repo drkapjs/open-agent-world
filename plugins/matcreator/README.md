@@ -6,35 +6,39 @@ host's reusable **Agent graph** card to the native Agent.
 
 ## Native MatCreator Agent
 
-Use **MatCreator native research** for the upstream planner → execution
-orchestrator → recursive step-executor implementation. The former composed
-`matcreator.research` Legion, dedicated task board, coordinator/executor prompts
-and demo builder have been removed. The Pack no longer depends on Barracks.
-Existing world records are not deleted or silently converted; deploy the native
-preset to start a new native workspace.
+Use **MatCreator native research** for the Pack-owned planner, execution
+orchestrator and recursive step executors. Their maintained Python source lives
+in `oaw_matcreator_engine/` and is included in the Pack wheel alongside the
+`oaw_matcreator/` host adapter. Editing that source takes effect in the next
+worker; no upstream checkout, MatCreator PyPI/Git installation, source fingerprint
+update or separate service is required.
 
-The native adapter uses [AI4MS/MatCreator `devel`, revision
-`0328c8b814499cbf3e49116323cee050145fa08f`](https://github.com/AI4MS/MatCreator/tree/0328c8b814499cbf3e49116323cee050145fa08f).
-`native_lock.json` fingerprints its Python runtime sources. An incompatible or
-modified runtime fails explicitly instead of silently falling back to an OAW
-prompt-only Agent. Upstream source is a separate dependency, not copied into the
-Pack or imported in the host process.
+The engine was adapted from AI4MS/MatCreator revision
+`0328c8b814499cbf3e49116323cee050145fa08f`. Its import provenance is recorded in
+[`oaw_matcreator_engine/UPSTREAM.json`](oaw_matcreator_engine/UPSTREAM.json);
+this is historical attribution, not a runtime lock. See
+[engine ownership](oaw_matcreator_engine/UPSTREAM.md) for the retained modules
+and the OAW adaptations.
 
-Normal OAW setup and development startup install the native runtime through the
-Pack's `open_agent_world.setup` hook. Desktop builds include it in the Python
-payload. No separate MatCreator install script or per-card Python path is needed.
-After restarting the backend, place **MatCreator native research**, select a
-default model in **Settings → Models**, and configure the connected Sandbox.
+Normal OAW setup and development startup prepare third-party orchestration
+libraries through the Pack's `open_agent_world.setup` hook. Desktop packaging
+uses the same hook. Google ADK, LiteLLM and JSON Repair are declared in
+`oaw_matcreator/native-requirements.txt` and installed in an isolated directory
+under the destination Python's `oaw-runtimes/matcreator/`. Scientific libraries
+remain in connected Sandboxes. These dependencies are not added to OAW core.
 
-The hook installs the pinned upstream revision, orchestration dependencies and
-tokenizer cache under the destination Python's `oaw-runtimes/matcreator/` directory.
-It reuses verified installations, serializes concurrent setup and retries partial
-installs. Hosts older than Python 3.12 get a managed 3.12 interpreter automatically.
-Managed workers exclude the host's site-packages. Dependency declarations and
-setup code ship inside the Pack; they are not added to the host dependency list. Normal execution
-does not download packages. An incomplete installation is repaired by normal OAW
-setup. The optional **MatCreator Python override** and **MatCreator checkout**
-fields are only for development with a separately prepared, matching runtime.
+Setup reuses verified installations, serializes concurrent calls and retries
+partial installs. Hosts older than Python 3.12 receive a managed interpreter.
+Workers use `-I -S` and explicitly load the Pack source plus its third-party
+libraries. Execution never downloads dependencies. The dependency cache identity
+is independent of engine source edits. Previous runtime caches are left intact;
+new setup installs only the current third-party requirements.
+
+Existing `matcreator.agent` cards, the `matcreator.native` provider ID, session
+storage paths and checkpoint format are retained. Obsolete `python_executable`
+and `source_directory` config fields are discarded on validation; external
+engine/interpreter override paths are no longer exposed or executed. Existing
+saved workspace layouts remain user-owned.
 
 On Windows, `scripts/dev.ps1` prepares and launches the persistent
 `backend/.venv/Scripts/python.exe`, matching normal setup. A `uv run
@@ -46,7 +50,7 @@ Only orchestration dependencies are installed in this environment. Materials
 libraries, CLI tools, remote-compute credentials and licensed programs belong to
 the connected Sandbox. The native runtime supports ADK/LiteLLM model connections
 (OpenAI, Anthropic, Gemini and legacy); the host's TypeSafe-only adapter is not
-supported by the upstream execution engine.
+supported by this ADK execution engine.
 
 In **normal** mode, MatCreator first presents its plan and waits for approval in
 Conversation. **flash** mode delegates directly without a DAG. The Legion
@@ -55,9 +59,10 @@ artifacts. The separate **Agent graph** observes the Agent through a read-only
 connection. Structure viewer follows files from
 Conversation and Sandbox. No OAW Barracks or second task scheduler is deployed.
 
-The native orchestration tools, graph validation, recursive runner, result
-schemas and recovery ledger remain upstream-owned. Resource tools are replaced
-at the boundary for the planner and every dynamically created child:
+The Pack owns its orchestration tools, graph validation, recursive runner,
+result schemas and recovery ledger. Planner and child agents are constructed
+with the same explicit OAW resource bridge; they never construct standalone
+Shell/Python, remote-provider or knowledge-store tools:
 
 | Resource | Connected OAW tool/view |
 | --- | --- |
@@ -79,7 +84,7 @@ monitor is running.
 Each card/conversation pair has its own private worker state and atomic session
 checkpoint under the host data root. New turns load that checkpoint in a fresh
 worker; stopping a Run cancels/join its OAW tool calls and closes the worker.
-Interrupted work never restarts automatically. Upstream attempt recovery runs
+Interrupted work never restarts automatically. Pack attempt recovery runs
 on the next requested turn. Private runtime paths, credentials, checkpoint data
 and execution snapshots are excluded from saved Legion templates. The execution
 view is a projection; an unavailable view does not abort scientific work.
@@ -89,15 +94,18 @@ Artifacts are verified through the current OAW artifact read capability, using
 as host files. Native `success` and OAW Run success remain execution claims, not
 proof of scientific correctness.
 
-Validation includes host deployment/template/session/revocation tests and a
-real upstream + ADK test with a deterministic local model endpoint. The latter
-exercises planning, checkpoint reload, execution, recursive child tools and
-final graph status. Enable it with `OAW_MATCREATOR_SOURCE` pointing at the pinned
-checkout and its runtime dependencies available to the test Python, or set
-`OAW_MATCREATOR_PYTHON` to an override environment's Python. Set
-`OAW_MATCREATOR_MANAGED=1` to test the default Pack-managed runtime with empty
-card paths after normal plugin installation. This is not
-a real-model, Bohrium or scientific calculation benchmark.
+Validation includes host deployment/template/session/revocation checks and a
+real Pack-engine + ADK test with a deterministic local model endpoint. Set
+`OAW_MATCREATOR_MANAGED=1` after normal plugin setup. It exercises planning,
+checkpoint reload, execution, recursive child tools and final graph status.
+An additional isolated test rejects imports of external MatCreator, OAW core,
+and the old standalone knowledge stack, and checks dependency joins, recovery,
+artifact references and revoked access. This is not a real-model or scientific
+calculation benchmark.
+
+The source-plugin setup hook and `.oawpack` archive installation are distinct
+host mechanisms. This change packages the engine in the wheel and validates
+source setup; it does not add a new generic archive runtime installer.
 
 ## Workspace layout (revision 2)
 
@@ -182,14 +190,14 @@ benchmark of all possible graph shapes.
 
 ```powershell
 backend/.venv/Scripts/python.exe -m pytest backend/tests/test_matcreator.py backend/tests/test_matcreator_native.py backend/tests/test_matcreator_workspace.py plugins/matcreator/tests
-$env:OAW_MATCREATOR_PYTHON = 'absolute/path/to/installed/matcreator/python'
-backend/.venv/Scripts/python.exe -m pytest plugins/matcreator/tests/test_native_runtime.py
+$env:OAW_MATCREATOR_MANAGED = '1'
+backend/.venv/Scripts/python.exe -m pytest plugins/matcreator/tests/test_native_runtime.py plugins/matcreator/tests/test_owned_engine.py
 cd frontend
 npx vitest run src/cards/ExecutionGraph.test.tsx src/plugins/StructureViewer.test.tsx src/legions/LegionWorkspace.test.tsx
 node scripts/run-e2e.mjs --builtin-ui e2e/matcreator-native.spec.ts
 ```
 
-The native runtime test uses the real upstream/ADK with a deterministic local
+The native runtime test uses the Pack engine/real ADK with a deterministic local
 model endpoint. The browser test uses a fixture execution snapshot and real
 Conversation attachment/Structure viewer APIs. These are not real-model or
 remote-science acceptance tests. Generic host delegation and continuation

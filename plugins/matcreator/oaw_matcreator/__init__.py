@@ -12,7 +12,7 @@ from . import preset, native_card
 READ = "matcreator.kdg.read"
 
 class MatCreatorPlugin:
-    descriptor = PluginDescriptor(id="matcreator", version="0.5.0", plugin_api_version="1.30", name="MatCreator",
+    descriptor = PluginDescriptor(id="matcreator", version="0.6.0", plugin_api_version="1.30", name="MatCreator",
                                   requires_plugins=("science.structure-viewer",))
 
     def register(self, registration):

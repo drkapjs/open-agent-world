@@ -44,9 +44,10 @@ def installer(tmp_path, monkeypatch):
     def run(args, *, env):
         calls.append(list(map(str, args)))
         if "--target" in args:
-            package = root / "packages" / "matcreator"
-            package.mkdir(parents=True, exist_ok=True)
-            (package / "__init__.py").write_text("")
+            for name in ("google/adk", "litellm", "json_repair"):
+                package = root / "packages" / name
+                package.mkdir(parents=True, exist_ok=True)
+                (package / "__init__.py").write_text("")
 
     monkeypatch.setattr(environment, "run", run)
     return root, calls, run
@@ -55,16 +56,16 @@ def installer(tmp_path, monkeypatch):
 def test_normal_setup_publishes_only_verified_runtime_and_reuses_it_offline(installer, monkeypatch):
     root, calls, _ = installer
     environment.install()
-    assert len(calls) == 3
+    assert len(calls) == 2
     assert calls[0][-2:] == ["-r", str(environment.REQUIREMENTS)]
-    assert "--no-deps" in calls[1]
-    assert "@0328c8b814499cbf3e49116323cee050145fa08f" in calls[1][-1]
-    assert "--check" in calls[2]
+    assert "--check" in calls[1]
+    assert not any("git+" in arg for call in calls for arg in call)
+    assert not (root / "packages" / "matcreator").exists()
     assert environment.read_environment() == (sys.executable, root)
     assert json.loads((root / "ready.json").read_text())["python"] == "host"
     monkeypatch.setattr(environment.shutil, "which", lambda _: None)
     environment.install()
-    assert len(calls) == 4
+    assert len(calls) == 3
     assert "--check" in calls[-1]  # Local validation only; no uv/network.
 
 
@@ -125,7 +126,7 @@ def test_concurrent_setup_installs_only_once(installer, monkeypatch):
         release.set()
         first.result(timeout=5)
         second.result(timeout=5)
-    assert sum("--target" in call for call in calls) == 2  # Dependencies + pinned upstream, once.
+    assert sum("--target" in call for call in calls) == 1  # Third-party dependencies only; engine ships with the Pack.
     assert sum("--check" in call for call in calls) == 2
 
 
@@ -135,7 +136,7 @@ def test_receipt_relocates_with_payload_and_cannot_escape_it(installer):
     relocated = root.with_name("relocated")
     root.rename(relocated)
     assert environment.read_environment(relocated) == (sys.executable, relocated)
-    (relocated / "ready.json").write_text(json.dumps({"format": 1, "python": "../outside.exe"}))
+    (relocated / "ready.json").write_text(json.dumps({"format": 2, "python": "../outside.exe"}))
     with pytest.raises(RuntimeError, match="setup is incomplete"):
         environment.read_environment(relocated)
 

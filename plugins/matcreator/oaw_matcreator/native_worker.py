@@ -17,7 +17,7 @@ sys.stdout = sys.stderr
 # -I -S removes host/user site-packages and PYTHONPATH from managed workers.
 # Add only the adapter and the Pack's installed orchestration dependencies.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from native_environment import activate, validate_source
+from native_environment import activate, activate_engine
 
 if len(sys.argv) == 3 and sys.argv[1] == "--environment":
     activate(Path(sys.argv[2]))
@@ -29,7 +29,7 @@ def send(value):
 
 
 def configure(request):
-    validate_source(request.get("source_directory", ""))
+    activate_engine()
     root = Path(request["root"])
     model = request["model"]
     model_id = model["model"]
@@ -38,9 +38,7 @@ def configure(request):
     os.environ.update({
         "MATCREATOR_HOME": str(root / "home"), "MATCLAW_WORKSPACE": str(root / "workspace"),
         "MATCLAW_SESSION_DIR": str(root / "workspace"),
-        "MATCREATOR_MODULE_SKILLS_ROOT": str(root / "empty-skills"),
-        "MATCREATOR_AUTO_REVIEW": "0", "MATCREATOR_MEMORIZATION_FREQUENCY": "0",
-        "MATCREATOR_REVIEW_FREQUENCY": "0", "LLM_MODEL": model_id,
+        "LLM_MODEL": model_id,
         "LLM_API_KEY": model["api_key"], "LLM_BASE_URL": model["base_url"],
         "LITELLM_LOCAL_MODEL_COST_MAP": "True",
     })
@@ -121,7 +119,9 @@ async def run(request, reader, start_reader):
     checkpoint = root / "session.json"
     previous = Session.model_validate_json(checkpoint.read_text(encoding="utf-8")) if checkpoint.exists() else None
     state = previous.state if previous else {}
-    state.update(agent_mode=request["mode"], execution_approved=False, return_to_planner=False)
+    state.update(agent_mode=request["mode"], execution_approved=False, return_to_planner=False,
+        workdir=str(root / "workspace"), workspace_dir=str(root / "workspace"),
+        output_dir=None, session_output_dir=None)
     session = await sessions.create_session(app_name=app.name, user_id="oaw", session_id="native", state=state)
     # InMemorySessionService stores the authoritative object separately from its
     # returned copy. Populate the supported Session object's event history.
@@ -130,7 +130,7 @@ async def run(request, reader, start_reader):
         stored.events = previous.events
 
     def persist():
-        # The upstream BaseAgent updates ctx.session.state directly as well as
+        # The engine's BaseAgent updates ctx.session.state directly as well as
         # emitting ADK deltas. Preserve both, including recovery/session IDs.
         if sessions.live is not None:
             stored.state = dict(sessions.live.state)
@@ -162,7 +162,7 @@ async def run(request, reader, start_reader):
             snapshot()
             send({"type": "heartbeat"})
 
-    # On Windows, importing a native extension (notably NumPy via sqlite-vec)
+    # On Windows, importing a native extension (such as LiteLLM's tokenizers)
     # while another thread blocks on CRT stdin can deadlock extension loading.
     # Finish dependency/agent construction before starting the pipe reader.
     start_reader()

@@ -1,9 +1,7 @@
-"""Process/protocol tests plus opt-in real upstream + real ADK integration.
+"""Worker/protocol tests and opt-in Pack engine + real ADK integration.
 
-OAW_MATCREATOR_MANAGED=1 uses the default runtime prepared by normal OAW setup.
-OAW_MATCREATOR_SOURCE optionally overrides it with a pinned devel checkout.
-OAW_MATCREATOR_PYTHON selects a separately installed development environment.
-No external model, credentials, remote service or scientific compute is used.
+OAW_MATCREATOR_MANAGED=1 uses dependencies prepared by normal Pack setup.
+No external MatCreator package, model, credential or scientific service is used.
 """
 import asyncio
 import json
@@ -75,24 +73,18 @@ async def test_bridge_resolves_live_tools_after_revocation(tmp_path):
     assert provider.calls == []
 
 
-@pytest.mark.asyncio
-async def test_bad_source_fails_as_run_error_without_host_import(tmp_path):
-    provider = Provider(tmp_path)
-    runtime = MatCreatorRuntime(provider)
-    source = tmp_path / 'changed'
-    (source / 'src/matcreator').mkdir(parents=True)
-    (source / 'src/matcreator/__init__.py').write_text('raise AssertionError("must not import")')
-    config = AgentConfig('a', 'Native', provider_config={'source_directory': str(source), 'python_executable': sys.executable})
-    await runtime.create_agent(config)
-    with pytest.raises(Exception, match='Unsupported MatCreator source'):
-        async for _ in runtime.execute(config, context(agent='a'), RuntimeInput('hello')):
-            pass
-    assert runtime.active == {}
+def test_old_external_paths_are_migrated_out_of_card_configuration():
+    from plugins.matcreator.oaw_matcreator.native_card import NativeConfig
+    value = NativeConfig.model_validate({'source_directory': 'D:/old/checkout',
+        'python_executable': 'D:/old/python.exe', 'agent_mode': 'flash'})
+    assert value.agent_mode == 'flash'
+    assert 'source_directory' not in value.model_dump()
+    assert 'python_executable' not in value.model_json_schema()['properties']
 
 
 @pytest.fixture
 def scripted_model():
-    """A deterministic OpenAI endpoint; the actual upstream agents choose tools."""
+    """A deterministic OpenAI endpoint; the actual Pack agents choose tools."""
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     import threading
     calls = []
@@ -189,8 +181,8 @@ def scripted_model():
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(not any(os.environ.get(key) for key in ('OAW_MATCREATOR_SOURCE', 'OAW_MATCREATOR_PYTHON', 'OAW_MATCREATOR_MANAGED')), reason='requires pinned MatCreator runtime')
-async def test_real_upstream_planner_checkpoint_executor_recursive_child_and_oaw_tool(tmp_path, scripted_model):
+@pytest.mark.skipif(not os.environ.get('OAW_MATCREATOR_MANAGED'), reason='requires Pack orchestration dependencies')
+async def test_pack_engine_planner_checkpoint_executor_recursive_child_and_oaw_tool(tmp_path, scripted_model):
     url, calls = scripted_model
     class ArtifactProvider(Provider):
         async def list_tools(self, agent):
@@ -206,10 +198,7 @@ async def test_real_upstream_planner_checkpoint_executor_recursive_child_and_oaw
             return {'state': 'ready', 'version_id': 'v1'}
 
     provider = ArtifactProvider(tmp_path, url)
-    config = AgentConfig('agent-a', 'Native', provider_config={
-        'source_directory': os.environ.get('OAW_MATCREATOR_SOURCE', ''),
-        'python_executable': os.environ.get('OAW_MATCREATOR_PYTHON', ''),
-    })
+    config = AgentConfig('agent-a', 'Native')
     runtime = MatCreatorRuntime(provider)
     await runtime.create_agent(config)
 
@@ -239,6 +228,10 @@ async def test_real_upstream_planner_checkpoint_executor_recursive_child_and_oaw
     state = json.loads(checkpoint.read_text(encoding='utf-8'))['state']
     assert state['session_id'] == 'native'
     assert state['session_workdir_initialized'] is True
+    # Artifact URIs remain URIs in the persisted session log, not host paths.
+    assert 'oaw:artifact:outputs:v1' in json.dumps(state)
+    assert not any('oaw:artifact:' in ref and not ref.startswith('oaw:artifact:')
+        for ref in state.get('session_artifacts', []))
     graph = state['execution_graph']
     if isinstance(graph, list):
         graph = graph[0]
@@ -260,6 +253,7 @@ print(json.dumps({'type':'request','id':'pending','method':'invoke_tool','capabi
 while sys.stdin.readline(): pass
 ''', encoding='utf-8')
     monkeypatch.setattr(module, '__file__', str(tmp_path / 'native_runtime.py'))
+    monkeypatch.setattr(module, 'read_environment', lambda: (sys.executable, tmp_path / 'dependencies'))
     entered, cancelled = asyncio.Event(), asyncio.Event()
     provider = Provider(tmp_path / 'state')
 
@@ -272,7 +266,7 @@ while sys.stdin.readline(): pass
 
     provider.invoke_tool = blocked
     runtime = MatCreatorRuntime(provider)
-    config = AgentConfig('agent-a', 'Native', provider_config={'python_executable': sys.executable})
+    config = AgentConfig('agent-a', 'Native', provider_config={})
     await runtime.create_agent(config)
     events = []
 
@@ -301,9 +295,10 @@ start=json.loads(sys.stdin.readline())
 print(json.dumps({'type':'error','message':'failed with '+start['model']['api_key']}),flush=True)
 ''', encoding='utf-8')
     monkeypatch.setattr(module, '__file__', str(tmp_path / 'native_runtime.py'))
+    monkeypatch.setattr(module, 'read_environment', lambda: (sys.executable, tmp_path / 'dependencies'))
     provider = Provider(tmp_path / 'state')
     runtime = MatCreatorRuntime(provider)
-    config = AgentConfig('agent-a', 'Native', provider_config={'python_executable': sys.executable})
+    config = AgentConfig('agent-a', 'Native', provider_config={})
     await runtime.create_agent(config)
     for scope in ('session-a', 'session-b'):
         with pytest.raises(Exception, match=r'failed with \[redacted\]'):

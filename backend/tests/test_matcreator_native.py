@@ -34,7 +34,7 @@ def test_native_preset_is_the_only_research_legion_and_deploys_without_upstream(
     assert nodes[ids['execution']]['state_scope'] == 'session'
     info = client.get(f"/api/agents/{agent['id']}")
     assert info.status_code == 200, info.text
-    assert 'devel' in info.json()['details']['upstream']
+    assert info.json()['details']['engine'] == 'Pack-owned MatCreator'
     saved = client.post('/api/legions', json={'name': 'Native copy', 'node_ids': list(ids.values())})
     assert saved.status_code == 201, saved.text
     copy = client.post(f"/api/legions/{saved.json()['id']}/instances", json={})
@@ -98,8 +98,8 @@ def test_native_template_drops_machine_paths_and_snapshot(client):
     assert 'D:/private' not in json.dumps(saved.json())
     copy = client.post('/api/legions/' + saved.json()['id'] + '/instances', json={}).json()
     agent = next(n for n in copy['nodes'] if n['type'] == 'matcreator.agent')
-    assert agent['config']['python_executable'] == ''
-    assert agent['config']['source_directory'] == ''
+    assert 'python_executable' not in agent['config']
+    assert 'source_directory' not in agent['config']
     assert agent['config']['agent_mode'] == 'flash'
 
 

@@ -1,0 +1,186 @@
+from __future__ import annotations
+
+import json
+import logging
+from typing import List, Literal, Optional
+
+from google.adk.agents import LlmAgent
+from google.adk.models.lite_llm import LiteLlm
+from google.adk.tools.function_tool import FunctionTool
+from google.adk.tools.tool_context import ToolContext
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
+
+from ...llm_cards import LLMCard
+from ...resources import BRIDGE_INSTRUCTION, resource_tools, validate_artifacts
+
+logger = logging.getLogger(__name__)
+
+STEP_EXECUTOR_AGENT_NAME = "step_executor"
+
+# ADK's LiteLlm adapter parses streamed function-call arguments as JSON.  Some
+# OpenAI-compatible endpoints occasionally finish a stream with malformed tool
+# arguments, which escapes as JSONDecodeError.  Recovery is handled at the
+# orchestrator level (see ``orchestrator/agent.py:_stream_execution_with_recovery``
+# and ``_stream_planning_with_recovery``), which wraps agent streams in
+# try/except json.JSONDecodeError.  The legacy ``RetryConfig`` did nothing
+# here because ``LlmAgent`` runs through ``llm_flows``, which does not
+# consume ``retry_config``; LiteLLM's own HTTP retry setting only covers
+# transport/status failures.
+
+
+class StepExecutorInput(BaseModel):
+    step_number: int = Field(description="1-based index of this step in the plan")
+    action: str = Field(description="Action description from the plan step")
+    suggested_skills: List[str] = Field(description="Legacy field; pass [] and describe OAW skill references in action")
+    workspace_dir: str = Field(description="Private orchestration metadata directory, never a computation directory")
+    output_dir: Optional[str] = Field(
+        default=None,
+        description="Legacy field; outputs must be published through OAW tools",
+    )
+    prior_context: Optional[str] = Field(
+        default=None,
+        description="Condensed summaries of prior completed steps for context",
+    )
+
+
+class StepExecutorResult(BaseModel):
+    status: Literal["success", "needs_replanning"]
+    key_results: str = Field(
+        default="",
+        description="Bullet-point list of key findings, values, and produced files",
+    )
+    artifacts: list[str] = Field(
+        default_factory=list,
+        description="Published OAW artifact references",
+    )
+
+    @field_validator("artifacts", mode="before")
+    @classmethod
+    def _coerce_artifacts(cls, v):
+        if isinstance(v, str):
+            try:
+                parsed = json.loads(v)
+                if isinstance(parsed, list):
+                    return parsed
+            except (json.JSONDecodeError, ValueError):
+                pass
+            return [v] if v else []
+        return v
+    concise_summary: str = Field(
+        default="",
+        description="Short user-facing paragraph describing what was done",
+    )
+    replan_reason: Optional[str] = Field(
+        default=None,
+        description="Why replanning is needed (only set when status=needs_replanning)",
+    )
+
+    @model_validator(mode="after")
+    def _fill_missing_fields(self) -> "StepExecutorResult":
+        # If the LLM returned only one of the two summary fields, mirror it to the other.
+        if not self.key_results and self.concise_summary:
+            self.key_results = self.concise_summary
+        elif not self.concise_summary and self.key_results:
+            self.concise_summary = self.key_results
+        return self
+
+
+_STEP_EXECUTOR_INSTRUCTION = """Execute one research step in an isolated session.
+Use OAW knowledge_search/knowledge_inspect to select skills. All computation and
+files belong to connected Sandboxes. Use run_sub_agent for bounded subtasks;
+dispatch independent subtasks concurrently, await prerequisites for dependent work.
+Keep operation IDs and inspect running jobs before retrying. Publish outputs with
+publish_artifact and use its oaw_artifact_ref in submit_step_result. A success claim
+requires evidence and verification. If blocked, submit needs_replanning with a
+specific reason. Never treat a successful model response as scientific validation.
+""" + BRIDGE_INSTRUCTION
+
+
+async def run_sub_agent(
+    step_number: int,
+    action: str,
+    suggested_skills: List[str],
+    tool_context: ToolContext,
+    prior_context: Optional[str] = None,
+) -> dict:
+    """Spawn a child step executor to handle a sub-task.
+
+    Call once per sub-task. For truly independent sub-tasks, issue multiple
+    `run_sub_agent` calls in a SINGLE response turn — the runtime executes them
+    concurrently. For dependent sub-tasks, call sequentially and pass the returned
+    result as `prior_context` to the next call.
+
+    Returns a result dict with keys: status, key_results, concise_summary, artifacts.
+    If status is "cancelled", call submit_step_result with needs_replanning immediately.
+
+    Args:
+        step_number: Sub-task index (1-based, unique within this step)
+        action: What the sub-task should do
+        suggested_skills: Pass []; use OAW knowledge tools and include skill references in action
+        prior_context: Summary of earlier sub-tasks' results (for sequential chains)
+    """
+    from .step_executor_runner import run_step_executor  # lazy import avoids circular dep
+
+    return await run_step_executor(
+        step_number=step_number,
+        action=action,
+        suggested_skills=suggested_skills,
+        workspace_dir="",  # computed internally by run_step_executor
+        prior_context=prior_context,
+        tool_context=tool_context,
+    )
+
+
+async def submit_step_result(
+    status: str,
+    key_results: str,
+    concise_summary: str,
+    tool_context: ToolContext,
+    artifacts: Optional[List[str]] = None,
+    replan_reason: Optional[str] = None,
+) -> dict:
+    """Submit the result of this step execution.
+
+    Call this tool when you have finished executing the step. Replaces writing
+    a JSON response. If validation fails, fix the reported fields and retry.
+
+    Args:
+        status: "success" or "needs_replanning"
+        key_results: Bullet-point list of key findings and produced files
+        concise_summary: Short user-facing paragraph describing what was done
+        artifacts: Published oaw:artifact references (empty list if none)
+        replan_reason: Why replanning is needed (only when status=needs_replanning)
+    """
+    error = await validate_artifacts(artifacts or [])
+    if error:
+        return {"status": "error", "message": error}
+    try:
+        result = StepExecutorResult(
+            status=status,  # type: ignore[arg-type]
+            key_results=key_results,
+            concise_summary=concise_summary,
+            artifacts=artifacts or [],
+            replan_reason=replan_reason,
+        )
+        tool_context.state["_step_result"] = result.model_dump()
+        return {"status": "ok", "message": "Step result submitted successfully."}
+    except ValidationError as exc:
+        return {
+            "status": "error",
+            "errors": exc.errors(),
+            "message": "Validation failed. Fix the errors and call submit_step_result again.",
+        }
+    except Exception as exc:
+        return {"status": "error", "message": f"Unexpected error: {exc}"}
+
+
+def build_step_executor_agent(llm_card: LLMCard) -> LlmAgent:
+    """Every recursive child receives the same live, authorized resource bridge."""
+    return LlmAgent(
+        name=STEP_EXECUTOR_AGENT_NAME,
+        model=LiteLlm(model=llm_card.model, base_url=llm_card.base_url, api_key=llm_card.api_key),
+        description="Executes a research step with connected OAW resources.",
+        instruction=_STEP_EXECUTOR_INSTRUCTION,
+        input_schema=StepExecutorInput,
+        tools=[FunctionTool(run_sub_agent), FunctionTool(submit_step_result), *resource_tools()],
+    )
