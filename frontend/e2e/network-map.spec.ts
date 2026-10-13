@@ -1,5 +1,37 @@
 import { expect, test } from '@playwright/test';
-import { mapReady, clickMapNode } from './network-map-helpers';
+import { mapReady, clickMapNode, expectMapPainted } from './network-map-helpers';
+
+test('map repaints after container resize and reveal without pointer interaction', async ({ page }) => {
+  const errors: string[] = []; page.on('pageerror', e => errors.push(e.message));
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.goto('/?network-map');
+  const scope = page.locator('main'), map = scope.locator('.network-map');
+  const state = () => scope.locator('.network-map-stage').evaluate(el => (el as any).networkDiagnostics);
+  await mapReady(scope);
+  await expectMapPainted(scope);
+  const before = await state();
+  const size = await map.evaluate(el => ({ width: el.clientWidth, height: el.clientHeight }));
+  // Keep the browser viewport fixed: Sigma already handles window resize, but
+  // card reflow and opening sidebars only resize the map's own container.
+  for (const factor of [.7, 1]) {
+    await map.evaluate((el, { size, factor }) => {
+      Object.assign((el as HTMLElement).style, { width: `${Math.floor(size.width * factor)}px`, height: `${Math.floor(size.height * factor)}px` });
+    }, { size, factor });
+    await expect(scope.locator('canvas.sigma-labels')).toHaveCSS('width', `${Math.floor(size.width * factor)}px`);
+    await expectMapPainted(scope);
+  }
+  await map.evaluate(el => { (el as HTMLElement).style.display = 'none'; });
+  await expect(scope.locator('canvas.sigma-labels')).toHaveAttribute('width', '1px');
+  await map.evaluate(el => { (el as HTMLElement).style.display = ''; });
+  await expect(scope.locator('canvas.sigma-labels')).toHaveCSS('width', `${size.width}px`);
+  await expectMapPainted(scope);
+  const after = await state();
+  expect(after.camera).toEqual(before.camera);
+  expect(after.positions).toEqual(before.positions);
+  expect(after.worker).toBe(false);
+  expect(errors).toEqual([]);
+  await map.screenshot({ path: '../.outputs/graph-resize/shared-map-revealed.png' });
+});
 
 test('one camera supports search, type filters, islands, focus history and repeated unmount', async ({ page }) => {
   const errors: string[] = []; page.on('pageerror', e => errors.push(e.message));

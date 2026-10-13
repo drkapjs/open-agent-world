@@ -28,10 +28,11 @@ test("publish files, reclaim producer, and recover retained versions and lifecyc
   await publication.getByRole('button', { name: 'Inspect collection' }).click();
   let artifacts = page.getByRole('dialog', { name: 'Retained outputs workspace', exact: true });
   await expect(artifacts.getByRole('heading', { name: 'bundle', exact: true })).toBeVisible();
-  await expect(artifacts.locator('.artifact-collection > article').filter({ has: page.getByRole('heading', { name: 'bundle', exact: true }) }).getByText('ready', { exact: true })).toBeVisible();
-  await artifacts.getByText('Content manifest (2)', { exact: true }).click();
+  await expect(artifacts.locator('.artifact-collection > article').filter({ has: page.getByRole('heading', { name: 'bundle', exact: true }) }).getByText('Ready', { exact: true })).toBeVisible();
   await artifacts.getByRole('button', { name: 'Preview', exact: true }).click();
-  await expect(artifacts.locator('.artifact-preview')).toContainText('Durable UI result');
+  const preview = page.getByRole('dialog', { name: 'bundle/report.txt', exact: true });
+  await expect(preview.locator('.artifact-preview')).toContainText('Durable UI result');
+  await preview.getByRole('button', { name: 'Close', exact: true }).click();
   await request.delete(`/api/nodes/${sandbox.id}`);
   await page.reload();
   artifacts = page.getByRole('dialog', { name: 'Retained outputs workspace', exact: true });

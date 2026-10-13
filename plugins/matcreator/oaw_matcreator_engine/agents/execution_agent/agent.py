@@ -7,7 +7,7 @@ from typing import List, Optional
 from google.adk.agents import LlmAgent
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.models.lite_llm import LiteLlm
-from google.adk.tools.function_tool import FunctionTool
+from ...tool_execution import ResilientFunctionTool, on_tool_error
 from google.adk.tools.tool_context import ToolContext
 
 from ...constants import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
@@ -204,13 +204,14 @@ execution_agent = LlmAgent(
     ),
     instruction=_EXECUTION_ORCHESTRATOR_INSTRUCTION + "\n" + BRIDGE_INSTRUCTION,
     tools=[
-        FunctionTool(run_node_executor),
-        FunctionTool(to_planner),
-        FunctionTool(validate_summarize),
-        FunctionTool(get_ready_nodes),
-        FunctionTool(set_node_status),
-        FunctionTool(mark_dependents_blocked),
+        ResilientFunctionTool(run_node_executor),
+        ResilientFunctionTool(to_planner),
+        ResilientFunctionTool(validate_summarize),
+        ResilientFunctionTool(get_ready_nodes),
+        ResilientFunctionTool(set_node_status),
+        ResilientFunctionTool(mark_dependents_blocked),
         *resource_tools(),
     ],
     before_agent_callback=_exec_before_agent_callback,
+    on_tool_error_callback=on_tool_error,
 )

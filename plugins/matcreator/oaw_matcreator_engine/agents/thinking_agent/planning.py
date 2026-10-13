@@ -340,6 +340,8 @@ def set_node_status(
         result:  Optional concise summary (success) or failure reason.
     """
     graph = get_execution_graph(tool_context.state)
+    if not isinstance(status, str) or status not in {"pending", "running", "waiting", "success", "failed", "blocked", "cancelled"}:
+        return {"status": "error", "message": "Unsupported node status. Use pending, running, waiting, success, failed, blocked or cancelled."}
     if not graph or node_id not in (graph.get("nodes") or {}):
         return {"status": "error", "message": f"Node '{node_id}' not found in execution_graph."}
     graph["nodes"][node_id]["status"] = status

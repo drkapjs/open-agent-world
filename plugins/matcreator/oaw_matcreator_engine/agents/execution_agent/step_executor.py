@@ -6,7 +6,7 @@ from typing import List, Literal, Optional
 
 from google.adk.agents import LlmAgent
 from google.adk.models.lite_llm import LiteLlm
-from google.adk.tools.function_tool import FunctionTool
+from ...tool_execution import ResilientFunctionTool, on_tool_error
 from google.adk.tools.tool_context import ToolContext
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
@@ -177,8 +177,6 @@ async def submit_step_result(
             "errors": exc.errors(),
             "message": "Validation failed. Fix the errors and call submit_step_result again.",
         }
-    except Exception as exc:
-        return {"status": "error", "message": f"Unexpected error: {exc}"}
 
 
 def build_step_executor_agent(llm_card: LLMCard) -> LlmAgent:
@@ -189,5 +187,6 @@ def build_step_executor_agent(llm_card: LLMCard) -> LlmAgent:
         description="Executes a research step with connected OAW resources.",
         instruction=_STEP_EXECUTOR_INSTRUCTION,
         input_schema=StepExecutorInput,
-        tools=[FunctionTool(run_sub_agent), FunctionTool(submit_step_result), *resource_tools()],
+        tools=[ResilientFunctionTool(run_sub_agent), ResilientFunctionTool(submit_step_result), *resource_tools()],
+        on_tool_error_callback=on_tool_error,
     )

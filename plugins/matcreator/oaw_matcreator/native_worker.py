@@ -58,8 +58,10 @@ def emit_event(event, child=False):
         if response:
             # Tool output remains in the worker's ADK session; avoid emitting file
             # bytes, credentials or complete model context into OAW activity logs.
+            result = response.response or {}
+            failed = result.get("ok") is False or bool(result.get("error")) or result.get("status") in ("error", "failed", "cancelled", "needs_replanning")
             send({"type": "event", "event": "tool_completed", "payload": {**base,
-                "name": response.name, "call_id": response.id}})
+                "name": response.name, "call_id": response.id, "ok": not failed}})
         if getattr(part, "text", None) and not child:
             send({"type": "event", "event": "agent_message", "payload": {**base,
                 "text": part.text, "final": bool(event.is_final_response()),
@@ -127,7 +129,8 @@ async def run(request, reader, start_reader):
     # returned copy. Populate the supported Session object's event history.
     stored = sessions.sessions[app.name]["oaw"][session.id]
     if previous:
-        stored.events = previous.events
+        from oaw_matcreator_engine.session_recovery import repair_interrupted_tools
+        stored.events = repair_interrupted_tools(previous.events)
 
     def persist():
         # The engine's BaseAgent updates ctx.session.state directly as well as
@@ -203,6 +206,7 @@ async def run(request, reader, start_reader):
     # On Windows, importing a native extension (such as LiteLLM's tokenizers)
     # while another thread blocks on CRT stdin can deadlock extension loading.
     # Finish dependency/agent construction before starting the pipe reader.
+    persist()
     start_reader()
     receiver = asyncio.create_task(receive())
     ticker = asyncio.create_task(heartbeat())

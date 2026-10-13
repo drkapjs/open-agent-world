@@ -9,12 +9,18 @@ import json
 from contextlib import contextmanager
 from contextvars import ContextVar
 
-from google.adk.tools.function_tool import FunctionTool
 from google.genai import types
+from .tool_execution import ResilientFunctionTool
 
 BRIDGE_INSTRUCTION = """
 All resources come from connected OAW cards. Call oaw_list_tools, then
 oaw_invoke_tool with the current capability_id and exact argument schema.
+The catalog's name and capability_id fields are NOT callable function names.
+For example, a catalog entry named knowledge_search must be invoked as
+oaw_invoke_tool(capability_id=<its returned capability_id>, arguments={...}).
+Never call knowledge_search or operation:knowledge_search directly.
+Tool errors are observations: correct the request or choose another approach.
+For unknown execution outcomes, inspect existing operations before retrying.
 Use knowledge_search / knowledge_inspect for skills, knowledge_save_memory for
 reviewable experience, and returned skill_node_id values for resource scripts.
 All computation must run in a connected Sandbox. Discover its paths through
@@ -73,13 +79,21 @@ class ResourceBridge:
 
     async def oaw_list_tools(self) -> dict:
         """Discover currently connected OAW tools and their argument schemas."""
-        return {"tools": await self.rpc("list_tools")}
+        result = await self.rpc("list_tools")
+        if isinstance(result, dict) and result.get("ok") is False:
+            return result
+        if not isinstance(result, list):
+            raise ValueError("Invalid OAW tool catalog response")
+        return {"tools": result}
 
     async def oaw_invoke_tool(self, capability_id: str, arguments: dict) -> dict:
         """Invoke a currently authorized OAW tool with its exact schema."""
         response = await self.rpc("invoke_tool", capability_id=capability_id, arguments=arguments)
         if not response.get("ok"):
-            return {"ok": False, "error": unpack(response) or response.get("error")}
+            error = unpack(response) or response.get("error")
+            if isinstance(error, dict) and error.get("ok") is False:
+                error = error.get("error", error)
+            return {"ok": False, "error": error}
         value = unpack(response)
         if response.get("tool") == "publish_artifact" and isinstance(value, dict) and value.get("state") == "ready":
             value = {**value, "oaw_artifact_ref": "oaw:artifact:" + arguments["collection"] + ":" + value["version_id"]}
@@ -99,7 +113,7 @@ class ResourceBridge:
 
 def resource_tools():
     value = bridge()
-    return [FunctionTool(value.oaw_list_tools), FunctionTool(value.oaw_invoke_tool)]
+    return [ResilientFunctionTool(value.oaw_list_tools), ResilientFunctionTool(value.oaw_invoke_tool)]
 
 
 async def read_artifact_input(reference):

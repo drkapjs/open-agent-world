@@ -1,4 +1,4 @@
-import { mapReady, mapPoint, clickMapNode, mapIds } from './network-map-helpers';
+import { mapReady, mapPoint, clickMapNode, mapIds, expectMapPainted } from './network-map-helpers';
 import { expect, test, type APIRequestContext } from '@playwright/test';
 
 test.beforeEach(async ({ request }) => {
@@ -26,6 +26,33 @@ async function createGraph(request: APIRequestContext) {
   }
   return { ...graph, entryIds: ids };
 }
+
+test('Know-Do Graph repaints when its navigator changes the map size', async ({ page, request }) => {
+  await page.setViewportSize({ width: 1700, height: 1100 });
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  const graph = await createGraph(request);
+  try {
+    await page.goto('/');
+    const scope = page.locator(`[data-card-id="${graph.id}"]`);
+    await mapReady(scope);
+    await expectMapPainted(scope);
+    const state = () => scope.locator('.network-map-stage').evaluate(el => (el as any).networkDiagnostics);
+    const before = await state();
+    const width = await scope.locator('.network-map-stage').evaluate(el => el.clientWidth);
+    await scope.getByRole('button', { name: 'Toggle navigator' }).click();
+    await expect.poll(() => scope.locator('.network-map-stage').evaluate(el => el.clientWidth)).toBeLessThan(width);
+    await expectMapPainted(scope);
+    await scope.screenshot({ path: '../.outputs/graph-resize/kdg-navigator-open.png' });
+    await scope.getByRole('button', { name: 'Close navigator' }).click();
+    await expect(scope.locator('canvas.sigma-labels')).toHaveCSS('width', `${width}px`);
+    await expectMapPainted(scope);
+    const after = await state();
+    expect(after.camera).toEqual(before.camera);
+    expect(after.positions).toEqual(before.positions);
+    expect(after.worker).toBe(false);
+    await scope.screenshot({ path: '../.outputs/graph-resize/kdg-navigator-closed.png' });
+  } finally { await request.delete(`/api/nodes/${graph.id}`); }
+});
 
 for (const zoom of [0.65, 1.35]) test(`knowledge pan, node drag, zoom and selection follow the pointer at world zoom ${zoom}`, async ({ page, request }) => {
   await page.setViewportSize({ width: 2200, height: 1400 });

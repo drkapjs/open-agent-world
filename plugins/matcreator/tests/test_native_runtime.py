@@ -85,13 +85,15 @@ def test_old_external_paths_are_migrated_out_of_card_configuration():
 
 
 @pytest.fixture
-def scripted_model():
+def scripted_model(request):
     """A deterministic OpenAI endpoint; the actual Pack agents choose tools."""
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     import threading
     calls = []
     planner_round = 0
     executor_round = 0
+    inject_errors = getattr(request, 'param', False)
+    injected = set()
 
     def function(name, arguments):
         return {'role': 'assistant', 'content': None, 'tool_calls': [{
@@ -107,7 +109,20 @@ def scripted_model():
             request = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
             calls.append(request)
             names = {t['function']['name'] for t in request.get('tools', [])}
-            if 'run_flash_step' in names:
+            original = next((m['content'] for m in request['messages'] if m['role'] == 'user'), '')
+            layer = ('planner' if 'run_flash_step' in names else 'executor' if 'run_node_executor' in names
+                else ('recursive' if 'child bridge check' in str(original) else 'step') if 'run_sub_agent' in names else None)
+            if inject_errors and layer and layer not in injected:
+                injected.add(layer)
+                reply = {'role': 'assistant', 'content': None, 'tool_calls': [
+                    {'id': f'fault_{layer}_{i}', 'type': 'function', 'function': {'name': name, 'arguments': json.dumps(args)}}
+                    for i, (name, args) in enumerate([
+                        ('knowledge_search', {}), ('knowledge_search', {}), ('operation:inspect_sandbox', {}),
+                        ('oaw_invoke_tool', {'capability_id': 'echo', 'arguments': {'value': f'{layer}-first'}}),
+                        ('oaw_invoke_tool', {'capability_id': 'echo', 'arguments': {'value': f'{layer}-second'}}),
+                        ('oaw_invoke_tool', {'capability_id': 'echo', 'arguments': ['wrong-type']}),
+                    ])]}
+            elif 'run_flash_step' in names:
                 planner_round += 1
                 if planner_round == 1:
                     reply = function('validate_graph', {'graph': {'nodes': {'step_check': {
@@ -132,7 +147,7 @@ def scripted_model():
                 messages = request['messages']
                 original = next(m['content'] for m in messages if m['role'] == 'user')
                 is_child = 'child bridge check' in str(original)
-                results = [m for m in messages if m['role'] == 'tool']
+                results = [m for m in messages if m['role'] == 'tool' and not m.get('tool_call_id', '').startswith('fault_')]
                 if not results and not is_child:
                     reply = function('run_sub_agent', {'step_number': 1, 'action': 'child bridge check', 'suggested_skills': []})
                 elif not results:
@@ -158,8 +173,8 @@ def scripted_model():
                 self.send_header('Content-Type', 'text/event-stream')
                 self.end_headers()
                 delta = dict(reply)
-                if delta.get('tool_calls'):
-                    delta['tool_calls'][0]['index'] = 0
+                for index, tool_call in enumerate(delta.get('tool_calls') or []):
+                    tool_call['index'] = index
                 first = {**base, 'object': 'chat.completion.chunk', 'choices': [{'index': 0, 'delta': delta, 'finish_reason': None}]}
                 last = {**base, 'object': 'chat.completion.chunk', 'choices': [{'index': 0, 'delta': {},
                     'finish_reason': 'tool_calls' if reply.get('tool_calls') else 'stop'}]}
@@ -184,6 +199,7 @@ def scripted_model():
 
 @pytest.mark.asyncio
 @pytest.mark.skipif(not os.environ.get('OAW_MATCREATOR_MANAGED'), reason='requires Pack orchestration dependencies')
+@pytest.mark.parametrize('scripted_model', [False, True], indirect=True, ids=['normal', 'tool-failures'])
 async def test_pack_engine_planner_checkpoint_executor_recursive_child_and_oaw_tool(tmp_path, scripted_model):
     url, calls = scripted_model
     class ArtifactProvider(Provider):
@@ -211,13 +227,26 @@ async def test_pack_engine_planner_checkpoint_executor_recursive_child_and_oaw_t
     planned = await turn('run1', 'Plan a bridge test')
     assert planned[-1].type.value == 'agent_completed'
     assert 'Plan ready' in planned[-1].payload['text']
-    assert provider.calls == []
+    faults = any(t['function']['name'] == 'knowledge_search' for r in calls
+        for m in r['messages'] if m['role'] == 'assistant' for t in m.get('tool_calls') or [])
+    assert len(provider.calls) == (2 if faults else 0)
+    if faults:
+        # Legacy checkpoints may end with an unanswered tool call. Restoring
+        # must close that exchange without claiming success or replaying it.
+        path = next(tmp_path.rglob('session.json'))
+        retained = json.loads(path.read_text(encoding='utf-8'))
+        retained['events'].append({'id': 'orphan-event', 'invocation_id': 'old-invocation',
+            'author': 'thinking_agent', 'timestamp': retained['events'][-1]['timestamp'],
+            'content': {'role': 'model', 'parts': [{'function_call': {'id': 'orphan-call',
+                'name': 'oaw_invoke_tool', 'args': {'capability_id': 'echo', 'arguments': {'value': 'never-replay'}}}}]}})
+        path.write_text(json.dumps(retained), encoding='utf-8')
     # New runtime instance and process must load the old session/checkpoint.
     runtime = MatCreatorRuntime(provider)
     await runtime.create_agent(config)
     finished = await turn('run2', 'Approve the plan')
     assert finished[-1].type.value == 'agent_completed'
-    assert provider.calls == [
+    actual = [call for call in provider.calls if not (call[1] == 'echo' and call[2]['value'].endswith(('-first', '-second')))]
+    assert actual == [
         ('agent-a', 'echo', {'value': 'native-child'}),
         ('agent-a', 'publish', {'collection': 'outputs', 'path': '/workspace/result.txt'}),
         ('agent-a', 'inspect', {'collection': 'outputs', 'version_id': 'v1'}),
@@ -249,6 +278,21 @@ async def test_pack_engine_planner_checkpoint_executor_recursive_child_and_oaw_t
     for request in calls:
         names = {t['function']['name'] for t in request.get('tools', [])}
         assert not names & {'run_bash', 'run_python', 'submit_bohr_batchjob', 'query_knowledge_graph', 'load_skill'}
+    if faults:
+        responses = {m['tool_call_id']: json.loads(m['content']) for r in calls
+            for m in r['messages'] if m['role'] == 'tool' and m.get('tool_call_id', '').startswith(('fault_', 'orphan-'))}
+        for layer in ('planner', 'executor', 'step', 'recursive'):
+            for i in range(3):
+                assert responses[f'fault_{layer}_{i}']['error']['code'] == 'unknown_tool'
+            for i, suffix in ((3, 'first'), (4, 'second')):
+                assert responses[f'fault_{layer}_{i}']['result']['verified'] == f'{layer}-{suffix}'
+                assert sum(args.get('value') == f'{layer}-{suffix}' for _, _, args in provider.calls) == 1
+            assert responses[f'fault_{layer}_5']['error']['code'] == 'invalid_tool_arguments'
+            assert responses[f'fault_{layer}_5']['error']['side_effects'] == 'none'
+        assert responses['orphan-call']['error']['code'] == 'tool_interrupted'
+        assert responses['orphan-call']['error']['side_effects'] == 'unknown'
+        assert not any(args.get('value') == 'never-replay' for _, _, args in provider.calls)
+        assert any(e.type.value == 'tool_completed' and e.payload.get('ok') is False for e in finished)
 
 
 @pytest.mark.asyncio

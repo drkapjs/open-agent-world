@@ -391,8 +391,9 @@ async def _stream_step_events(
                         event_log["conversation"].append(entry)
                         await asyncio.to_thread(graph.log_conversation_event, step_id, entry)
                     elif fc and not is_thought:
-                        pending_tool_calls[fc.name] = {
+                        pending_tool_calls[fc.id or fc.name] = {
                             "name": fc.name,
+                            "call_id": fc.id,
                             "input": dict(fc.args or {}),
                             "args_summary": str(dict(fc.args or {}))[:300],
                             "start_time": _now(),
@@ -411,7 +412,7 @@ async def _stream_step_events(
                         for artifact_path in collect_artifact_paths(response):
                             _append_unique(artifact_paths, artifact_path)
 
-                        record = pending_tool_calls.pop(fr.name, {"name": fr.name, "start_time": _now()})
+                        record = pending_tool_calls.pop(fr.id or fr.name, {"name": fr.name, "call_id": fr.id, "start_time": _now()})
                         record["output"] = response
                         record["result_summary"] = str(fr.response)[:300]
                         record["end_time"] = _now()

@@ -4,6 +4,13 @@ export async function mapReady(scope: Locator) {
   await expect(scope.locator('.network-map')).toHaveAttribute('data-layout-state', 'ready', { timeout: 30000 });
   await expect(scope.locator('canvas.sigma-nodes')).toBeVisible();
 }
+// Canvas visibility alone cannot detect a resize that cleared the rendered map.
+export async function expectMapPainted(scope: Locator) {
+  await expect.poll(() => scope.locator('canvas.sigma-labels').evaluate(canvas => {
+    const el = canvas as HTMLCanvasElement;
+    return el.getContext('2d')!.getImageData(0, 0, el.width, el.height).data.some((value, i) => i % 4 === 3 && value > 0);
+  })).toBe(true);
+}
 export async function mapPoint(scope: Locator, id?: string) {
   const stage = scope.locator('.network-map-stage');
   return stage.evaluate((element, id) => {

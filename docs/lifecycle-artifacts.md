@@ -190,6 +190,14 @@ with separate remove-reference and release-content actions. No per-file cards ar
 created. Ready means captured bytes are complete and accessible under authorization;
 domain validity and scientific verification belong to plugins.
 
+The collection presents recent publications first, with distinct status labels and
+an immediately accessible file list. Long lists expand within their publication;
+IDs, provenance and checksums stay in version details. Preview opens a focused
+dialog immediately, including loading, retry, empty-file and non-text states.
+Closing returns focus to the originating button. Copying opens a destination
+dialog for the selected version; management and content release remain separate
+from preview and download.
+
 ## Migration and verification boundaries
 
 ### Conversation attachments

@@ -77,7 +77,9 @@ export class MapEngine {
     element.append(this.selectionBox);
     this.sigma.on('afterRender', this.drawContours);
     this.sigma.getCamera().on('updated', this.cameraChanged);
-    this.resize = new ResizeObserver(() => this.sigma.resize());
+    // Resizing clears the canvases. Refresh also rebuilds the label grid and
+    // redraws after card/sidebar reflow, without waiting for a camera gesture.
+    this.resize = new ResizeObserver(() => this.sigma.scheduleRefresh());
     this.resize.observe(element);
     this.theme = new MutationObserver(this.readTheme);
     this.theme.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'class', 'style'] });

@@ -25,6 +25,11 @@ import does not infer or assign a license to that upstream code.
 
 - All resource tools are constructed through `resources.py`. Every call travels
   through the Pack's RPC adapter and current host capability authorization.
+- `tool_execution.py` contains native tool failures and validates arguments
+  before invocation. ADK error callbacks return unknown-tool feedback across
+  all three Agent constructors. No error handler retries a side effect or
+  swallows Run cancellation. `session_recovery.py` closes unanswered historical
+  tool calls with an explicit unknown outcome, without replaying operations.
 - The host supplies the selected model and the private per-session metadata
   directory. There is no user-global MatCreator configuration or model routing.
 - Artifact URIs are verified through OAW and retained as URIs. Model-supplied

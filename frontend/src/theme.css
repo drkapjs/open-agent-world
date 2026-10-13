@@ -2175,22 +2175,12 @@ body:has(.tutorial-bubble[data-step="place-demo"]) .component-palette .deck-stag
 /* A selected container remains interactive through its own header and controls. */
 .world-canvas.has-selected-container .react-flow__nodesselection-rect { pointer-events: none; }
 /* Published content reuses the workspace surface and ordinary control styles. */
-.artifact-collection { padding: var(--space-4); overflow: auto; width: 100%; min-width: 0; font: var(--font-size-body)/var(--line-height-body) var(--font-ui); }
-.artifact-collection header { display: flex; align-items: center; justify-content: space-between; }
-.artifact-collection article { margin: var(--space-4) 0; padding: var(--space-3) 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
-.artifact-collection .oaw-toolbar { padding: 0; justify-content: space-between; }
-.artifact-collection h4 { margin: 0; font-size: var(--font-size-title); }
-.artifact-version-meta { color: var(--ink-soft); font-size: var(--font-size-small); }
-.artifact-collection summary, .resource-details summary { cursor: pointer; color: var(--ink-soft); font-size: var(--font-size-small); padding-block: var(--space-2); }
-.artifact-copy-settings label { display: flex; flex-wrap: wrap; gap: var(--space-2); }
-.artifact-copy-settings :is(input, select) { flex: 1; min-width: 0; max-width: 100%; }
-.artifact-collection label, .artifact-publish label { display: block; margin: 8px 0; }
-.artifact-collection button, .artifact-publish button { margin: 4px; }
-.artifact-collection small { display: block; overflow-wrap: anywhere; }
-.artifact-preview { max-height: 300px; overflow: auto; white-space: pre-wrap; }
+.resource-details summary { cursor: pointer; color: var(--ink-soft); font-size: var(--font-size-small); padding-block: var(--space-2); }
+.artifact-publish label { display: block; margin: 8px 0; }
+.artifact-publish button { margin: 4px; }
 .artifact-publish { padding: 8px 12px; font-size: 11px; border-bottom: 1px solid var(--line); }
 .artifact-publish p { max-height: 60px; overflow: auto; overflow-wrap: anywhere; }
-.artifact-collection input, .artifact-collection select, .artifact-publish select { box-sizing: border-box; padding: 7px 9px; color: var(--ink); background: var(--surface-soft); border: 1px solid var(--line); border-radius: 8px; font: inherit; }
+.artifact-publish select { box-sizing: border-box; padding: 7px 9px; color: var(--ink); background: var(--surface-soft); border: 1px solid var(--line); border-radius: 8px; font: inherit; }
 .lifecycle-status { min-width: 0; padding: 12px; font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
 .lifecycle-status > header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
 .lifecycle-status article { padding: 10px 0; border-bottom: 1px solid var(--line); }

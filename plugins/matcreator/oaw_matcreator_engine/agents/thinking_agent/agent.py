@@ -7,7 +7,7 @@ from typing import Optional
 
 from google.adk.agents import LlmAgent
 from google.adk.models.lite_llm import LiteLlm
-from google.adk.tools.function_tool import FunctionTool
+from ...tool_execution import ResilientFunctionTool, on_tool_error
 from google.adk.tools.tool_context import ToolContext
 from google.adk.agents.callback_context import CallbackContext
 
@@ -271,10 +271,11 @@ thinking_agent = LlmAgent(
     model=LiteLlm(model=_model_name, base_url=_model_base_url, api_key=_model_api_key),
     description="Plans research and reviews execution evidence through connected OAW tools.",
     instruction=_MATCREATOR_INSTRUCTION + "\n" + BRIDGE_INSTRUCTION,
-    tools=[FunctionTool(tool) for tool in (
+    tools=[ResilientFunctionTool(tool) for tool in (
         validate_graph, validate_intent, validate_summarize, write_session_summary,
         confirm_plan_and_start_execution, resume_execution, set_node_status,
         run_flash_step, read_session_log, read_execution_history,
     )] + resource_tools(),
     before_agent_callback=before_agent_callback,
+    on_tool_error_callback=on_tool_error,
 )

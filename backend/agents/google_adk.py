@@ -24,6 +24,7 @@ from .models import (
     AgentStatus,
 )
 from .tools import build_scoped_tool_callables
+from .adk_tool_errors import on_tool_error
 from backend.runs.models import InvocationContext, RunStatus, RuntimeInput
 
 
@@ -227,6 +228,7 @@ class GoogleAdkAgentRuntime(RuntimeProvider):
                 model=selected_model,
                 instruction=record.config.system_instruction,
                 tools=tools,
+                on_tool_error_callback=on_tool_error,
                 **context_options,
             )
             app = self._adk.App(name=self._app_name, root_agent=agent)

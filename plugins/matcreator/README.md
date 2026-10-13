@@ -81,6 +81,14 @@ authorized Sandbox; remote job monitoring must use those connected tools and
 retain operation/job IDs, rather than assuming the upstream web server's job
 monitor is running.
 
+Unknown function names return tool feedback in the same model loop. Planning,
+execution orchestration and every recursive Step agent share this behavior.
+Native function arguments are validated before invocation; execution, result
+encoding and tool-local cancellation failures are contained per call. One bad
+call does not cancel unrelated calls in the same batch. Failed calls are never
+automatically replayed: an operation may already have produced side effects.
+Run cancellation still cancels and joins the active tool work.
+
 Each card/conversation pair has its own private worker state and atomic session
 checkpoint under the host data root. New turns load that checkpoint in a fresh
 worker; stopping a Run cancels/join its OAW tool calls and closes the worker.
@@ -88,6 +96,10 @@ Interrupted work never restarts automatically. Pack attempt recovery runs
 on the next requested turn. Private runtime paths, credentials, checkpoint data
 and execution snapshots are excluded from saved Legion templates. The execution
 view is a projection; an unavailable view does not abort scientific work.
+On restore, unanswered tool calls receive matching responses that explicitly
+report an unknown outcome. Existing results are retained and no operation is
+replayed by this repair. Model/transport failures outside tool dispatch and
+worker/persistence faults remain Run failures.
 
 Artifacts are verified through the current OAW artifact read capability, using
 `oaw:artifact:<collection>:<version>` references. Sandbox paths are never treated
