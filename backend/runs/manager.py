@@ -772,15 +772,6 @@ class RunManager:
                         else:
                             active_tools = max(0, active_tools - 1)
                         current_lifecycle = self.get_run(record.run_id).lifecycle
-                        trace = list(current_lifecycle.get("tool_trace") or [])
-                        # Use the same identity and sanitized details in REST
-                        # and WebSocket so reconnects do not duplicate tool rows.
-                        trace.append({
-                            **published.payload,
-                            "id": published.id,
-                            "timestamp": published.timestamp.isoformat(),
-                            "type": event_kind,
-                        })
                         self.store.update_lifecycle(
                             record.run_id,
                             active_tools=active_tools,
@@ -793,10 +784,23 @@ class RunManager:
                             last_signal=event_kind,
                             tool_count=int(current_lifecycle.get("tool_count") or 0)
                                 + (1 if event_kind == "tool_started" else 0),
-                            tool_trace=trace[-50:],
                         )
                     elif event_kind not in {"agent_message"}:
                         self.store.update_lifecycle(record.run_id, last_signal=event_kind)
+                    public_progress = event_kind == 'agent_progress' and event.payload.get('kind', 'status') in (
+                        'status', 'plan', 'reasoning_summary',
+                    )
+                    if event_kind in {'tool_started', 'tool_completed'} or public_progress:
+                        # The public activity checkpoint also retains narration
+                        # boundaries. REST and WS share identity and sanitized
+                        # tool details; raw reasoning is never checkpointed.
+                        lifecycle = self.get_run(record.run_id).lifecycle
+                        trace = [*(lifecycle.get('tool_trace') or []), {
+                            **published.payload, 'id': published.id,
+                            'timestamp': published.timestamp.isoformat(), 'type': event_kind,
+                        }]
+                        self.store.update_lifecycle(record.run_id, tool_trace=trace[-50:],
+                            tool_trace_truncated=bool(lifecycle.get('tool_trace_truncated')) or len(trace) > 50)
                     if event_kind == "agent_completed" and isinstance(text, str) and text.strip():
                         self._live_output[record.run_id] = text
                     if event.run_status is not None:

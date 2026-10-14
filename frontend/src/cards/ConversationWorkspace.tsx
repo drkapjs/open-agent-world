@@ -5,7 +5,10 @@ import { t, useLocale } from "../i18n";
 import { useConversationTimeline } from "../state/useConversationTimeline";
 import { useRunActivity } from "../state/useRunActivity";
 import { conversationTranscript } from '../state/conversationTranscript';
-import { RunActivityDetails, RunActivityStream } from "./RunActivityStream";
+import { conversationTurns } from '../state/conversationTurns';
+import { conversationSections } from '../state/conversationSections';
+import type { TranscriptEntry } from '../state/conversationTranscript';
+import { ConversationExecution, ConversationHistory, RunActivityStatus, RunActivityText } from "./ConversationActivity";
 import { MarkdownMessage } from "./MarkdownMessage";
 import { ConversationAttachments } from "./ConversationAttachments";
 import { ConfirmDialog, type Confirmation } from '../components/ConfirmDialog';
@@ -13,7 +16,7 @@ import { IconButton } from '../components/IconButton';
 import { ConversationActions } from "./ConversationActions";
 import { ConversationGroupMenu } from "./ConversationGroupMenu";
 import { ContextAvatar } from "./ContextAvatar";
-import { ArrowDown, Bot, Check, Info, LoaderCircle, MessageSquare, Paperclip, Pencil, Plus, Send, Trash2, UserMinus, UserRound, Users, X } from "lucide-react";
+import { ArrowDown, Bot, Check, Copy, GitBranch, Info, LoaderCircle, MessageSquare, Paperclip, Pencil, Plus, Send, Trash2, UserMinus, UserRound, Users, X } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type SetStateAction } from "react";
 import { apiErrorMessage, worldApi } from "../api/client";
 import {
@@ -115,6 +118,13 @@ export function ConversationWorkspace({ card }: { card: WorldCard }) {
   const [mentionCaret, setMentionCaret] = useState<number>();
   const [mentionIndex, setMentionIndex] = useState(0);
   const [busy, setBusy] = useState(false);
+  const [copiedMessageId, setCopiedMessageId] = useState<string>();
+  const [touchedMessageId, setTouchedMessageId] = useState<string>();
+  useEffect(() => {
+    if (!copiedMessageId) return;
+    const timer = window.setTimeout(() => setCopiedMessageId(undefined), 1800);
+    return () => window.clearTimeout(timer);
+  }, [copiedMessageId]);
   const [confirmation, setConfirmation] = useState<Confirmation>();
   const [error, setError] = useState<string>();
   const transcript = useRef<HTMLDivElement>(null);
@@ -178,8 +188,9 @@ export function ConversationWorkspace({ card }: { card: WorldCard }) {
     }
   }, [outgoing]);
   const activeRuns = history.activeRuns;
-  const runActivities = useRunActivity(card.id, activeSessionId, runtimeEvents, activeRuns, history.runSummaries);
-  const transcriptEntries = conversationTranscript(messages, activeRuns, runActivities);
+  const activity = useRunActivity(card.id, activeSessionId, runtimeEvents, activeRuns, history.runSummaries);
+  const transcriptEntries = conversationTranscript(messages, activity.runs, activity.activities, history);
+  const transcriptTurns = conversationTurns(transcriptEntries, activity.runs, error ? [] : activeRuns);
   const deliveryAgents = new Map(agents.map((agent) => [agent.id, agent.name]));
   const activeGroupId = activeSession?.group_id ?? activeSession?.id;
   useEffect(() => {
@@ -352,6 +363,37 @@ export function ConversationWorkspace({ card }: { card: WorldCard }) {
       throw reason;
     } finally {
       setBusy(false);
+    }
+  };
+
+  const restartFrom = async (message: ConversationMessage) => {
+    if (!activeSession || busy) return;
+    setBusy(true);
+    try {
+      const branch = await worldApi.createConversationSession(card.id, {
+        title: t('Branch: {name}', { name: activeSession.title }).slice(0, 200),
+        group_id: activeSession.group_id,
+        participant_ids: participants.filter(agent => agent.connected).map(agent => agent.id),
+        restart_before_message_id: message.id,
+      }, crypto.randomUUID());
+      const store = useNodeSurfaceStore.getState();
+      store.setDraft(surfaceDraftKey(card.id, 'composer', branch.id), JSON.stringify(message.content));
+      store.setDraft(surfaceDraftKey(card.id, 'attachments', branch.id), JSON.stringify(message.attachments ?? []));
+      store.setDraft(surfaceDraftKey(card.id, 'conversation-agent', branch.id), JSON.stringify(message.mention_agent_ids?.[0]) ?? '');
+      setSessions(current => [branch, ...current.filter(item => item.id !== branch.id)]);
+      setActiveSessionId(branch.id);
+      messageInput.current?.focus();
+    } catch (reason) {
+      pushToast({ tone: 'error', title: t('Could not create conversation branch'), detail: apiErrorMessage(reason) });
+    } finally { setBusy(false); }
+  };
+
+  const copyMessage = async (message: ConversationMessage) => {
+    try {
+      await navigator.clipboard.writeText(message.content);
+      setCopiedMessageId(message.id);
+    } catch (reason) {
+      pushToast({ tone: 'error', title: t('Could not copy message'), detail: apiErrorMessage(reason) });
     }
   };
 
@@ -568,24 +610,21 @@ export function ConversationWorkspace({ card }: { card: WorldCard }) {
           {!error && messages.length === 0 && activeRuns.length === 0 && !history.loading ? (
             <WorkspaceEmptyState className="conversation-empty" icon={<MessageSquare size={24} />} title={t("This session is ready")} description={t("Select a participant, type an explicit @name, or keep an unaddressed note.")} />
           ) : null}
-          {transcriptEntries.map((entry) => {
-            if (entry.kind === 'activity') return <article className="workspace-message is-agent" key={entry.id}
-              data-activity-id={entry.item.id}>
-              <span><Bot size={13} /></span>
-              <RunActivityStream activity={{ items: [entry.item], seen: [], truncated: false }} running />
-            </article>;
+          {transcriptTurns.map((turn) => {
+            const agentName = turn.kind === 'agent' ? agents.find(agent => agent.id === turn.agentId)?.name ?? turn.name ?? turn.agentId : '';
+            const renderEntry = (entry: TranscriptEntry, inHistory = false) => {
+            if (entry.kind === 'execution') return <ConversationExecution key={entry.id} group={entry}
+              agentName={agentName} history={inHistory} />;
+            if (entry.kind === 'activity') return <div key={entry.id} className="conversation-message-bubble" data-activity-id={entry.item.id}>
+              <RunActivityText item={entry.item} />
+            </div>;
             const message = entry.message;
-            const runMessages = messages.filter(item => item.run_id && item.run_id === message.run_id);
-            const showRunDetails = message.run_id && !activeRuns.some(run => run.run_id === message.run_id)
-              && runMessages.at(-1)?.id === message.id;
             return (
-            <article className={`workspace-message is-${message.sender_kind}`} key={message.id} data-message-id={message.id}>
-              <span>{message.sender_kind === "agent" ? <Bot size={13} /> : message.sender_kind === "system" ? <Info size={13} /> : <UserRound size={13} />}</span>
-              <div><strong>{message.sender_name}</strong>
-                {showRunDetails && message.run_id && (history.runSummaries[message.run_id] || runActivities.get(message.run_id)?.items.length) ?
-                  <RunActivityDetails run={history.runSummaries[message.run_id]} activity={runActivities.get(message.run_id)}
-                    messageIds={new Set(runMessages.map(item => item.id))}
-                    finalReply={message.sender_kind === "agent" && message.is_final !== false ? message.content : undefined} /> : null}
+            <article className={`workspace-message is-${message.sender_kind}`} key={message.id} data-message-id={message.id}
+              data-actions-open={touchedMessageId === message.id || undefined}
+              onPointerDown={(event) => { if (event.pointerType === 'touch') setTouchedMessageId(message.id); }}>
+              {turn.kind !== 'agent' && <span>{message.sender_kind === "system" ? <Info size={13} /> : <UserRound size={13} />}</span>}
+              <div className={turn.kind === 'agent' ? 'conversation-message-bubble' : undefined}>{turn.kind !== 'agent' && <strong>{message.sender_name}</strong>}
                 {message.kind?.startsWith("tool_")
                   ? <details className="conversation-tool-message"><summary>{message.content.split("\n")[0]}</summary><pre>{message.content.split("\n").slice(1).join("\n").trim() || t("No additional details")}</pre></details>
                   : message.content ? (message.sender_kind === "agent" ? <MarkdownMessage content={message.content} /> : <p>{message.content}</p>) : null}
@@ -596,11 +635,15 @@ export function ConversationWorkspace({ card }: { card: WorldCard }) {
                     useWorldStore.setState({ settingsOpen: true });
                   }}>{t('Check model settings')}</button>}
                 </div>}
-                {message.sender_kind === 'user' && !visibleOutgoing.some(item => item.message.id === message.id && item.status !== 'confirmed') && <button type="button" className="onboarding-text-button"
-                  disabled={busy || uploading || !!draft.trim() || attachments.length > 0 || activeRuns.length > 0}
-                  onClick={() => { setDraft(message.content); setAttachments(message.attachments ?? []); setSelectedAgentId(message.mention_agent_ids?.[0]); messageInput.current?.focus(); }}>
-                  {t('Review and resend')}
-                </button>}
+                {(message.content || message.sender_kind === 'user') && <div className="conversation-message-actions">
+                  {message.content && <IconButton icon={copiedMessageId === message.id ? Check : Copy} size="sm" quiet
+                    label={t(copiedMessageId === message.id ? 'Message copied' : 'Copy message')}
+                    onClick={() => void copyMessage(message)} />}
+                  {message.sender_kind === 'user' && !visibleOutgoing.some(item => item.message.id === message.id && item.status !== 'confirmed') && <IconButton
+                    icon={GitBranch} size="sm" quiet label={t('Branch in new chat')}
+                    disabled={busy || uploading || !!draft.trim() || attachments.length > 0 || activeRuns.length > 0}
+                    onClick={() => void restartFrom(message)} />}
+                </div>}
                 {message.sender_kind === "user" ? (() => {
                   const queued = history.deliveries.filter((delivery) => delivery.message_id === message.id && delivery.status === "queued");
                   if (!queued.length) return null;
@@ -619,27 +662,32 @@ export function ConversationWorkspace({ card }: { card: WorldCard }) {
                 </div> : null}
               </div>
             </article>
-          ); })}
-          {history.hasAfter ? <button type="button" disabled={history.loading} onClick={() => void history.loadNewer()}>{t("Load newer messages")}</button> : null}
-          {!error ? activeRuns.map((run) => {
-            const agent = agents.find((item) => item.id === run.agent_id);
-            const stopping = stoppingRuns.has(run.run_id);
-            return (
-              <article className="workspace-message is-agent is-responding" key={run.run_id}
-                data-responding-agent-id={run.agent_id}
-                aria-label={t("{v0} is responding", { v0: String(agent?.name ?? run.agent_id) })}>
-                <span title={agent?.name}><Bot size={13} /></span>
-                <RunActivityStream active
-                  waiting={run.status === "waiting"} stopping={stopping}
-                  onStop={() => void stopRun(run.run_id)} />
-              </article>
             );
-          }) : null}
+            };
+            const content = conversationSections(turn.entries, activity.runs, transcriptEntries).map(section =>
+              section.kind === 'history' ? <ConversationHistory key={section.id} section={section}>
+                {section.entries.map(entry => renderEntry(entry, true))}
+              </ConversationHistory> : renderEntry(section));
+            if (turn.kind !== 'agent') return content;
+            return <article key={turn.id} className="conversation-agent-turn" data-speaker-id={turn.agentId}>
+              <span className="conversation-speaker-avatar"><Bot size={13} /></span>
+              <strong className="conversation-speaker-name">{agentName}</strong>
+              <div className="conversation-agent-content">
+                {content}
+                {turn.activeRuns.map(run => <div key={run.run_id} data-responding-agent-id={run.agent_id}
+                  aria-label={t('{v0} is responding', { v0: agentName })}>
+                  <RunActivityStatus waiting={run.status === 'waiting'} stopping={stoppingRuns.has(run.run_id)}
+                    onStop={() => void stopRun(run.run_id)} />
+                </div>)}
+              </div>
+            </article>;
+          })}
+          {history.hasAfter ? <button type="button" disabled={history.loading} onClick={() => void history.loadNewer()}>{t("Load newer messages")}</button> : null}
           </div>
         </div>
         {history.showLatest ? <button type="button" className="conversation-latest" aria-label={t("Jump to latest")} title={t("Jump to latest")} disabled={history.loading} onClick={() => void history.loadLatest()}><ArrowDown size={18} aria-hidden="true" /></button> : null}
         </div>
-        <div className="workspace-composer" {...intake.pasteProps}>
+        <div className="workspace-composer" {...intake.pasteProps} onPointerDown={() => setTouchedMessageId(undefined)}>
           <TransferList queue={transfers.queue} items={transfers.items} />
           <input ref={fileInput} type="file" multiple hidden aria-label={t("Attach files")} onChange={(event) => {
             const files = Array.from(event.target.files ?? []);

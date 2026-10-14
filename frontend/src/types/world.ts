@@ -330,6 +330,7 @@ export interface ToastMessage {
 }
 
 export interface ConversationSession {
+  restart_before_message_id?: string | null;
   group_id?: string;
   group_title?: string;
   auto_title?: boolean;
@@ -407,7 +408,17 @@ export interface ContainerDefinition {
 
 export interface ConversationToolTrace {
   type: string;
-  name: string;
+    name?: string;
+    id?: string;
+    timestamp?: string;
+    text?: string;
+    kind?: string;
+    provider_message_id?: string;
+    arguments?: unknown;
+    response?: unknown;
+    error?: unknown;
+    success?: boolean;
+    truncated?: boolean;
   call_id?: string;
 }
 
@@ -417,10 +428,12 @@ export interface ConversationRunSummary {
   status: string;
   started_at?: string | null;
   finished_at?: string | null;
+  final_message_id?: string | null;
   awaiting?: string | null;
   progress?: string | null;
   tool_count: number;
   tool_trace: ConversationToolTrace[];
+    tool_trace_truncated?: boolean;
   live_text?: string;
 }
 

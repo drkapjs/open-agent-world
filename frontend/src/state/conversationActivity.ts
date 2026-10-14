@@ -120,6 +120,7 @@ export function activeConversationRuns(
       progress: durable?.progress ?? existing?.progress,
       tool_count: durable?.tool_count ?? existing?.tool_count ?? 0,
       tool_trace: [...(durable?.tool_trace ?? existing?.tool_trace ?? [])],
+      tool_trace_truncated: durable?.tool_trace_truncated ?? existing?.tool_trace_truncated,
       live_text: existing?.live_text,
     };
     if (type === "run_waiting") current.status = "waiting";

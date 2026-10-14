@@ -157,6 +157,28 @@ Provider-visible text in Conversation runs is committed to
 the timeline, including text emitted before a follow-up from the user. Tool
 start/completion details remain in the Run trace; provider-private reasoning is
 not projected.
+Conversation uses one chronological projection for live and restored activity.
+Consecutive content from one recorded Agent shares a single speaker header.
+Each message or public progress entry retains its own chat bubble; execution
+groups and Run controls sit between or after those bubbles. A different speaker
+starts a new turn; display names alone never establish shared identity.
+Adjacent tool calls in the
+same Run form an execution group; messages and other Runs separate groups.
+Results update the original tool row. A running group has a bounded scrolling
+viewport that follows activity until the reader scrolls away. The latest group
+stays open while the Agent narrates or awaits its next model response. Groups
+collapse by default when a newer execution group begins or the Run terminates,
+and can be reopened. Unfinished calls remain visible across user interruptions. Run termination
+never relocates activity underneath the final reply.
+
+The bounded Run checkpoint (`tool_trace`, retained for API compatibility) stores
+the latest 50 tool/public-progress events, including `status`, `plan`, and
+`reasoning_summary`. `tool_trace_truncated` explicitly marks omitted earlier
+events. The display cache retains up to 200 merged rows. These are activity
+previews, not an unlimited execution archive; older checkpoints cannot restore
+events that were never persisted. Grouping does not create runtime phases or
+infer dependencies. Historical message windows retain their associated Run
+summaries and restrict activity to the visible time range.
 Each record has an immutable ID and a per-session increasing `sequence`.
 Final replies reuse the Run's `output_message_id` when it already contains that
 reply; a separate completion reply gets its own row. Live graph and session participation checks also apply

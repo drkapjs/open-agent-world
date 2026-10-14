@@ -4,6 +4,8 @@ export interface RunActivityItem {
   id: string;
   type: "agent_message" | "agent_progress" | "tool_started" | "tool_completed";
   timestamp?: string;
+  started_at?: string;
+  finished_at?: string;
   text?: string;
   provider_message_id?: string;
   conversation_message_id?: string;
@@ -32,7 +34,7 @@ const object = (value: unknown): Record<string, unknown> =>
  * never infer phases, group by tool type, or classify the content with an LLM. */
 export function mergeRunActivity(
   previous: RunActivityState | undefined,
-  run: Pick<ConversationRunSummary, "run_id" | "tool_trace">,
+  run: Pick<ConversationRunSummary, "run_id" | "tool_trace" | "tool_trace_truncated">,
   events: readonly RuntimeEvent[],
 ): RunActivityState {
   const state = previous ?? empty;
@@ -88,8 +90,12 @@ export function mergeRunActivity(
     const existing = index >= 0 ? items[index] : undefined;
     const item: RunActivityItem = {
       ...existing, id: existing?.id ?? event.id,
-      timestamp: existing?.timestamp ?? event.timestamp,
+      timestamp: existing?.timestamp && event.timestamp
+        ? (existing.timestamp < event.timestamp ? existing.timestamp : event.timestamp)
+        : existing?.timestamp || event.timestamp,
       type: existing?.type === "tool_completed" ? "tool_completed" : type,
+      ...(type === 'tool_started' && event.timestamp ? { started_at: existing?.started_at ?? event.timestamp } : {}),
+      ...(type === 'tool_completed' && event.timestamp ? { finished_at: existing?.finished_at ?? event.timestamp } : {}),
       name, call_id: callId,
       ...(Object.hasOwn(payload, "arguments") ? { arguments: payload.arguments } : {}),
       ...(Object.hasOwn(payload, "response") ? { response: payload.response } : {}),
@@ -100,12 +106,12 @@ export function mergeRunActivity(
     if (index < 0) items.push(item);
     else items[index] = item;
   }
-  if (!changed) return state;
+  if (!changed && (!run.tool_trace_truncated || state.truncated)) return state;
   // An older REST checkpoint can arrive after a live event. Keep each tool at
   // its original start position while its completion fills in the same row.
-  items.sort((a, b) => a.timestamp && b.timestamp ? a.timestamp.localeCompare(b.timestamp) : 0);
+  items = [...items].sort((a, b) => a.timestamp && b.timestamp ? a.timestamp.localeCompare(b.timestamp) : 0);
   return { items: items.slice(-MAX_ITEMS), seen: [...seen].slice(-MAX_SEEN),
-    truncated: state.truncated || items.length > MAX_ITEMS };
+    truncated: state.truncated || Boolean(run.tool_trace_truncated) || items.length > MAX_ITEMS };
 }
 
 export function toolFailed(item: RunActivityItem): boolean {
@@ -126,6 +132,7 @@ export function withoutFinalReply(
   for (let index = activity.items.length - 1; index >= 0; index -= 1) {
     const item = activity.items[index];
     if (item.type !== "agent_message") continue;
+    if (item.conversation_message_id) return activity;
     if (item.text?.trim() !== finalText) return activity;
     return { ...activity, items: activity.items.filter((_, i) => i !== index) };
   }

@@ -99,6 +99,44 @@ class ConversationStore:
             )
         return self._session(row, [str(item["agent_id"]) for item in participants])
 
+    def copy_restart_prefix(self, conversation_id: str, session_id: str, message_id: str) -> None:
+        """Snapshot the full prefix, without copying provider state or Run ownership."""
+        with self.database.transaction(immediate=True) as db:
+            source = self.get_message(message_id)
+            if source.conversation_id != conversation_id:
+                raise NotFoundError("restart message does not exist in this conversation")
+            if source.sender_kind != 'user':
+                raise ConversationValidationError("restart must select a user message")
+            rows = db.execute('''SELECT * FROM conversation_messages
+                WHERE session_id=? AND sequence<? ORDER BY sequence''',
+                (source.session_id, source.sequence)).fetchall()
+            # Explicit, immutable grants include the selected message's draft
+            # attachments. Agents still cannot read drafts until they are posted.
+            for item in [source, *(self._message(row) for row in rows)]:
+                for attachment in item.attachments:
+                    db.execute('INSERT OR IGNORE INTO conversation_attachment_grants VALUES (?, ?)',
+                               (session_id, attachment.version_id))
+            for row in rows:
+                item = self._message(row)
+                copied = self.add_message(conversation_id, session_id,
+                    sender_kind=item.sender_kind, sender_id=item.sender_id,
+                    sender_name=item.sender_name, content=item.content,
+                    mention_agent_ids=item.mention_agent_ids, attachments=item.attachments,
+                    kind=item.kind, is_final=True)
+                db.execute('UPDATE conversation_messages SET created_at=? WHERE id=?',
+                           (row['created_at'], copied.id))
+            db.execute('UPDATE conversation_sessions SET restart_before_message_id=? WHERE id=?',
+                       (message_id, session_id))
+
+    def context_messages(self, conversation_id: str, session_id: str,
+                         max_sequence: int | None = None) -> list[ConversationMessage]:
+        self.get_session(conversation_id, session_id)
+        with self.database.locked() as db:
+            rows = db.execute('''SELECT * FROM conversation_messages WHERE session_id=?
+                AND is_final=1 AND (? IS NULL OR sequence<=?) ORDER BY sequence''',
+                (session_id, max_sequence, max_sequence)).fetchall()
+        return [self._message(row) for row in rows]
+
     def list_sessions(self, conversation_id: str) -> list[ConversationSession]:
         self.admit_default_participants(conversation_id)
         with self.database.locked() as connection:
@@ -465,10 +503,12 @@ class ConversationStore:
             status=str(row["status"]),
             started_at=datetime.fromisoformat(str(row["started_at"])) if row["started_at"] else None,
             finished_at=datetime.fromisoformat(str(row["finished_at"])) if row["finished_at"] else None,
+            final_message_id=lifecycle.get('final_message_id'),
             awaiting=lifecycle.get("awaiting") if isinstance(lifecycle.get("awaiting"), str) else None,
             progress=lifecycle.get("progress") if isinstance(lifecycle.get("progress"), str) else None,
             tool_count=int(lifecycle.get("tool_count") or len(trace)),
             tool_trace=trace[-50:],
+            tool_trace_truncated=bool(lifecycle.get('tool_trace_truncated')) or len(trace) > 50,
         )
 
     @staticmethod
@@ -486,6 +526,7 @@ class ConversationStore:
             created_at=datetime.fromisoformat(str(row["created_at"])),
             updated_at=datetime.fromisoformat(str(row["updated_at"])),
             revision=int(row["revision"]),
+            restart_before_message_id=row["restart_before_message_id"],
         )
 
     @staticmethod

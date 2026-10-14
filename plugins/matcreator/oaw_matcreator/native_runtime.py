@@ -94,7 +94,15 @@ class MatCreatorRuntime(RuntimeProvider):
         cap, arguments = request.get("capability_id"), request.get("arguments")
         if cap not in visible or not isinstance(arguments, dict):
             return {"ok": False, "error": {"code": "permission_denied", "message": "Tool unavailable or revoked; list tools again."}}
-        result = await execute_tool(lambda: self.provider.invoke_tool(agent_id, cap, arguments),
+        async def invoke():
+            value = await self.provider.invoke_tool(agent_id, cap, arguments)
+            if visible[cap].name == 'send_conversation_message' and isinstance(value, dict) and value.get('id'):
+                # The persisted message remains complete; the model needs only a receipt.
+                return {"message_id": value['id'], "delivered": True,
+                    "note": "Already visible to the user. Do not repeat or summarize this message in the final response."}
+            return value
+
+        result = await execute_tool(invoke,
             serialize=codex_tool_content)
         return {"tool": visible[cap].name, "result": result.response, "ok": result.ok}
 

@@ -67,6 +67,27 @@ describe("ConversationWorkspace snapshots", () => {
 
   afterEach(() => cleanup());
 
+  it('restarts in a fresh session with an editable draft instead of resending into the old context', async () => {
+    const branch = { ...session, id: 'branch', restart_before_message_id: historicalMessage.id };
+    const create = vi.spyOn(worldApi, 'createConversationSession').mockResolvedValue(branch);
+    const post = vi.spyOn(worldApi, 'postConversationMessage').mockResolvedValue({
+      message: { ...historicalMessage, id: 'edited', session_id: branch.id, content: 'edited prompt' }, accepted_agent_ids: [],
+    });
+    vi.mocked(worldApi.getConversationTimeline).mockImplementation(async (_room, id) => ({
+      items: id === session.id ? [historicalMessage] : [], has_before: false, has_after: false,
+    }));
+    render(<ConversationWorkspace card={card} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Branch in new chat' }));
+    await waitFor(() => expect(useConversationView.getState().sessions[card.id]).toBe(branch.id));
+    expect(create).toHaveBeenCalledWith(card.id, expect.objectContaining({ restart_before_message_id: historicalMessage.id }), expect.any(String));
+    expect(post).not.toHaveBeenCalled();
+    const composer = screen.getByLabelText('Conversation message');
+    expect((composer as HTMLTextAreaElement).value).toBe(historicalMessage.content);
+    fireEvent.change(composer, { target: { value: 'edited prompt' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    await waitFor(() => expect(post).toHaveBeenCalledWith(card.id, branch.id, expect.objectContaining({ content: 'edited prompt' })));
+  });
+
   it.each(['session', 'group'])('does not let a stale canvas copy clear the participant selection after workspace %s creation', async (kind) => {
     const summary = { conversation_id: card.id,
       sessions: [{ ...session, participant_ids: ['atlas'] }],
@@ -509,7 +530,7 @@ describe("ConversationWorkspace snapshots", () => {
     });
   });
 
-  it("restores only final chat history while keeping the durable tool trace collapsed", async () => {
+  it("restores execution groups in the transcript with durable tool details collapsed", async () => {
     const final: ConversationMessage = {
       ...historicalMessage, id: "final", sequence: 2, sender_kind: "agent",
       sender_name: "Atlas", run_id: "run-1", content: "Final answer",
@@ -526,11 +547,10 @@ describe("ConversationWorkspace snapshots", () => {
     render(<ConversationWorkspace card={card} />);
     await screen.findByText("Final answer");
     expect(screen.queryByText("Checking the file")).toBeNull();
-    const summary = screen.getByText(/1 tool calls/);
-    const details = summary.closest("details") as HTMLDetailsElement;
-    expect(details.open).toBe(false);
+    const summary = screen.getByRole('button', { name: /1 tool calls/ });
+    expect(summary.getAttribute('aria-expanded')).toBe('false');
     fireEvent.click(summary);
-    expect(details.open).toBe(true);
+    expect(summary.getAttribute('aria-expanded')).toBe('true');
     expect(await screen.findByText("read_file")).toBeTruthy();
   });
 

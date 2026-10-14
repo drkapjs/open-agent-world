@@ -810,7 +810,7 @@ export const worldApi = {
 
   createConversationSession(
     conversationId: string,
-    input: { title: string; participant_ids: string[]; group_id?: string; group_title?: string },
+    input: { title: string; participant_ids: string[]; group_id?: string; group_title?: string; restart_before_message_id?: string },
     idempotencyKey?: string,
   ): Promise<ConversationSession> {
     return request<ConversationSession>(`/conversations/${encodeURIComponent(conversationId)}/sessions`, {

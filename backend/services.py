@@ -2453,6 +2453,12 @@ class ApplicationServices:
 
         def authorize() -> None:
             self._require_card_type(conversation_id, CardType.CONVERSATION)
+            if request.restart_before_message_id:
+                source = self.conversations.get_message(request.restart_before_message_id)
+                if source.conversation_id != conversation_id:
+                    raise NotFoundError("restart message does not exist in this conversation")
+                if source.sender_kind != 'user':
+                    raise ConversationValidationError("restart must select a user message")
             for agent_id in participants:
                 self._require_conversation_connection(agent_id, conversation_id)
 
@@ -2462,6 +2468,9 @@ class ApplicationServices:
                 request.model_copy(update={"participant_ids": participants}),
             )
             self.state.ensure_scope("session", session.id, schema_id="core.session")
+            if request.restart_before_message_id:
+                self.conversations.copy_restart_prefix(conversation_id, session.id, request.restart_before_message_id)
+                session = self.conversations.get_session(conversation_id, session.id)
             return session.model_dump(mode="json")
 
         if idempotency_key is not None:
@@ -3429,9 +3438,14 @@ class ApplicationServices:
         self.conversations.finalize_run_messages(run_id)
         message_id = self.state.get(self.state.get_scope("run", run_id), "output_message_id")
         if message_id and self.conversations.get_message(str(message_id)).content == content.strip():
-            return self.conversations.finalize_message(str(message_id), run_id, session_id)
-        return self.conversations.add_message(conversation_id, session_id, sender_kind="agent",
-            sender_id=sender_id, sender_name=sender_name, content=content, run_id=run_id)
+            message = self.conversations.finalize_message(str(message_id), run_id, session_id)
+        else:
+            message = self.conversations.add_message(conversation_id, session_id, sender_kind="agent",
+                sender_id=sender_id, sender_name=sender_name, content=content, run_id=run_id)
+        # is_final seals each streamed message; this relation identifies the
+        # actual response to the Run, independently of chronology or content.
+        self._require_run_manager().store.update_lifecycle(run_id, final_message_id=message.id)
+        return message
 
     async def rename_conversation_session(self, conversation_id: str, session_id: str, title: str) -> ConversationSession:
         self._require_card_type(conversation_id, CardType.CONVERSATION)
@@ -3502,6 +3516,8 @@ class ApplicationServices:
         # older than 40 and peer turns. Plugin continuation remains provider-owned.
         transcript = [] if managed else self.conversations.list_messages(
             conversation_id, session.id, limit=40)
+        if not managed and session.restart_before_message_id:
+            transcript = self.conversations.context_messages(conversation_id, session.id, max_sequence)
         if max_sequence is not None:
             transcript = [
                 item for item in transcript
@@ -3521,6 +3537,10 @@ class ApplicationServices:
         )
         return (
             "You are speaking inside a shared Open Agent World conversation.\n"
+            "Your response text is automatically delivered to this session. For an ordinary answer, "
+            "respond directly; do not also call send_conversation_message. That tool is for file attachments "
+            "or a separate interim update. If you already sent information through it, do not repeat or "
+            "summarize the same information in your final response.\n"
             f"Conversation id: {conversation_id}\n"
             f"Session id: {session.id}\n"
             "Attachments are immutable artifacts in this conversation. Use inspect_artifacts to read text or metadata, "

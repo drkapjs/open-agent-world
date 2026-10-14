@@ -882,7 +882,7 @@ def _register_builtin(registry: PluginRegistration) -> None:
         message_schema['properties'].pop(key, None)
     registry.register_capability(CapabilityDefinition(
         kind='conversation.send_message', tool_name='send_conversation_message', target_parameter='conversation',
-        description='Send text and/or published file attachments to the current session. Publish Sandbox files to this conversation first; attach version_id and path. Images are clickable previews.',
+        description='Send published file attachments or a separate interim update to the current session. Ordinary response text is delivered automatically: do not call this tool for the same answer or repeat sent content in the final response. Publish Sandbox files first; attach version_id and path. Images are clickable previews.',
         input_schema=message_schema), _send_conversation_message)
     registry.register_capability(CapabilityDefinition(
         kind='agent.communicate', tool_name='send_message', target_parameter='target',

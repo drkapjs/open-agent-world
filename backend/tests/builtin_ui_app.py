@@ -73,6 +73,55 @@ async def return_conversation_tool(run_id: str):
     return {'ok': True}
 
 
+_activity_gates = {}
+
+
+@app.post('/api/test/conversation-activity/install')
+async def install_conversation_activity_fixture(incremental: bool = False):
+    global _conversation_original_runtime
+    _conversation_original_runtime = services.run_manager.provider_for_agent_configuration('core.mock')
+
+    class ActivityConversation(MockAgentRuntime):
+        async def execute(self, config, context, runtime_input):
+            gates = _activity_gates[context.run_id] = [[asyncio.Event() for _ in range(count)] for count in (12, 8)]
+            try:
+                yield AgentEvent(context.agent_id, context.run_id, AgentEventType.MESSAGE,
+                    {'text': 'I will read the project files, then check the changes.', 'provider_message_id': 'intro', 'final': True})
+                for phase, count in enumerate([12, 8]):
+                    if phase:
+                        yield AgentEvent(context.agent_id, context.run_id, AgentEventType.PROGRESS,
+                            {'text': 'The files agree. I am checking the implementation next.', 'kind': 'reasoning_summary', 'provider_message_id': 'plan'})
+                    for index in range(count):
+                        payload = {'name': 'read_file' if phase == 0 else 'check_result', 'call_id': f'{phase}-{index}',
+                            'arguments': {'path': f'src/module-{index}.ts'}}
+                        yield AgentEvent(context.agent_id, context.run_id, AgentEventType.TOOL_STARTED, payload)
+                        if incremental or index == count - 1:
+                            await gates[phase][index].wait()
+                        yield AgentEvent(context.agent_id, context.run_id, AgentEventType.TOOL_COMPLETED,
+                            {**payload, 'response': {'exit_code': 1 if phase == 1 and index == 0 else 0, 'result': f'Checked module {index}'}})
+                yield AgentEvent(context.agent_id, context.run_id, AgentEventType.MESSAGE,
+                    {'text': 'Review complete. One check needs attention.', 'provider_message_id': 'answer', 'final': True})
+                yield AgentEvent(context.agent_id, context.run_id, AgentEventType.COMPLETED, run_status='succeeded')
+            finally:
+                _activity_gates.pop(context.run_id, None)
+
+    services.install_runtime_provider('core.mock', ActivityConversation(WorldAgentCapabilityProvider(services)), default=True)
+    return {'ok': True}
+
+
+@app.post('/api/test/conversation-activity/{run_id}/advance/{phase}')
+async def advance_conversation_activity(run_id: str, phase: int):
+    for gate in _activity_gates[run_id][phase]:
+        gate.set()
+    return {'ok': True}
+
+
+@app.post('/api/test/conversation-activity/{run_id}/step/{phase}/{index}')
+async def step_conversation_activity(run_id: str, phase: int, index: int):
+    _activity_gates[run_id][phase][index].set()
+    return {'ok': True}
+
+
 # Isolated browser fixtures only: seed a provider projection through its real
 # public API, without a model request or mutable document on the graph viewer.
 from open_agent_world.plugin_api import ExecutionSnapshot

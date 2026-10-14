@@ -119,6 +119,22 @@ def test_old_external_paths_are_migrated_out_of_card_configuration():
     assert 'python_executable' not in value.model_json_schema()['properties']
 
 
+@pytest.mark.asyncio
+async def test_sent_message_bridge_returns_receipt_without_echoing_answer(tmp_path):
+    class SendingProvider(Provider):
+        async def list_tools(self, agent):
+            return [ScopedToolDefinition('send', 'send_conversation_message', 'Send', input_schema={})]
+
+        async def invoke_tool(self, agent, capability, arguments):
+            return {'id': 'sent-id', 'content': 'long user-visible answer'}
+
+    result = await MatCreatorRuntime(SendingProvider(tmp_path))._bridge('a', {
+        'method': 'invoke_tool', 'capability_id': 'send', 'arguments': {}})
+    assert result['ok']
+    assert 'sent-id' in str(result) and 'Do not repeat' in str(result)
+    assert 'long user-visible answer' not in str(result)
+
+
 @pytest.fixture
 def scripted_model(request):
     """A deterministic OpenAI endpoint; the actual Pack agents choose tools."""
@@ -328,6 +344,50 @@ async def test_pack_engine_planner_checkpoint_executor_recursive_child_and_oaw_t
         assert responses['orphan-call']['error']['side_effects'] == 'unknown'
         assert not any(args.get('value') == 'never-replay' for _, _, args in provider.calls)
         assert any(e.type.value == 'tool_completed' and e.payload.get('ok') is False for e in finished)
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not os.environ.get('OAW_MATCREATOR_MANAGED'), reason='requires Pack orchestration dependencies')
+@pytest.mark.parametrize('scripted_model', [True], indirect=True)
+async def test_native_tool_start_is_delivered_while_the_real_worker_is_waiting_for_its_result(tmp_path, scripted_model):
+    url, _ = scripted_model
+    entered, release, started = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    observed = []
+
+    class PausedProvider(Provider):
+        async def invoke_tool(self, agent, capability, arguments):
+            entered.set()
+            await release.wait()
+            return await super().invoke_tool(agent, capability, arguments)
+
+    runtime = MatCreatorRuntime(PausedProvider(tmp_path, url))
+    config = AgentConfig('agent-a', 'Native')
+    await runtime.create_agent(config)
+
+    async def consume():
+        async for event in runtime.execute(config, context(), RuntimeInput('Plan a bridge test')):
+            observed.append(event)
+            if event.type.value == 'tool_started' and event.payload.get('name') == 'oaw_invoke_tool':
+                started.set()
+
+    task = asyncio.create_task(consume())
+    try:
+        async with asyncio.timeout(60):
+            await entered.wait()
+            # The native worker is blocked on a genuine host bridge request.
+            # Start must be observable before releasing any tool result.
+            await asyncio.wait_for(started.wait(), 5)
+            assert not task.done()
+            assert not any(event.type.value == 'tool_completed' and event.payload.get('name') == 'oaw_invoke_tool'
+                and event.payload.get('ok') is True for event in observed)
+            release.set()
+            await task
+            assert observed[-1].type.value == 'agent_completed'
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
 
 @pytest.mark.asyncio

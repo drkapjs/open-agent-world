@@ -72,12 +72,29 @@
 .conversation-empty { min-height: 0; padding-block: 24px; }
 .conversation-history-error { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 12px; margin-bottom: 12px; border-radius: var(--radius-control, 6px); color: var(--danger); background: var(--danger-soft); }
 .conversation-history-error > p { flex: 1 1 180px; margin: 0; font-size: var(--font-size-small, 12px); line-height: 1.5; overflow-wrap: anywhere; }
-.conversation-thread .workspace-message { gap: 12px; margin-bottom: 24px; }
+.conversation-thread .workspace-message { position: relative; gap: 12px; margin-bottom: 14px; }
 .conversation-thread .workspace-message > span { width: 28px; height: 28px; border-radius: 50%; background: transparent; }
 .conversation-thread .workspace-message > div > strong { font-size: var(--font-size-caption, 11px); font-weight: 550; color: var(--ink-soft); }
-.conversation-thread .workspace-message > div > p { padding: 0; color: var(--ink); border: 0; border-radius: 0; background: transparent; font: inherit; font-size: var(--conversation-font-size); line-height: 1.7; }
+.conversation-thread .workspace-message > div > p,
+.conversation-thread .conversation-markdown { padding: 0; color: var(--ink); border: 0; border-radius: 0; background: transparent; font: inherit; font-size: var(--conversation-font-size); line-height: 1.7; }
 .conversation-thread .workspace-message.is-user > div > p { padding: 10px 14px; border-radius: 12px 12px 4px 12px; background: var(--accent-soft); }
 .conversation-thread .workspace-message.is-system > div > p { color: var(--ink-soft); font-size: var(--font-size-small, 12px); }
+.conversation-message-actions { position: absolute; top: 0; right: 0; z-index: 1; display: flex; gap: 2px; border-radius: 5px; background: var(--surface-raised); opacity: 0; pointer-events: none; transition: opacity 120ms ease; }
+.workspace-message.is-user .conversation-message-actions { top: auto; bottom: -10px; right: 40px; }
+.conversation-agent-turn { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 4px 12px; margin-bottom: 14px; min-width: 0; }
+.conversation-speaker-avatar { grid-column: 1; grid-row: 1 / span 2; width: 28px; height: 24px; display: grid; place-items: center; color: var(--agent); }
+.conversation-speaker-name { grid-column: 2; min-width: 0; color: var(--ink-soft); font-size: var(--conversation-caption-size); font-weight: 550; }
+.conversation-agent-content { grid-column: 2; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.conversation-message-bubble { box-sizing: border-box; width: fit-content; max-width: 100%; min-width: 0; padding: 10px 14px; border: 1px solid var(--line); border-radius: 4px 12px 12px; background: var(--surface-raised); }
+.conversation-agent-content .workspace-message { display: block; width: fit-content; max-width: 100%; margin: 0; }
+.conversation-agent-content .conversation-message-actions { top: -10px; right: 4px; }
+.conversation-message-bubble .conversation-markdown { overflow-x: auto; }
+.conversation-thread .conversation-message-bubble .conversation-markdown > :last-child { margin-bottom: 0; }
+.workspace-message.is-user .conversation-message-actions { justify-content: flex-end; }
+.workspace-message:hover .conversation-message-actions,
+.workspace-message:focus-within .conversation-message-actions,
+.workspace-message[data-actions-open] .conversation-message-actions { opacity: 1; pointer-events: auto; }
+@media (prefers-reduced-motion: reduce) { .conversation-message-actions { transition: none; } }
 .conversation-thread .workspace-composer { width: 100%; max-width: 80ch; justify-self: center; border: 1px solid var(--line); border-radius: var(--radius-surface, 10px); background: var(--surface-raised); box-shadow: 0 2px 8px color-mix(in srgb, var(--shadow) 50%, transparent); }
 .conversation-thread .workspace-composer:focus-within { border-color: var(--accent); }
 .conversation-thread .workspace-composer textarea { min-height: 64px; max-height: 160px; padding: 12px; font: inherit; font-size: var(--conversation-font-size); line-height: 1.6; }
@@ -116,6 +133,9 @@
 @container conversation-thread (max-width: 420px) {
   .conversation-thread .workspace-message { gap: 8px; }
   .conversation-thread .workspace-message > span { width: 24px; height: 24px; }
+  .conversation-agent-turn { grid-template-columns: 24px minmax(0, 1fr); column-gap: 8px; }
+  .conversation-speaker-avatar { width: 24px; }
+  .conversation-message-bubble { padding: 10px; }
   .conversation-thread .workspace-composer footer { align-items: flex-end; }
   .conversation-thread .workspace-composer textarea { min-height: 56px; }
 }
@@ -132,19 +152,35 @@
   .context-avatar.is-compacting .context-pressure-fill { animation: none; }
 }
 
-/* One chronological execution stream; controls follow, rather than head, it. */
-.run-activity-stream { min-width: 0; width: 100%; }
-.run-activity-items { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+/* Execution segments share the text column and own their scroll/disclosure. */
+.conversation-history { min-width: 0; }
+.conversation-history > summary { display: flex; align-items: center; gap: 6px; width: fit-content; padding: 5px 0; list-style: none; color: var(--ink-soft); font-size: 11px; cursor: pointer; }
+.conversation-history > summary::-webkit-details-marker { display: none; }
+.conversation-history[open] > summary .conversation-history-chevron { transform: rotate(90deg); }
+.conversation-history > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.conversation-history-content { display: flex; flex-direction: column; gap: 8px; padding-top: 8px; }
+.conversation-duration { flex-shrink: 0; color: var(--ink-faint); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.conversation-execution { min-width: 0; color: var(--ink-soft); }
+.conversation-execution-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; max-width: 100%; padding: 5px 0; border: 0; background: transparent; color: inherit; font: inherit; font-size: 11px; text-align: left; cursor: pointer; }
+.conversation-execution-summary > svg { flex-shrink: 0; }
+.conversation-execution-summary > span { min-width: 0; overflow-wrap: anywhere; }
+.conversation-execution-summary[aria-expanded="true"] .conversation-execution-chevron { transform: rotate(90deg); }
+.conversation-execution-error { color: var(--danger, #b74747); }
+.conversation-execution-body { position: relative; margin-top: 4px; }
+.conversation-execution-scroll { min-width: 0; border-left: 1px solid var(--line); padding: 2px 0 2px 8px; }
+.conversation-execution-scroll[data-compact] { max-height: 104px; overflow: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-gutter: stable; }
+.conversation-execution-latest { position: absolute; bottom: 4px; right: 10px; display: flex; align-items: center; gap: 4px; border: 1px solid var(--line); border-radius: 12px; padding: 4px 8px; background: var(--surface-raised); color: var(--ink-soft); font: inherit; font-size: 11px; cursor: pointer; }
+.conversation-execution-summary:focus-visible, .conversation-execution-scroll:focus-visible, .conversation-execution-latest:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .run-activity-progress { color: var(--ink-soft); font-size: var(--conversation-font-size, 12px); }
-.run-activity-progress > p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.65; }
+.conversation-thread .run-activity-progress > p { margin: 0; padding: 0; border: 0; background: transparent; font: inherit; color: inherit; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.65; }
 .run-activity-text { min-width: 0; }
-.run-activity-footer { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+.run-activity-footer { display: flex; align-items: center; gap: 10px; }
 .run-activity-footer > span { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-faint); font-size: 11px; }
 .run-stop-button { display: inline-flex; align-items: center; gap: 5px; min-height: 28px; padding: 4px 9px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--ink-soft); font: inherit; font-size: 11px; cursor: pointer; }
 .run-stop-button:hover:not(:disabled) { background: var(--surface-raised); color: var(--ink); }
 .run-stop-button:disabled { opacity: .55; cursor: default; }
 .run-stop-button:focus-visible, .run-tool > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.run-tool { min-width: 0; margin: 0; border: 1px solid var(--line); border-radius: 6px; }
+.run-tool { min-width: 0; margin: 0; border: 0; }
 .run-tool > summary { display: flex; align-items: center; gap: 6px; min-height: 28px; padding: 3px 8px; list-style: none; color: var(--ink-soft); font-size: var(--conversation-font-size, 12px); cursor: pointer; }
 .run-tool > summary::-webkit-details-marker { display: none; }
 .run-tool > summary > svg { flex-shrink: 0; }
@@ -154,11 +190,8 @@
 .run-tool.is-error > summary { color: var(--danger, #b74747); }
 .run-tool-details { padding: 6px 10px 10px; border-top: 1px solid var(--line); min-width: 0; }
 .run-tool-details section > span { color: var(--ink-soft); font-size: var(--font-size-caption, 11px); }
-.run-tool-details pre { margin: 4px 0 8px; padding: 8px; max-height: 240px; overflow: auto; background: var(--surface-raised); border-radius: 4px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; }
+.run-tool-details pre { margin: 4px 0 8px; padding: 10px; background: var(--surface-raised); border-radius: 4px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; line-height: 1.6; }
 .run-tool-details p, .run-tool-details small, .run-activity-note { color: var(--ink-soft); font-size: var(--font-size-caption, 11px); }
-.run-activity-history { margin: 8px 0 0; min-width: 0; }
-.run-activity-history > summary { color: var(--ink-soft); font-size: 11px; cursor: pointer; }
-.run-activity-history > .run-activity-stream { margin-top: 8px; }
 .run-activity-spinner { animation: run-activity-spin 1s linear infinite; }
 @keyframes run-activity-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .run-activity-spinner { animation: none; } }

@@ -15,9 +15,25 @@ function Harness({ session = "a", refresh = "", events = [] }: { session?: strin
   return <><button onClick={history.loadOlder}>Older</button><button onClick={history.loadNewer}>Newer</button>
     <div ref={ref} onScroll={history.onScroll}>{history.messages.map((m) => <p key={m.id} data-message-id={m.id}>{m.content}</p>)}</div>
     <output data-testid="active">{history.activeAgentIds.join(",")}</output>
+    <output data-testid="summaries">{Object.keys(history.runSummaries).sort().join(',')}</output>
     <span>{history.loading ? "busy" : "ready"}</span></>;
 }
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+it('keeps summaries for retained messages when paging and refreshing the tail', async () => {
+  const summary = (id: string) => ({ run_id: id, agent_id: 'atlas', status: 'succeeded', tool_count: 1, tool_trace: [] });
+  const latest = { items: [{ ...messages[1], run_id: 'new' }], has_before: true, has_after: false, run_summaries: { new: summary('new') } };
+  const fetch = vi.spyOn(worldApi, 'getConversationTimeline').mockResolvedValue(latest);
+  const { rerender } = render(<Harness />);
+  await screen.findByText('Message 2');
+  fetch.mockResolvedValue({ items: [{ ...messages[0], run_id: 'old' }], has_before: false, has_after: true, run_summaries: { old: summary('old') } });
+  fireEvent.click(screen.getByText('Older'));
+  await screen.findByText('Message 1');
+  expect(screen.getByTestId('summaries').textContent).toBe('new,old');
+  fetch.mockResolvedValue(latest);
+  rerender(<Harness refresh="tail" />);
+  await waitFor(() => expect(fetch).toHaveBeenCalledTimes(3));
+  expect(screen.getByTestId('summaries').textContent).toBe('new,old');
+});
 it('refreshes the same stream ID and sequence without adding a second message', async () => {
   const first = { ...messages[0], content: 'Inspecting', is_final: false };
   const fetch = vi.spyOn(worldApi, 'getConversationTimeline').mockResolvedValue({ items: [first], has_before: false, has_after: false });
