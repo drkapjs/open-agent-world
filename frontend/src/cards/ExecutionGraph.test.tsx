@@ -66,9 +66,80 @@ it('keeps ownership colors and lanes through completion, details and late depend
   expect(update.rows.slice(0, 4).map(({ id, lane, color }) => ({ id, lane, color }))).toEqual(signature);
 });
 it('keeps a task continuous through its tool operations before handing off to another task', () => {
-  const nodes = [node('a', { workstream_id: 'task-a' }), node('tool', { workstream_id: 'task-a', kind: 'tool' }), node('b', { workstream_id: 'task-b' })];
+  const nodes = [node('a', { workstream_id: 'task-a' }), node('tool', { parent_id: 'a', workstream_id: 'task-a', kind: 'tool' }), node('b', { workstream_id: 'task-b' })];
   const graph = layoutGraph(executionIndex(history(nodes, [edge('a','b')])), laneMemory());
+  expect(graph.rows.map(row => row.id)).toEqual(['a', 'b']);
   expect(graph.tracks.find(track => track.edge)?.reference).toBe(false);
+});
+it('does not reorder sequence-only events when timestamped tools arrive', () => {
+  const a = node('A', { sequence: 1 }), b = node('B', { sequence: 2 });
+  const original = executionIndex(history([b, a]));
+  const updated = executionIndex(history([b,
+    node('read', { kind: 'tool', parent_id: 'B', started_at: '2026-10-13T08:00:00Z' }),
+    node('edit', { kind: 'tool', parent_id: 'B', started_at: '2026-10-13T08:01:00Z' }), a]));
+  expect(updated.activities.map(node => node.id)).toEqual(['A', 'B']);
+  expect(layoutGraph(updated, laneMemory()).rows).toEqual(layoutGraph(original, laneMemory()).rows);
+});
+it('makes 120 task events from 1200 records without merging tasks, retries or orphan tools', () => {
+  const nodes = Array.from({ length: 120 }, (_, i) => [node('task' + i, { actor_id: 'same-agent', workstream_id: 'same-task' }),
+    ...Array.from({ length: 9 }, (_, j) => node('tool' + i + ':' + j, { kind: 'tool', parent_id: 'task' + i, label: 'Read file' }))]).flat();
+  const index = executionIndex(history(nodes));
+  expect(index.nodes).toHaveLength(1200);
+  expect(index.activities).toHaveLength(120);
+  expect(index.details.get('task0')).toHaveLength(9);
+  expect(layoutGraph(index, laneMemory(), undefined, 0, 'Read file').matchIds).toHaveLength(120);
+  const independent = layoutGraph(executionIndex(history([node('A', { workstream_id: 'task-a' }), node('B', { workstream_id: 'task-b' })])), laneMemory());
+  expect(independent.tracks.map(track => track.kind)).toEqual(['history']);
+  expect(independent.tracks.every(track => !track.edge)).toBe(true);
+  const extra = executionIndex(history([node('failed', { status: 'failed', workstream_id: 'task' }),
+    node('retry', { status: 'running', retry_of: 'failed', workstream_id: 'task' }),
+    node('nested-agent', { parent_id: 'retry' }), node('orphan', { kind: 'tool', parent_id: 'missing' }),
+    node('cycle1', { kind: 'tool', parent_id: 'cycle2' }), node('cycle2', { kind: 'tool', parent_id: 'cycle1' })]));
+  expect(extra.activities).toHaveLength(6);
+});
+it('preserves exact tool-edge evidence while connecting owning task events once', async () => {
+  const nodes = [node('A'), node('B'), node('read', { kind: 'tool', parent_id: 'A' }),
+    node('edit', { kind: 'tool', parent_id: 'read', result: 'Updated parser.', artifact_refs: ['oaw:artifact:patch:1'] }), node('verify', { kind: 'tool', parent_id: 'B' })];
+  const raw = history(nodes, [edge('read','edit'), edge('read','verify','data'), edge('edit','verify','data'), edge('missing','verify')]);
+  const index = executionIndex(raw);
+  expect(index.rawEdges).toEqual(raw.edges);
+  expect(index.edges).toHaveLength(2);
+  expect(index.edges[0]).toMatchObject({ source: 'A', target: 'B', kind: 'data', records: raw.edges!.slice(1, 3) });
+  expect(index.details.get('A')?.map(node => node.id)).toEqual(['read', 'edit']);
+  const combined = await readProjectHistory(source(raw), [{ id: 'one', name: 'One' }, { id: 'two', name: 'Two' }]);
+  expect(combined.edges).toHaveLength(8); // Source assembly must not discard raw evidence.
+  expect(executionIndex(combined).edges).toHaveLength(4);
+  render(<ExecutionGraphView api={source(raw)} />);
+  fireEvent.click(await screen.findByRole('button', { name: 'B: success' }));
+  expect(screen.getByText('read → verify; edit → verify')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Uses result A' }));
+  expect(screen.getByRole('button', { name: 'A: success' }).getAttribute('aria-expanded')).toBe('true');
+  expect(screen.getByText('Tool activity · 2')).toBeTruthy();
+  expect(screen.getByText('Updated parser.')).toBeTruthy();
+  expect(screen.getByText('oaw:artifact:patch:1')).toBeTruthy();
+});
+it('updates one event through tool activity and completion without emitting extra events', async () => {
+  let value = history([node('Repair parser', { status: 'running', workstream_id: 'repair' })]);
+  let changed!: Parameters<ExecutionSourceHost['subscribe']>[0];
+  const api = source();
+  api.read = async () => value;
+  api.subscribe = listener => { changed = listener; return () => {}; };
+  const view = render(<ExecutionGraphView api={api} />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Repair parser: running' }));
+  const lane = view.container.querySelector('.execution-vertex-dot')!.getAttribute('data-lane');
+  const tools = Array.from({ length: 20 }, (_, i) => node('tool' + i, { kind: 'tool', label: 'Read file', parent_id: 'Repair parser' }));
+  value = { ...value, revision: 2, nodes: [...value.nodes, ...tools] };
+  act(() => changed('execution'));
+  await screen.findByText('×20');
+  expect(view.container.querySelectorAll('.execution-vertex')).toHaveLength(1);
+  expect(view.container.querySelector('.execution-new-activity')).toBeNull();
+  value = { ...value, revision: 3, nodes: [{ ...value.nodes[0], status: 'success', result: 'Parser repaired; checks passed.' }, ...tools] };
+  act(() => changed('execution'));
+  expect((await screen.findByRole('button', { name: 'Repair parser: success' })).getAttribute('aria-expanded')).toBe('true');
+  expect(screen.getByText('Parser repaired; checks passed.')).toBeTruthy();
+  expect(view.container.querySelector('.execution-vertex-dot')!.getAttribute('data-lane')).toBe(lane);
+  expect(view.container.querySelector('.execution-vertex')!.getAttribute('data-pending')).toBe('false');
+  expect(view.container.querySelector('.execution-new-activity')).toBeNull();
 });
 it('never folds 1200 operations or draws a shared rail through an unrelated node', () => {
   const nodes = Array.from({ length: 1200 }, (_, i) => node('n' + i, { sequence: i }));

@@ -5,24 +5,13 @@ export const GRAPH_LANES = 4;
 export const isComplete = (status: string) => ['success', 'succeeded', 'completed'].includes(status);
 export const isContext = (node: ExecutionNode) => node.record_type === 'context';
 export const isPlanned = (node: ExecutionNode) => node.record_type === 'planned' || node.role === 'planned_step';
+export const isInProgress = (status: string) => ['created', 'pending', 'running', 'waiting'].includes(status);
+export type EventEdge = ExecutionEdge & { records: ExecutionEdge[] };
 export type ExecutionIndex = ReturnType<typeof executionIndex>;
 export type LaneMemory = { nodes: Map<string, number>; streams: Map<string, number>; actors: Map<string, number> };
 export const laneMemory = (): LaneMemory => ({ nodes: new Map(), streams: new Map(), actors: new Map() });
 
-/** Global chronology. Containers never reorder activities. Ordering and
- * containment never manufacture causal edges. */
-export function executionIndex(snapshot?: ExecutionSnapshot) {
-  const nodes = [...new Map((snapshot?.nodes ?? []).map(node => [node.id, node])).values()];
-  const byId = new Map(nodes.map(node => [node.id, node]));
-  const edges: ExecutionEdge[] = [...new Map((snapshot?.edges ?? nodes.flatMap(node => (node.dependency_ids ?? []).map(source => ({
-    id: 'control:' + source + ':' + node.id, source, target: node.id, kind: 'control' as const,
-  })))).map(edge => [edge.id, edge])).values()];
-  const incoming = new Map<string, ExecutionEdge[]>(), outgoing = new Map<string, ExecutionEdge[]>();
-  for (const edge of edges) {
-    if (!incoming.has(edge.target)) incoming.set(edge.target, []);
-    if (!outgoing.has(edge.source)) outgoing.set(edge.source, []);
-    incoming.get(edge.target)!.push(edge); outgoing.get(edge.source)!.push(edge);
-  }
+function chronological(nodes: ExecutionNode[]) {
   const ordinal = new Map(nodes.map((node, i) => [node.id, i]));
   const hasTimes = nodes.some(node => Number.isFinite(Date.parse(node.started_at ?? '')));
   let lastTime = Date.parse(nodes.find(node => Number.isFinite(Date.parse(node.started_at ?? '')))?.started_at ?? '') || 0;
@@ -31,13 +20,60 @@ export function executionIndex(snapshot?: ExecutionSnapshot) {
     if (Number.isFinite(time)) lastTime = time;
     return [node.id, hasTimes ? lastTime : node.sequence ?? ordinal.get(node.id)!];
   }));
-  const ordered = nodes.slice().sort((a, b) => {
-    return order.get(a.id)! - order.get(b.id)!
-      || (a.sequence ?? ordinal.get(a.id)!) - (b.sequence ?? ordinal.get(b.id)!);
-  });
-  const activities = ordered.filter(node => !isPlanned(node) && (!isContext(node)
-    || incoming.has(node.id) || outgoing.has(node.id)));
-  return { nodes, byId, edges, incoming, outgoing, ordered, activities };
+  return nodes.slice().sort((a, b) => order.get(a.id)! - order.get(b.id)!
+    || (a.sequence ?? ordinal.get(a.id)!) - (b.sequence ?? ordinal.get(b.id)!));
+}
+
+/** Global chronology. Containers never reorder activities. Ordering and
+ * containment never manufacture causal edges. */
+export function executionIndex(snapshot?: ExecutionSnapshot) {
+  const nodes = [...new Map((snapshot?.nodes ?? []).map(node => [node.id, node])).values()];
+  const byId = new Map(nodes.map(node => [node.id, node]));
+  const rawEdges: ExecutionEdge[] = [...new Map((snapshot?.edges ?? nodes.flatMap(node => (node.dependency_ids ?? []).map(source => ({
+    id: 'control:' + source + ':' + node.id, source, target: node.id, kind: 'control' as const,
+  })))).map(edge => [edge.id, edge])).values()];
+  // A task attempt is the history event. Its tool calls are supporting evidence,
+  // not commits. Only explicit containment establishes ownership; neither a
+  // shared Agent nor workstream is enough to merge independent tasks/retries.
+  const eventId = new Map<string, string>();
+  for (const node of nodes) {
+    let owner = node;
+    const seen = new Set([node.id]);
+    while (owner.kind === 'tool' && owner.parent_id) {
+      const parent = byId.get(owner.parent_id);
+      if (!parent || seen.has(parent.id) || isContext(parent) || isPlanned(parent)) break;
+      seen.add(parent.id); owner = parent;
+    }
+    eventId.set(node.id, owner.kind === 'tool' ? node.id : owner.id);
+  }
+  // Contract recorded endpoints onto visible events. Keep every original edge
+  // as evidence, without turning internal tool sequencing into a self-edge.
+  const connections = new Map<string, EventEdge>();
+  for (const record of rawEdges) {
+    const source = eventId.get(record.source) ?? record.source, target = eventId.get(record.target) ?? record.target;
+    if (source === target && record.source !== record.target) continue;
+    const key = JSON.stringify([source, target, record.kind]);
+    const existing = connections.get(key);
+    if (existing) existing.records.push(record);
+    else connections.set(key, { ...record, source, target, records: [record] });
+  }
+  const edges = [...connections.values()];
+  const incoming = new Map<string, EventEdge[]>(), outgoing = new Map<string, EventEdge[]>();
+  for (const edge of edges) {
+    if (!incoming.has(edge.target)) incoming.set(edge.target, []);
+    if (!outgoing.has(edge.source)) outgoing.set(edge.source, []);
+    incoming.get(edge.target)!.push(edge); outgoing.get(edge.source)!.push(edge);
+  }
+  const ordered = chronological(nodes);
+  const details = new Map<string, ExecutionNode[]>();
+  for (const node of ordered) if (eventId.get(node.id) !== node.id) {
+    const owner = eventId.get(node.id)!;
+    const list = details.get(owner) ?? []; list.push(node); details.set(owner, list);
+  }
+  // New tool timestamps must not reorder events that only have sequence data.
+  const activities = chronological(nodes.filter(node => eventId.get(node.id) === node.id && !isPlanned(node) && (!isContext(node)
+    || incoming.has(node.id) || outgoing.has(node.id))));
+  return { nodes, byId, rawEdges, edges, incoming, outgoing, ordered, activities, eventId, details };
 }
 export const nodeEdges = (index: ExecutionIndex, id?: string) => id
   ? [...new Map([...(index.incoming.get(id) ?? []), ...(index.outgoing.get(id) ?? [])].map(edge => [edge.id, edge])).values()] : [];
@@ -49,7 +85,7 @@ export type GraphTrack = { id: string; source: PositionedRow; target: Positioned
 /** Remember allocation by identity, independent of status, selection and hover.
  * Four columns bound the surface; overflow references identify real endpoints. */
 export function layoutGraph(index: ExecutionIndex, memory: LaneMemory, selected?: string, detailHeight = 0, query = '') {
-  const positions = new Map(index.ordered.map((node, i) => [node.id, i]));
+  const positions = new Map(index.activities.map((node, i) => [node.id, i]));
   const lastConsumer = new Map<string, number>();
   for (const edge of index.edges) if (positions.has(edge.target)) lastConsumer.set(edge.source,
     Math.max(lastConsumer.get(edge.source) ?? 0, positions.get(edge.target)!));
@@ -75,8 +111,9 @@ export function layoutGraph(index: ExecutionIndex, memory: LaneMemory, selected?
     occupied.set(lane, Math.max(occupied.get(lane) ?? 0, lastConsumer.get(node.id) ?? position, streamEnd));
   }
   const needle = query.trim().toLocaleLowerCase();
-  const matchIds = needle ? index.activities.filter(node => (node.label + ' ' + (node.actor_label ?? '') + ' '
-    + (node.workstream_label ?? '') + ' ' + (node.detail ?? '') + ' ' + node.id).toLocaleLowerCase().includes(needle)).map(node => node.id) : [];
+  const searchable = (node: ExecutionNode) => [node.label, node.actor_label, node.workstream_label, node.detail, node.result, node.id].join(' ').toLocaleLowerCase();
+  const matchIds = needle ? index.activities.filter(node => searchable(node).includes(needle)
+    || (index.details.get(node.id) ?? []).some(detail => searchable(detail).includes(needle))).map(node => node.id) : [];
   let top = 12;
   const rows: PositionedRow[] = index.activities.map(node => {
     const lane = memory.nodes.get(node.id) ?? 0;
@@ -96,13 +133,18 @@ export function layoutGraph(index: ExecutionIndex, memory: LaneMemory, selected?
     tracks.push({ id: edge.id, source, target, edge, kind: edge.kind, color: source.color, reference: false });
   }
   const previous = new Map<string, PositionedRow>();
+  let previousEvent: PositionedRow | undefined;
   for (const row of rows) {
-    const key = row.stream || '__history__', prior = previous.get(key);
+    const key = row.stream || '__history__';
+    // Once tools are inside an event, a one-event task has no task trail.
+    // Keep independent events readable with an explicitly noncausal time guide.
+    const taskPrior = previous.get(key);
+    const prior = taskPrior ?? (!index.incoming.has(row.id) ? previousEvent : undefined);
     if (prior && !(index.outgoing.get(prior.id) ?? []).some(edge => edge.target === row.id)) {
       tracks.push({ id: 'order:' + prior.id + ':' + row.id, source: prior, target: row,
-        kind: row.stream ? 'workstream' : 'history', color: row.color, reference: false });
+        kind: row.stream && taskPrior ? 'workstream' : 'history', color: row.color, reference: false });
     }
-    previous.set(key, row);
+    previous.set(key, row); previousEvent = row;
   }
   const laneRows = Array.from({ length: GRAPH_LANES }, (_, lane) => rows.filter(row => row.lane === lane));
   for (const track of tracks) {

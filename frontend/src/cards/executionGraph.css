@@ -42,6 +42,8 @@
 .execution-vertex[data-selected="true"] .execution-operation-title strong { color: var(--accent); }
 .execution-vertex-dot { position: absolute; top: 27px; transform: translate(-50%, -50%); width: 12px; height: 12px; border: 2px solid var(--rail); background: var(--surface-solid); border-radius: 50%; display: grid; place-items: center; }
 .execution-vertex-dot i { width: 3px; height: 3px; border-radius: 50%; background: var(--rail); }
+.execution-vertex[data-pending="true"] .execution-vertex-dot { border-style: dashed; }
+.execution-vertex[data-pending="true"] .execution-vertex-dot i { opacity: .4; }
 .execution-node-select:hover .execution-vertex-dot, .execution-vertex[data-selected="true"] .execution-vertex-dot { box-shadow: 0 0 0 4px color-mix(in srgb, var(--rail) 14%, transparent); }
 .execution-vertex-label { position: absolute; left: var(--graph-label-x); right: 16px; top: 9px; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .execution-operation-title { display: flex; align-items: center; gap: 7px; min-width: 0; }
@@ -67,6 +69,13 @@
 .execution-anchors button > svg { flex: none; align-self: center; }
 .execution-anchors button > span { display: flex; flex-wrap: wrap; gap: 0 6px; }
 .execution-inline small { color: var(--ink-faint); font-size: 10px; }
+.execution-edge-evidence { flex-basis: 100%; }
+.execution-task-tools { margin-top: 10px; }
+.execution-task-tools ul { list-style: none; padding: 0; margin: 4px 0 0; }
+.execution-task-tools li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 5px; padding: 2px 0; }
+.execution-task-tools li > span:nth-child(2) { min-width: 0; }
+.execution-task-tools li > small { flex: none; font-variant-numeric: tabular-nums; }
+.execution-tool-notes { flex-basis: 100%; padding-left: 17px; font-size: 10px; }
 .execution-planned p { display: flex; align-items: center; gap: 5px; margin: 4px 0; }
 .execution-planned button { padding: 0; display: inline-flex; align-items: center; gap: 4px; text-align: left; }
 .execution-artifacts p { font-size: 10px; margin: 3px 0; }

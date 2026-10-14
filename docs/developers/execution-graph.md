@@ -9,8 +9,13 @@ never tools or execution control.
 
 ## Built-in graph presentation
 
-The viewer renders one chronological SVG graph, with a vertex for each recorded
-operation. Activities from different tasks interleave by their start time (or
+The viewer renders one chronological SVG graph, with a vertex for each Agent
+task attempt, similar to a commit. Tool calls explicitly owned by that attempt
+are evidence inside its details, not additional vertices. Independent tasks,
+failed attempts and retries remain separate even when they share an Agent or
+workstream. A running attempt has one dashed placeholder which becomes the
+finished event in place; tool updates never add events or move the viewport.
+Activities from different tasks interleave by their start time (or
 recorded sequence when times are unavailable); containment never moves a child
 next to its parent. All connected sources appear together by default, with
 namespaced IDs. A source selector can narrow this explicitly. The project's
@@ -39,8 +44,14 @@ plan definitions `record_type: planned`. Containers are absent from the main
 history unless a recorded relationship needs their endpoint. Plan definitions
 remain available within the planner operation; `realized_by` links to the
 actual attempt without deleting the definition. MatCreator publishes sanitized
-tool names, times and outcomes as task operations, never private tool arguments
-or conversation traces. Its task launcher records observed forks. It does not
+tool names, times and outcomes as task evidence, never private tool arguments
+or conversation traces. The viewer groups repeated tool names and outcomes in
+the owning event's inline details; searching a tool locates that event. Tools
+without a known task owner remain visible, rather than being silently lost.
+Recorded cross-event tool dependencies attach to the owning event vertices;
+their original endpoints and edge records remain available as evidence. Internal
+tool edges never become artificial event self-dependencies. The raw snapshot and
+persistence contract are unchanged. Its task launcher records observed forks. It does not
 claim that completing a task accepted changes into a project.
 
 Run `npm run test:e2e:graph` from `frontend` for the four visual scenarios at

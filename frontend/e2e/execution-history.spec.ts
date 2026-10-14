@@ -19,7 +19,7 @@ function history(count: number) {
   return nodes;
 }
 
-test('complete history, live partial publication and reload retain old operations', async ({ page, request }) => {
+test('complete history, live partial publication and reload retain old events', async ({ page, request }) => {
   test.setTimeout(100_000);
   await page.setViewportSize({ width: 1600, height: 1000 });
   const deployed = await request.post('/api/legions/presets/matcreator.native-research/instances', { data: {} });
@@ -43,9 +43,9 @@ test('complete history, live partial publication and reload retain old operation
   const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
   await page.goto('/');
   const graph = page.getByRole('region', { name: 'Execution graph', exact: true });
-  await expect(graph.getByText('200 operations')).toBeVisible({ timeout: 30_000 });
+  await expect(graph.getByText('200 events')).toBeVisible({ timeout: 30_000 });
   await expect(graph.locator('.execution-fold, .execution-expand')).toHaveCount(0);
-  const search = graph.getByRole('textbox', { name: 'Find operation' });
+  const search = graph.getByRole('textbox', { name: 'Find event' });
   const locate = async (label: string) => { await search.fill(label); await search.press('Enter'); };
   await locate('E20 step 9');
   await expect(graph.getByRole('button', { name: 'E20 step 9: running', exact: true })).toHaveAttribute('aria-expanded', 'true');
@@ -60,7 +60,7 @@ test('complete history, live partial publication and reload retain old operation
   await graph.screenshot({ path: 'test-results/project-history-sparse.png' });
   const large = { ...initial, run_id, revision: 3, phase: 'running', nodes: history(120), edges: dependencies };
   await publish(large);
-  await expect(graph.getByText('1200 operations')).toBeVisible();
+  await expect(graph.getByText('1200 events')).toBeVisible();
   const viewport = graph.getByLabel('Execution history', { exact: true });
   await locate('E120 step 9');
   await expect(graph.getByRole('button', { name: 'E120 step 9: running', exact: true })).toHaveAttribute('aria-expanded', 'true');
@@ -68,17 +68,17 @@ test('complete history, live partial publication and reload retain old operation
     width: element.clientWidth, scrollWidth: element.scrollWidth, height: element.scrollHeight }));
   expect(metrics.rows).toBeLessThan(25); expect(metrics.scrollWidth).toBeLessThanOrEqual(metrics.width);
   expect(metrics.height).toBeGreaterThan(1200 * 54);
-  // A history publication containing only changed/new operations must persist
+  // A history publication containing only changed/new events must persist
   // its failed attempt and all 1,200 old identities, also after reloading.
   await publish({ ...large, revision: 4, nodes: [
     { ...large.nodes.at(-1)!, status: 'failed' },
     { id: 'retry', label: 'Retry validation', kind: 'agent', status: 'running', sequence: 1210, retry_of: large.nodes.at(-1)!.id },
   ], edges: [{ id: 'retry-edge', source: large.nodes.at(-1)!.id, target: 'retry', kind: 'retry' }] });
-  await expect(graph.getByText('1201 operations')).toBeVisible();
+  await expect(graph.getByText('1201 events')).toBeVisible();
   await expect(graph.getByRole('button', { name: 'E120 step 9: failed', exact: true })).toHaveAttribute('aria-expanded', 'true');
   await graph.screenshot({ path: 'test-results/project-history-large.png' });
   await page.reload();
-  await expect(graph.getByText('1201 operations')).toBeVisible();
+  await expect(graph.getByText('1201 events')).toBeVisible();
   await locate('E120 step 9');
   await expect(graph.getByRole('button', { name: 'E120 step 9: failed', exact: true })).toBeVisible();
   await expect(graph.getByRole('button', { name: 'Retry validation: running', exact: true })).toBeVisible();

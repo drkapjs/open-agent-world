@@ -6,7 +6,7 @@ import { WorkspaceEmptyState } from '../workspace/WorkspacePrimitives';
 import { useWorkspaceAccess } from '../workspace/WorkspaceAccess';
 import { useExecutionSources, type ExecutionEdge, type ExecutionNode, type ExecutionSourceHost, type ExecutionSnapshot } from '../plugins/executionSources';
 import type { WorldCard } from '../types/world';
-import { executionIndex, layoutGraph, laneMemory, nodeEdges, trackPath, isComplete, isPlanned } from './executionHistory';
+import { executionIndex, layoutGraph, laneMemory, nodeEdges, trackPath, isComplete, isPlanned, isInProgress } from './executionHistory';
 import './executionGraph.css';
 
 export function ExecutionGraphCard({ card }: { card: WorldCard }) {
@@ -52,7 +52,7 @@ export async function readProjectHistory(api: ExecutionSourceHost, sources: { id
       replan_of: node.replan_of ? identity(owner.id, node.replan_of) : undefined,
       dependency_ids: node.dependency_ids?.map(id => identity(owner.id, id)),
     }))),
-    edges: histories.flatMap(({ owner, value }) => executionIndex(value).edges.map(edge => ({ ...edge,
+    edges: histories.flatMap(({ owner, value }) => executionIndex(value).rawEdges.map(edge => ({ ...edge,
       id: identity(owner.id, edge.id), source: identity(owner.id, edge.source), target: identity(owner.id, edge.target),
     }))),
   };
@@ -75,6 +75,23 @@ function Operation({ node }: { node: ExecutionNode }) {
 }
 const timeText = (value?: string | null) => value && Number.isFinite(Date.parse(value))
   ? new Date(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+
+function ToolSummary({ nodes }: { nodes: ExecutionNode[] }) {
+  const groups = new Map<string, { node: ExecutionNode; count: number; notes: Set<string> }>();
+  for (const node of nodes) {
+    const key = JSON.stringify([node.label, node.status]);
+    const group = groups.get(key) ?? { node, count: 0, notes: new Set<string>() };
+    group.count++;
+    for (const note of [node.result, node.detail, ...node.artifact_refs ?? []]) if (note) group.notes.add(note);
+    groups.set(key, group);
+  }
+  return <div className="execution-task-tools"><small>{t('Tool activity')} · {nodes.length}</small>
+    <ul>{[...groups].map(([key, { node, count, notes }]) => <li key={key}>
+      <Status status={node.status} /><span>{node.label}</span>{count > 1 && <small>×{count}</small>}
+      {!!notes.size && <div className="execution-tool-notes">{[...notes].map(note => <p key={note}>{note}</p>)}</div>}
+    </li>)}</ul>
+  </div>;
+}
 
 export function ExecutionGraphView({ api }: { api?: ExecutionSourceHost }) {
   useLocale();
@@ -133,7 +150,7 @@ export function ExecutionGraphView({ api }: { api?: ExecutionSourceHost }) {
           if (added) setNewCount(count => count + added);
         }
         initialized = true; historyId = identity;
-        known.current = new Set(result.nodes.map(node => node.id));
+        known.current = new Set(executionIndex(result).activities.map(node => node.id));
         setValue(result); setError('');
       } catch (reason) {
         if (!stopped && current === generation) {
@@ -193,7 +210,12 @@ export function ExecutionGraphView({ api }: { api?: ExecutionSourceHost }) {
     setScroll(previous => ({ ...previous, top: element.scrollTop }));
   }, [graph]);
   useEffect(() => {
-    if (selected && !index.byId.has(selected)) setSelected(undefined);
+    if (!selected) return;
+    if (!index.byId.has(selected)) setSelected(undefined);
+    else if (index.eventId.get(selected) !== selected) {
+      pendingNavigation.current = index.eventId.get(selected);
+      setSelected(index.eventId.get(selected));
+    }
   }, [selected, index]);
 
   const navigate = (id: string, toggle = false) => {
@@ -216,6 +238,7 @@ export function ExecutionGraphView({ api }: { api?: ExecutionSourceHost }) {
   const visibleRows = graph.rows.filter(row => row.top + row.height >= firstY && row.top <= lastY);
   const visibleTracks = graph.tracks.filter(track => Math.max(track.source.y, track.target.y) >= firstY && Math.min(track.source.y, track.target.y) <= lastY);
   const active = selected ? index.byId.get(selected) : undefined;
+  const taskTools = active ? index.details.get(active.id) ?? [] : [];
   const plans = active ? index.nodes.filter(node => isPlanned(node) && node.parent_id === active.id) : [];
   const referenceCount = new Map<string, number>();
   for (const track of graph.tracks) if (track.edge && track.reference) referenceCount.set(track.target.id, (referenceCount.get(track.target.id) ?? 0) + 1);
@@ -235,9 +258,9 @@ export function ExecutionGraphView({ api }: { api?: ExecutionSourceHost }) {
     {value?.truncated && <p className="execution-graph-notice">{t('Some history is unavailable from this source.')}</p>}
     {value?.previous_run_id && <p className="execution-graph-notice" role="status">{['created', 'running', 'waiting'].includes(value.phase) ? t('Waiting for this run’s graph…') : t('Showing the previous execution')}</p>}
     {graph.rows.length > 0 && <div className="execution-history-toolbar">
-      <span>{graph.rows.length} {t('operations')} <span aria-hidden="true">↓</span></span>
+      <span>{graph.rows.length} {t('events')} <span aria-hidden="true">↓</span></span>
       <form onSubmit={event => { event.preventDefault(); find(match + 1); }}><Search size={12} />
-        <input aria-label={t('Find operation')} placeholder={t('Find operation')} value={query}
+        <input aria-label={t('Find event')} placeholder={t('Find event')} value={query}
           onChange={event => { setQuery(event.target.value); setMatch(-1); }} onKeyDown={event => { if (event.key === 'Escape') { setQuery(''); setSelected(undefined); } }} />
         {query && <button type="submit" aria-label={t('Next match')}>{graph.matchIds.length ? Math.max(0, match + 1) + '/' + graph.matchIds.length : '0'}<ChevronDown size={12} /></button>}
       </form>
@@ -268,7 +291,7 @@ export function ExecutionGraphView({ api }: { api?: ExecutionSourceHost }) {
         </svg>
         {visibleRows.map(row => {
           const node = row.node, chosen = row.id === selected;
-          return <div key={row.id} className="execution-vertex" data-row-id={row.id} data-selected={chosen} data-related={relatedNodes.has(row.id)}
+          return <div key={row.id} className="execution-vertex" data-row-id={row.id} data-selected={chosen} data-related={relatedNodes.has(row.id)} data-pending={isInProgress(node.status)}
             style={{ top: row.top, height: row.height }}>
             <button className="execution-node-select" aria-label={node.label + ': ' + node.status} aria-pressed={chosen} aria-expanded={chosen}
               data-simple={!node.actor_label && !node.workstream_label && !node.operation && !node.started_at && !referenceCount.get(row.id)}
@@ -282,16 +305,21 @@ export function ExecutionGraphView({ api }: { api?: ExecutionSourceHost }) {
                 </span>
               </span>
             </button>
-            {chosen && <div ref={setInformation} className="execution-inline" aria-label={t('Operation details')}>
+            {chosen && <div ref={setInformation} className="execution-inline" aria-label={t('Event details')}>
               <p className="execution-detail-status"><Status status={node.status} />{t(node.status)}
-                {node.started_at && <time>{new Date(node.started_at).toLocaleString()}</time>}</p>
-              {node.detail && <p>{node.detail}</p>}{node.result && node.result !== node.detail && <p>{node.result}</p>}
+                {node.started_at && <time>{new Date(node.started_at).toLocaleString()}
+                  {node.finished_at && <> → {new Date(node.finished_at).toLocaleString()}</>}</time>}</p>
+              {node.result && <p>{node.result}</p>}{node.detail && node.detail !== node.result && <p>{node.detail}</p>}
               {!!selectedEdges.length && <div className="execution-anchors">{selectedEdges.map(edge => {
                 const incoming = edge.target === row.id, id = incoming ? edge.source : edge.target, other = index.byId.get(id);
                 return <button key={edge.id} disabled={!graph.ports.has(id)} onClick={() => navigate(id)}
                   aria-label={edgeLabel(edge.kind, incoming) + ' ' + (other?.label ?? id)}>
                   {incoming ? <ArrowUpRight size={12} /> : <ArrowDownRight size={12} />}
-                  <span><small>{edgeLabel(edge.kind, incoming)}</small>{other?.label ?? id}</span>
+                  <span><small>{edgeLabel(edge.kind, incoming)}</small>{other?.label ?? id}
+                    {edge.records.some(record => record.source !== edge.source || record.target !== edge.target) &&
+                      <small className="execution-edge-evidence">{[...new Set(edge.records.map(record =>
+                        (index.byId.get(record.source)?.label ?? record.source) + ' → ' + (index.byId.get(record.target)?.label ?? record.target)))].join('; ')}</small>}
+                  </span>
                   {!other && <small>{t('Unavailable')}</small>}
                 </button>;
               })}</div>}
@@ -299,7 +327,8 @@ export function ExecutionGraphView({ api }: { api?: ExecutionSourceHost }) {
                 <p key={plan.id}><Status status={plan.realized_by ? index.byId.get(plan.realized_by)?.status ?? plan.status : plan.status} />
                   {plan.realized_by && graph.ports.has(plan.realized_by) ? <button onClick={() => navigate(plan.realized_by!)}>{plan.label}<ArrowUpRight size={11} /></button> : plan.label}</p>)}</div>}
               {!!node.artifact_refs?.length && <div className="execution-artifacts"><small>{t('Output artifacts')}</small>{node.artifact_refs.map(ref => <p key={ref}>{ref}</p>)}</div>}
-              {!node.detail && !node.result && !node.artifact_refs?.length && !selectedEdges.length && !plans.length && <p className="execution-empty-detail">{t('No additional details')}</p>}
+              {taskTools.length > 0 && <ToolSummary nodes={taskTools} />}
+              {!node.detail && !node.result && !node.artifact_refs?.length && !selectedEdges.length && !plans.length && !taskTools.length && <p className="execution-empty-detail">{t('No additional details')}</p>}
             </div>}
           </div>;
         })}
@@ -312,6 +341,6 @@ export function ExecutionGraphView({ api }: { api?: ExecutionSourceHost }) {
     </div>
     {newCount > 0 && <button className="execution-new-activity" onClick={() => {
       pendingNavigation.current = graph.rows.at(-1)?.id; setSelected(graph.rows.at(-1)?.id); setNewCount(0);
-    }}><ArrowDown size={13} />{t('{count} new operations', { count: newCount })}</button>}
+    }}><ArrowDown size={13} />{t('{count} new events', { count: newCount })}</button>}
   </section>;
 }

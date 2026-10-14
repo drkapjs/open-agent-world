@@ -79,7 +79,8 @@ def project_history(value):
             edge(_agent(dependency), identity, evidence='declared_control')
         for kind in ('retry', 'replan'):
             edge(node[kind + '_of'], identity, kind, evidence='recorded_attempt')
-        # Tools are durable operations on the owning task, not a second graph.
+        # Tools are durable evidence inside the owning task event. The viewer
+        # groups them into that event instead of creating a vertex per call.
         # Publish only operation names/times; private arguments, conversations
         # and raw tool responses stay in the provider's native trace.
         for number, call in enumerate(raw.get('tool_calls') or []):
