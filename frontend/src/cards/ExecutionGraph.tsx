@@ -291,7 +291,7 @@ export function ExecutionGraphView({ api }: { api?: ExecutionSourceHost }) {
         </svg>
         {visibleRows.map(row => {
           const node = row.node, chosen = row.id === selected;
-          return <div key={row.id} className="execution-vertex" data-row-id={row.id} data-selected={chosen} data-related={relatedNodes.has(row.id)} data-pending={isInProgress(node.status)}
+          return <div key={row.id} className="execution-vertex" data-row-id={row.id} data-status={node.status} data-selected={chosen} data-related={relatedNodes.has(row.id)} data-pending={isInProgress(node.status)}
             style={{ top: row.top, height: row.height }}>
             <button className="execution-node-select" aria-label={node.label + ': ' + node.status} aria-pressed={chosen} aria-expanded={chosen}
               data-simple={!node.actor_label && !node.workstream_label && !node.operation && !node.started_at && !referenceCount.get(row.id)}
