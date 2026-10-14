@@ -385,6 +385,7 @@ class NodeExecutionService(NodeDelegationMixin, NodeContinuationMixin):
                 await self.stop(node_id)
 
     def assert_session_idle(self, session_id):
+        self.services.background_jobs.assert_idle(session_id=session_id)
         if (any(isinstance(key, tuple) and key[1] == session_id for key in self.workers)
                 or any(self.active_attempts(state) for state in self.retained_states(session_id=session_id))):
             raise ConflictError("Stop work in this conversation before deleting it")

@@ -48,6 +48,11 @@ Plugin-specific documentation can remain in its own package or repository. These
 
 ## Developing a plugin
 
+Plugin API 1.33 adds `BackgroundJobProvider`, a host-owned durable job ledger and
+model-free observation through the shared continuation loop. Providers submit or
+attach external work; the host retains identity, authorization and continuation
+admission across turns and restarts. See [long computations and durable waiting](execution.md#long-computations-and-durable-waiting-api-133).
+
 Plugin API 1.32 adds opt-in [context budgeting and compaction](developers/context-compaction.md)
 for runtime plugins, and connection-specific context/output limits on
 `RuntimeModelConnection`. Plugin runtimes retain their own context storage and

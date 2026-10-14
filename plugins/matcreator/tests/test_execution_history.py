@@ -33,6 +33,7 @@ configure(rpc, lambda *args, **kwargs: None)
 from oaw_matcreator_engine.agents.graph_logger import AgentGraphLogger
 from oaw_matcreator_engine.agents.consumed_inputs import validate_input_references
 from oaw_matcreator_engine.agents.thinking_agent.planning import validate_graph, get_ready_nodes
+from oaw_matcreator_engine.agents.thinking_agent.planning import set_node_status
 from oaw_matcreator_engine.agents.execution_graph_state import get_execution_graph, set_execution_graph
 from oaw_matcreator_engine.agents.execution_agent.step_executor_runner import _graph_dependency_step_ids
 from oaw_matcreator_engine.agents.execution_agent.recovery import start_node_attempt, finish_node_attempt, reconcile_recovery_state
@@ -107,6 +108,13 @@ committed = get_execution_graph(ctx.state)
 first_id=committed['graph_id']
 assert h._read()['plans'][first_id]['planning_id']=='replanning'
 assert {n['node_id'] for n in get_ready_nodes(ctx)['ready_nodes']}=={'a','b'}
+committed['nodes']['a'].update(status='waiting',background_jobs=['job-1'])
+set_execution_graph(ctx.state,committed)
+assert set_node_status('a','success',tool_context=ctx)['status']=='error'
+assert get_execution_graph(ctx.state)['nodes']['a']['status']=='waiting'
+committed['nodes']['a'].pop('background_jobs')
+committed['nodes']['a']['status']='pending'
+set_execution_graph(ctx.state,committed)
 nodes['join']['consumed_inputs']=[{'step_id':'nonexistent'}]
 assert validate_graph({'nodes':nodes,'edges':[]},ctx)['status']=='error'
 nodes['join']['consumed_inputs']=[{'node_id':'a'}]
@@ -144,10 +152,11 @@ class State(dict):
 class FakeRunner:
     def __init__(self, **kwargs): self.session_service=kwargs['session_service']
     async def close(self): pass
-async def stream(runner, session, content, step_id, tool_context, graph):
+async def stream(runner, session, content, step_id, tool_context, graph, captured, **kwargs):
     text=content.parts[0].text
     assert all(f'value {index}' in text for index in (1,9,17))
-    return {'_step_result':{'status':'success','key_results':'combined','concise_summary':'combined','artifacts':[]}},[],[],{}
+    captured[0]['_step_result']={'status':'success','key_results':'combined','concise_summary':'combined','artifacts':[]}
+    return captured
 runtime.Runner=FakeRunner
 runtime._stream_step_events=stream
 execution_ctx=SimpleNamespace(state=State(session_id='native',_graph_exec_node_id='target',_graph_execution_id='e20',recursion_depth=1),

@@ -163,7 +163,8 @@ class MatCreatorRuntime(RuntimeProvider):
             await write({"type": "start", "root": str(root),
                 "public_api_package": str(Path(open_agent_world.__file__).parent),
                 "model": asdict(model), "mode": settings.agent_mode, "instruction": config.system_instruction,
-                "prompt": runtime_input.prompt, "run_id": context.run_id})
+                "prompt": runtime_input.prompt, "run_id": context.run_id,
+                "background_job_notification": getattr(context, "extensions", {}).get("background_job_notification")})
 
             async def respond(message):
                 try:
@@ -206,7 +207,8 @@ class MatCreatorRuntime(RuntimeProvider):
                 elif kind == "completed":
                     completed = True
                     yield AgentEvent(config.agent_id, context.run_id, AgentEventType.COMPLETED,
-                        {"text": _redact(message.get("text", ""), secret)}, run_status="succeeded")
+                        {"text": _redact(message.get("text", ""), secret),
+                         "workflow_status": message.get("workflow_status", "idle")}, run_status="succeeded")
                     break
                 else:
                     raise AgentStateError("Invalid MatCreator worker message")

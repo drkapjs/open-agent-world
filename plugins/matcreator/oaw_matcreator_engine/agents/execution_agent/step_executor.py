@@ -44,7 +44,9 @@ class StepExecutorInput(BaseModel):
 
 
 class StepExecutorResult(BaseModel):
-    status: Literal["success", "needs_replanning"]
+    status: Literal["success", "needs_replanning", "waiting"]
+    job_ids: list[str] = Field(default_factory=list, max_length=50)
+    failure_kind: Optional[Literal["executor_timeout", "executor_error", "result_missing", "blocked"]] = None
     key_results: str = Field(
         default="",
         description="Bullet-point list of key findings, values, and produced files",
@@ -77,6 +79,8 @@ class StepExecutorResult(BaseModel):
 
     @model_validator(mode="after")
     def _fill_missing_fields(self) -> "StepExecutorResult":
+        if self.status == "waiting" and not self.job_ids:
+            raise ValueError("Waiting requires durable OAW job_ids")
         # If the LLM returned only one of the two summary fields, mirror it to the other.
         if not self.key_results and self.concise_summary:
             self.key_results = self.concise_summary
@@ -93,6 +97,9 @@ Keep operation IDs and inspect running jobs before retrying. Publish outputs wit
 publish_artifact and use its oaw_artifact_ref in submit_step_result. A success claim
 requires evidence and verification. If blocked, submit needs_replanning with a
 specific reason. Never treat a successful model response as scientific validation.
+Always call submit_step_result before ending. A missing result, a model output
+limit, a missing dependency and an execution timeout are different outcomes.
+Do not claim a computation ran or a remote fleet is empty without tool evidence.
 """ + BRIDGE_INSTRUCTION
 
 
@@ -145,6 +152,7 @@ async def submit_step_result(
     tool_context: ToolContext,
     artifacts: Optional[List[str]] = None,
     replan_reason: Optional[str] = None,
+    job_ids: Optional[List[str]] = None,
 ) -> dict:
     """Submit the result of this step execution.
 
@@ -152,7 +160,8 @@ async def submit_step_result(
     a JSON response. If validation fails, fix the reported fields and retry.
 
     Args:
-        status: "success" or "needs_replanning"
+        status: "success", "needs_replanning", or "waiting" on durable jobs
+        job_ids: Durable OAW job IDs; required for waiting, never external CLI IDs
         key_results: Bullet-point list of key findings and produced files
         concise_summary: Short user-facing paragraph describing what was done
         artifacts: Published oaw:artifact references (empty list if none)
@@ -168,7 +177,14 @@ async def submit_step_result(
             concise_summary=concise_summary,
             artifacts=artifacts or [],
             replan_reason=replan_reason,
+            job_ids=job_ids or [],
         )
+        if result.status == "waiting":
+            from ...resources import job_tool
+            try:
+                await job_tool("wait_background_jobs", {"job_ids": result.job_ids})
+            except ValueError as exc:
+                return {"status": "error", "message": str(exc)}
         tool_context.state["_step_result"] = result.model_dump()
         return {"status": "ok", "message": "Step result submitted successfully."}
     except ValidationError as exc:

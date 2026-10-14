@@ -12,10 +12,12 @@ from . import preset, native_card
 READ = "matcreator.kdg.read"
 
 class MatCreatorPlugin:
-    descriptor = PluginDescriptor(id="matcreator", version="0.8.0", plugin_api_version="1.32", name="MatCreator",
+    descriptor = PluginDescriptor(id="matcreator", version="0.9.0", plugin_api_version="1.33", name="MatCreator",
                                   requires_plugins=("science.structure-viewer",))
 
     def register(self, registration):
+        from .background_jobs import definition as bohrium_jobs
+        registration.register_background_job_provider("matcreator.bohrium-batch", bohrium_jobs)
         for name in ("core", "simulation", "ai", "research"):
             package = SkillPackage.model_validate(json.loads(files(__package__).joinpath("packages", name + ".json").read_text(encoding="utf-8")))
             register_skill_package(registration, node_type="matcreator." + name, package=package)

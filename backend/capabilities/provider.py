@@ -473,6 +473,7 @@ class WorldAgentCapabilityProvider:
                     prop.get("description", "Report field"), name in schema.get("required", []))
                     for name, prop in sorted(schema["properties"].items(), key=lambda item: item[0] not in schema.get("required", []))),
                 input_schema=schema))
+        definitions.extend(self.services.background_jobs.definitions(agent_id))
         return definitions
 
     async def invoke_tool(
@@ -481,6 +482,9 @@ class WorldAgentCapabilityProvider:
         capability_id: str,
         arguments: Mapping[str, Any],
     ) -> Any:
+        from backend.background_jobs import TOOLS as JOB_TOOLS
+        if capability_id.startswith("host:") and capability_id[5:] in JOB_TOOLS:
+            return await self.services.background_jobs.invoke(agent_id, capability_id[5:], dict(arguments))
         if capability_id == "host:report_delegated_task":
             from backend.plugins.execution import ExecutionReport
             report = _validate_tool_request(ExecutionReport, dict(arguments))

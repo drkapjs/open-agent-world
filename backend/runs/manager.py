@@ -249,6 +249,7 @@ class RunManager:
         context_id: str | None = None,
         run_id: str | None = None,
         initial_lifecycle: Mapping[str, Any] | None = None,
+        resume_external_work: bool = False,
     ) -> RunRecord:
         if not isinstance(prompt, str) or not prompt.strip():
             raise ValueError("Run prompt must be a non-empty string")
@@ -269,8 +270,11 @@ class RunManager:
             if parent_run_id is not None:
                 parent = self.get_run(parent_run_id)
                 ancestor = parent
+                recovering_external = resume_external_work and caller_kind == "delegation"
                 while ancestor:
-                    if ancestor.status in {RunStatus.CANCELLED, RunStatus.INTERRUPTED, RunStatus.FAILED} or ancestor.lifecycle.get('cancellation_requested'):
+                    recovering_external = recovering_external or bool(ancestor.lifecycle.get("background_job_notification") and ancestor.lifecycle.get("work_continuation"))
+                    user_stopped = ancestor.lifecycle.get('cancellation_requested') and ancestor.lifecycle.get('cancellation_origin') != 'shutdown'
+                    if user_stopped or (not recovering_external and ancestor.status in {RunStatus.CANCELLED, RunStatus.INTERRUPTED, RunStatus.FAILED}):
                         raise RuntimeUnavailableError('The parent Run has ended; dependent work cannot be admitted')
                     ancestor = self.get_run(ancestor.parent_run_id) if ancestor.parent_run_id else None
                 task_id = task_id or parent.task_id
@@ -494,7 +498,7 @@ class RunManager:
         if current.status in TERMINAL_RUN_STATUSES and current.lifecycle.get('cleanup') not in {'pending', 'failed', 'uncertain'}:
             # Explicit Stop also revokes pending continuations of a finished turn.
             if not self.shutting_down:
-                current = self.store.update_lifecycle(run_id, cancellation_requested=True)
+                current = self.store.update_lifecycle(run_id, cancellation_requested=True, cancellation_origin='user')
             # A provider can emit a terminal status before its local stream has
             # finished unwinding. Agent deletion must join that tail before it
             # removes provider state.
@@ -506,7 +510,8 @@ class RunManager:
                     if child.lifecycle.get('cancellation_policy', 'dependent') == 'dependent':
                         await self.cancel_run(child.run_id)
             return current
-        self.store.update_lifecycle(run_id, cancellation_requested=True, cleanup='pending', cleanup_reason=None)
+        self.store.update_lifecycle(run_id, cancellation_requested=True,
+            cancellation_origin='shutdown' if self.shutting_down else 'user', cleanup='pending', cleanup_reason=None)
         if current.status not in TERMINAL_RUN_STATUSES:
             try:
                 await self.transition_run(run_id, RunStatus.CANCELLED)
@@ -688,6 +693,7 @@ class RunManager:
             state_context=self._state_context(record),
             group_context=team,
             delegation_context=record.lifecycle.get("delegation_context"),
+            extensions={"background_job_notification": record.lifecycle.get("background_job_notification")},
         )
         token = _current_invocation.set(context)
         try:

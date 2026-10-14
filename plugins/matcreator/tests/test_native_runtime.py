@@ -143,7 +143,8 @@ def scripted_model(request):
     calls = []
     planner_round = 0
     executor_round = 0
-    inject_errors = getattr(request, 'param', False)
+    scenario = getattr(request, 'param', False)
+    inject_errors = scenario is True
     injected = set()
 
     def function(name, arguments):
@@ -168,6 +169,31 @@ def scripted_model(request):
                 reply = {'role': 'assistant', 'content': 'Goal: verify the OAW bridge. The plan is ready; retain the current user approval and inspect tool results.'}
             elif layer == 'planner' and 'Only inspect context pressure' in str(request['messages']):
                 reply = {'role': 'assistant', 'content': 'Context inspected; awaiting approval.'}
+            elif names == {'submit_step_result'}:
+                reply = function('submit_step_result', {'status': 'success', 'key_results': 'Existing echo evidence',
+                    'concise_summary': 'Reported existing evidence after bounded repair'})
+            elif scenario == 'repair' and layer == 'step':
+                results = [m for m in request['messages'] if m['role'] == 'tool']
+                reply = (function('oaw_invoke_tool', {'capability_id': 'echo', 'arguments': {'value': 'once'}})
+                    if not results else {'role': 'assistant', 'content': 'Ended without a structured result.'})
+            elif scenario == 'jobs' and layer == 'step':
+                results = [m for m in request['messages'] if m['role'] == 'tool']
+                resumed = 'OAW JOBS ALREADY SUBMITTED' in str(original)
+                if not results:
+                    reply = function('oaw_invoke_tool', {'capability_id': 'host:inspect_background_jobs' if resumed else 'host:submit_background_job',
+                        'arguments': {'job_ids': ['job-test']} if resumed else {'provider': 'test.compute', 'sandbox_id': 'sandbox', 'request_key': 'md', 'specification': {}}})
+                elif not any('Step result submitted successfully' in str(m.get('content')) for m in results):
+                    reply = function('submit_step_result', {'status': 'success' if resumed else 'waiting',
+                        'key_results': 'Observed completed output' if resumed else 'Submitted durable job',
+                        'concise_summary': 'Existing job verified' if resumed else 'Waiting for external compute',
+                        'job_ids': [] if resumed else ['job-test']})
+                else:
+                    reply = {'role': 'assistant', 'content': 'Step finished.'}
+            elif scenario == 'jobs' and layer == 'executor':
+                executor_round += 1
+                reply = (function('run_node_executor', {'node_id': 'step_check', 'action': 'Verify the connected tool',
+                    'suggested_skills': [], 'workspace_dir': ''}) if executor_round in (1, 2)
+                    else {'role': 'assistant', 'content': 'Waiting for external work.' if executor_round == 2 else 'Collected existing output.'})
             elif inject_errors and layer and layer not in injected:
                 injected.add(layer)
                 reply = {'role': 'assistant', 'content': None, 'tool_calls': [
@@ -251,6 +277,69 @@ def scripted_model(request):
     server.shutdown()
     server.server_close()
     thread.join()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not os.environ.get('OAW_MATCREATOR_MANAGED'), reason='requires Pack orchestration dependencies')
+@pytest.mark.parametrize('scripted_model', ['jobs'], indirect=True)
+async def test_native_wait_releases_worker_and_restores_existing_approved_plan(tmp_path, scripted_model):
+    url, calls = scripted_model
+    class JobsProvider(Provider):
+        job = None
+        async def list_tools(self, agent):
+            return [ScopedToolDefinition('host:' + name, name, 'Durable jobs', input_schema={'type': 'object'})
+                for name in ('submit_background_job', 'inspect_background_jobs', 'wait_background_jobs')]
+        async def invoke_tool(self, agent, capability, arguments):
+            self.calls.append((agent, capability, arguments))
+            if capability == 'host:submit_background_job':
+                assert self.job is None
+                self.job = {'id': 'job-test', 'status': 'running', 'paused': False, 'request_key': arguments['request_key']}
+                return self.job
+            if capability == 'host:inspect_background_jobs':
+                return {'jobs': [self.job] if self.job else []}
+            return {'status': 'waiting', 'job_ids': ['job-test'], 'durable': True}
+    provider = JobsProvider(tmp_path, url)
+    runtime = MatCreatorRuntime(provider)
+    config = AgentConfig('agent-a', 'Native')
+    await runtime.create_agent(config)
+    async def turn(run, text, notification=None):
+        scope = context(run)
+        scope.extensions = {'background_job_notification': notification}
+        async with asyncio.timeout(60):
+            return [event async for event in runtime.execute(config, scope, RuntimeInput(text))]
+    await turn('plan', 'Plan compute')
+    waiting = await turn('submit', 'Approve')
+    assert waiting[-1].payload['workflow_status'] == 'waiting'
+    assert not runtime.active
+    saved = json.loads(next(tmp_path.rglob('session.json')).read_text(encoding='utf-8'))['state']
+    graph = saved['execution_graph'][0] if isinstance(saved['execution_graph'], list) else saved['execution_graph']
+    plan_id = graph['graph_id']
+    assert graph['nodes']['step_check']['background_jobs'] == ['job-test']
+    assert graph['nodes']['step_check']['status'] == 'waiting'
+    provider.job['status'] = 'succeeded'
+    completed = await turn('collect', 'Inspect completed job', 'job-test')
+    assert completed[-1].payload['workflow_status'] == 'idle'
+    saved = json.loads(next(tmp_path.rglob('session.json')).read_text(encoding='utf-8'))['state']
+    graph = saved['execution_graph'][0] if isinstance(saved['execution_graph'], list) else saved['execution_graph']
+    assert graph['graph_id'] == plan_id and graph['nodes']['step_check']['status'] == 'success'
+    assert sum(call[1] == 'host:submit_background_job' for call in provider.calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not os.environ.get('OAW_MATCREATOR_MANAGED'), reason='requires Pack orchestration dependencies')
+@pytest.mark.parametrize('scripted_model', ['repair'], indirect=True)
+async def test_native_missing_result_gets_one_report_only_repair(tmp_path, scripted_model):
+    url, calls = scripted_model
+    provider = Provider(tmp_path, url)
+    runtime = MatCreatorRuntime(provider)
+    config = AgentConfig('agent-a', 'Native')
+    await runtime.create_agent(config)
+    for run, prompt in [('plan', 'Plan a check'), ('execute', 'Approve')]:
+        async with asyncio.timeout(60):
+            events = [event async for event in runtime.execute(config, context(run), RuntimeInput(prompt))]
+    assert provider.calls == [('agent-a', 'echo', {'value': 'once'})]
+    assert any({t['function']['name'] for t in call.get('tools', [])} == {'submit_step_result'} for call in calls)
+    assert any(n.role == 'step' and n.status == 'success' for n in provider.projection.nodes)
 
 
 @pytest.mark.asyncio

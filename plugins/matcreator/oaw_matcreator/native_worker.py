@@ -134,6 +134,7 @@ async def run(request, reader, start_reader):
     state.update(agent_mode=request["mode"], execution_approved=False, return_to_planner=False,
         workdir=str(root / "workspace"), workspace_dir=str(root / "workspace"),
         output_dir=None, session_output_dir=None)
+    state["_background_job_notification"] = request.get("background_job_notification")
     session = await sessions.create_session(app_name=app.name, user_id="oaw", session_id="native", state=state)
     # InMemorySessionService stores the authoritative object separately from its
     # returned copy. Populate the supported Session object's event history.
@@ -235,8 +236,11 @@ async def run(request, reader, start_reader):
                         texts = [p.text for p in (getattr(event.content, "parts", None) or []) if p.text and not p.thought]
                         if texts:
                             final_text = "\n".join(texts)
-        snapshot("idle")
-        send({"type": "completed", "text": final_text})
+        from oaw_matcreator_engine.agents.execution_graph_state import get_execution_graph
+        graph = get_execution_graph(stored.state) or {}
+        waiting = any(node.get("status") == "waiting" for node in graph.get("nodes", {}).values())
+        snapshot("waiting" if waiting else "idle")
+        send({"type": "completed", "text": final_text, "workflow_status": "waiting" if waiting else "idle"})
     except asyncio.CancelledError:
         from oaw_matcreator_engine.agents.graph_logger import AgentGraphLogger
         AgentGraphLogger(session.id).mark_running_nodes_cancelled()

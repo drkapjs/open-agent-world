@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import os
 from typing import List, Optional
 
@@ -62,8 +63,8 @@ You are the MatCreator Execution Orchestrator. You manage the full execution of 
        a. Call `set_node_status(node_id="...", status="failed", result=<replan_reason>)`.
        b. Call `mark_dependents_blocked(failed_node_id="...")`.
        c. Call `to_planner(reason=<replan_reason>)`. STOP — do not run any further nodes.
-   - `status == "waiting"`: the executor timed out but its remote job is STILL RUNNING.
-       This is NOT a failure. The node status and its `remote_job` are already recorded.
+   - `status == "waiting"`: OAW has accepted durable monitoring of existing jobs.
+       This is NOT a failure. The node status and its job references are recorded.
        a. Do NOT call `set_node_status`, `mark_dependents_blocked`, or re-run the node.
        b. Do NOT start a replacement job for it.
        c. Continue processing the other results in this batch, then follow step 6.
@@ -133,6 +134,8 @@ async def run_node_executor(
     # the same logical node twice.
     node["status"] = "running"
     set_execution_graph(tool_context.state, plan)
+    if node.get("background_jobs"):
+        prior_context = (prior_context or "") + "\nOAW JOBS ALREADY SUBMITTED: " + json.dumps(node["background_jobs"]) + ". Inspect these jobs and collect their existing outputs. Never submit replacement work automatically."
     counter = tool_context.state.get("_node_exec_counter", 0) + 1
     tool_context.state["_node_exec_counter"] = counter
     result = await run_step_executor(
@@ -150,6 +153,8 @@ async def run_node_executor(
     if current is not None:
         current["status"] = {"success": "success", "waiting": "waiting", "cancelled": "cancelled"}.get(result.get("status"), "failed")
         current["result"] = result.get("concise_summary") or result.get("replan_reason") or result.get("message")
+        if result.get("job_ids"):
+            current["background_jobs"] = result["job_ids"]
         set_execution_graph(tool_context.state, plan)
     return result
 

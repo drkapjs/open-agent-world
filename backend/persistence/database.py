@@ -8,6 +8,15 @@ from typing import Iterator
 
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS background_jobs (
+    id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL,
+    context_id TEXT NOT NULL,
+    request_key TEXT NOT NULL,
+    record_json TEXT NOT NULL,
+    UNIQUE(agent_id, context_id, request_key)
+);
+
 CREATE TABLE IF NOT EXISTS summoned_instances (
     id TEXT PRIMARY KEY,
     record_json TEXT NOT NULL

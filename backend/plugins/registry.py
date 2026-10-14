@@ -32,7 +32,7 @@ from backend.plugins.deployment import NodeDeploymentDefinition
 from backend.plugins.containers import NodeContainerDefinition
 from backend.plugins.execution import NodeExecutionDefinition
 
-PLUGIN_API_VERSION = "1.32"
+PLUGIN_API_VERSION = "1.33"
 _IDENTIFIER = re.compile(r"^[a-z][a-z0-9]*(?:[._:/-][a-z0-9]+)*$")
 _API_VERSION = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 
@@ -452,6 +452,7 @@ class PluginRegistration:
         self.capability_handlers: dict[str, CapabilityHandler] = {}
         self.capabilities: dict[str, CapabilityDefinition] = {}
         self.runtime_provider_factories: dict[str, RuntimeProviderFactory] = {}
+        self.background_job_providers: dict[str, Any] = {}
         self.state_schemas: dict[str, StateSchema] = {}
         self.assets: dict[str, PluginAsset] = {}
         self.packs: dict[str, PackDefinition] = {}
@@ -503,6 +504,17 @@ class PluginRegistration:
     def register_state_schema(self, schema: StateSchema) -> None:
         self._add(self.state_schemas, schema.id, schema, "state schema")
 
+    def register_background_job_provider(self, provider_id, definition) -> None:
+        from .background_jobs import BackgroundJobProvider
+        import math
+        if not isinstance(definition, BackgroundJobProvider) or not math.isfinite(definition.poll_interval_seconds) or definition.poll_interval_seconds < 1:
+            raise ValueError("Background job providers require a positive polling interval")
+        if (not isinstance(definition.specification, type) or not issubclass(definition.specification, BaseModel)
+                or not callable(definition.inspect)
+                or any(value is not None and not callable(value) for value in (definition.prepare, definition.submit, definition.cancel))):
+            raise ValueError("Background job providers require a Pydantic specification and callable callbacks")
+        self._add(self.background_job_providers, provider_id, definition, "background job provider")
+
     @staticmethod
     def _add(target: dict[str, Any], identifier: str, value: Any, label: str) -> None:
         PluginRegistry.validate_identifier(identifier, label)
@@ -524,6 +536,7 @@ class PluginRegistry:
         self._capability_handlers: dict[str, CapabilityHandler] = {}
         self._capabilities: dict[str, CapabilityDefinition] = {}
         self._runtime_provider_factories: dict[str, RuntimeProviderFactory] = {}
+        self._background_job_providers: dict[str, Any] = {}
         self._state_schemas: dict[str, StateSchema] = {}
         self._owners: dict[tuple[str, str], str] = {}
         self._assets: dict[tuple[str, str], PluginAsset] = {}
@@ -605,6 +618,8 @@ class PluginRegistry:
         self._commit_owned(
             "state_schema", descriptor.id, self._state_schemas, staged.state_schemas
         )
+        self._commit_owned("background_job_provider", descriptor.id,
+            self._background_job_providers, staged.background_job_providers)
 
     def _normalize_capabilities(self, staged: PluginRegistration) -> None:
         # Legacy input is normalized once. Projection uses the same registry.
@@ -632,6 +647,7 @@ class PluginRegistry:
                 raise ValueError("unsupported public asset media type")
 
         contribution_sets = (
+            ("background_job_provider", "background job provider", self._background_job_providers, staged.background_job_providers),
             ("legion_preset", "Legion preset", self._legion_presets, staged.legion_presets),
             ("pack", "pack", self._packs, staged.packs),
             ("capability", "capability", self._capabilities, staged.capabilities),
@@ -993,6 +1009,17 @@ class PluginRegistry:
 
     def has_runtime_provider(self, provider_id: str) -> bool:
         return provider_id in self._runtime_provider_factories and self.is_enabled(self.runtime_provider_owner_id(provider_id))
+
+    def background_job_provider(self, provider_id):
+        self._assert_enabled("background_job_provider", provider_id)
+        try:
+            return self._background_job_providers[provider_id]
+        except KeyError as exc:
+            raise PluginUnavailableError(f"Background job provider {provider_id!r} is not installed") from exc
+
+    def background_job_providers(self):
+        return {key: value for key, value in self._background_job_providers.items()
+                if self.is_enabled(self.owner_id("background_job_provider", key))}
 
     def node_type(self, type_id: str) -> NodeTypeDefinition:
         self._assert_enabled("node_type", type_id)

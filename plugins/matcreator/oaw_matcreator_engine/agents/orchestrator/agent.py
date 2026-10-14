@@ -80,6 +80,15 @@ def _is_graph_complete(state: dict) -> bool:
     return bool(nodes) and all(n.get("status") == "success" for n in nodes.values())
 
 
+def _waiting_for_external_work(state):
+    from ..thinking_agent.planning import ready_nodes_from_graph
+    graph = get_execution_graph(state) or {}
+    nodes = list(graph.get("nodes", {}).values())
+    return (any(node.get("status") == "waiting" and node.get("background_jobs") for node in nodes)
+        and not any(node.get("status") in {"running", "failed"} for node in nodes)
+        and not ready_nodes_from_graph(graph))
+
+
 def _get_planning_node_id(state: dict, graph: AgentGraphLogger) -> str:
     """Allocate an invocation identity; the underlying planner is still shared."""
     node_id = f"planning_{uuid.uuid4().hex}"
@@ -108,6 +117,8 @@ async def _stream_execution_with_recovery(
             async with aclosing(execution_agent.run_async(ctx)) as execution_events:
                 async for event in execution_events:
                     yield event
+                    if _waiting_for_external_work(ctx.session.state):
+                        return  # No extra model round can reinterpret a durable wait.
             return
         except json.JSONDecodeError:
             history = AgentGraphLogger(ctx.session.id)
@@ -228,6 +239,13 @@ class PlanningExecutionOrchestrator(BaseAgent):
         # Cheap and idempotent: repair the in-memory graph from durable step
         # attempt records before planning/execution resumes after a crash.
         recovered = reconcile_recovery_state(state, state.get("workdir") or get_workspace_root())
+        from ..execution_agent.recovery import reconcile_background_jobs
+        await reconcile_background_jobs(state)
+        resume_job = state.pop("_background_job_notification", None)
+        current_plan = get_execution_graph(state) or {}
+        resume_existing = (bool(resume_job) and state.get("_approved_graph_id") == current_plan.get("graph_id")
+            and any(resume_job in node.get("background_jobs", []) and node.get("status") == "pending"
+                    for node in current_plan.get("nodes", {}).values()))
         if recovered:
             logger.warning("[orchestrator] recovered execution state: %s", recovered)
 
@@ -254,8 +272,14 @@ class PlanningExecutionOrchestrator(BaseAgent):
             # Wrapped in _stream_planning_with_recovery to catch JSONDecodeError
             # from malformed tool-call arguments emitted by some OpenAI-compatible
             # endpoints (e.g. GLM-5.3) and retry the planning phase.
-            async for event in _stream_planning_with_recovery(self.planning_agent, ctx):
-                yield event
+            if resume_existing:
+                # Only a host notification for this still-current approved plan
+                # may bypass fresh approval. Existing jobs are inspected first.
+                state["execution_approved"] = True
+                resume_existing = False
+            else:
+                async for event in _stream_planning_with_recovery(self.planning_agent, ctx):
+                    yield event
             planning_id = state[_PLANNING_NODE_STATE_KEY]
             graph.log_node_complete(planning_id, "success")
 
@@ -275,6 +299,7 @@ class PlanningExecutionOrchestrator(BaseAgent):
                     continue  # loop back to planner
 
                 execution_graph = get_execution_graph(state) or {}
+                state["_approved_graph_id"] = execution_graph.get("graph_id")
                 total_nodes = len(execution_graph.get("nodes") or {})
                 pending_count = sum(
                     1 for n in execution_graph.get("nodes", {}).values()
@@ -305,6 +330,15 @@ class PlanningExecutionOrchestrator(BaseAgent):
                 async for event in _stream_execution_with_recovery(self.execution_agent, ctx):
                     yield event
                 exec_id = state["_graph_exec_node_id"]
+
+                if _waiting_for_external_work(state):
+                    graph.log_node_complete(exec_id, "waiting", summary="OAW is monitoring existing background work.")
+                    graph.log_node_complete("orchestrator", "waiting")
+                    state["return_to_planner"] = False
+                    state["return_to_planner_reason"] = None
+                    state["execution_approved"] = False
+                    state["current_step"] = None
+                    break
 
                 interrupted = state.get("return_to_planner", False)
                 if interrupted:

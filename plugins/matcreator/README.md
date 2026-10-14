@@ -159,7 +159,7 @@ user-owned; redeploy the preset or arrange its tabs with **Edit layout**.
 
 ## Execution history and dependency evidence
 
-Pack 0.8 requires OAW plugin API 1.32. The Pack records immutable Step attempts,
+Pack 0.9 requires OAW plugin API 1.33. The Pack records immutable Step attempts,
 plan identities, timestamps, retry/replan links and versioned artifact producers.
 The host stores a full read-only projection with each Run and exposes authorized,
 revision-consistent pages. A completed Conversation turn does not turn unfinished
@@ -188,6 +188,35 @@ The host accepts up to 10,000 nodes, 50,000 edges and 8 MiB per projection. The 
 preserves complete history on disk and declares presentation limits when necessary.
 History folding does not aggregate or rewrite real edges. Runtime scheduling,
 resource access and scientific execution remain Pack-owned.
+
+## Long computations
+
+Native steps can now return `waiting` with host `job_ids`. Submission identities
+are recorded before the remote call, and the host saves the provider ID before
+returning it to the model. A waiting workflow checkpoints and releases its worker.
+When external work settles, the host starts a bounded continuation that restores
+the same approved plan, inspects the existing jobs, and collects outputs. A changed
+plan still needs approval. Known jobs are supplied to the resumed step explicitly.
+
+Discover `matcreator.bohrium-batch` with `inspect_background_jobs`. It submits
+through the installed `bohr batchjob` CLI in the connected Sandbox, performs a
+dry run, requires explicit project/image/machine and compute budget, and records
+a searchable `oaw-<host-job-id>` in the remote job name. A lost submission response
+requires inspecting existing provider jobs and attaching the matching ID; it is
+never automatically retried. Stage input files before submission; download results
+into the Sandbox and publish artifacts after completion. Existing deployed skills
+retain their saved content; reimport the updated package to receive runtime notes.
+
+Missing `submit_step_result` triggers one report-only repair invocation, limited to
+two model calls and 60 seconds. It cannot rerun resource or child-agent tools.
+Persistent failure is classified as `result_missing`, separately from an executor
+timeout or exception. Partial diagnostic events remain available. Provider success
+does not prove trajectory quality or scientific acceptance.
+
+See the host's [waiting and recovery contract](../../docs/execution.md#long-computations-and-durable-waiting-api-133)
+for Stop, cancellation, resource deletion and restart behavior. Controlled tests
+cover host persistence and native worker recovery; real Bohrium service behavior,
+multi-day computation and installed desktop operation require separate validation.
 
 ## Skill package provenance
 

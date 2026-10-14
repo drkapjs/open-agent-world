@@ -20,6 +20,7 @@ from backend.plugins.state import PluginStateSpec, ScopedStateSpec, StatelessSta
 from backend.plugins.containers import NodeContainerDefinition
 from backend.plugins.execution import ExecutionPolicy, NodeExecutionDefinition, WorkItem, WorkOutcome
 from backend.plugins.execution import DelegationRequest, DelegationWait, DelegationStop
+from backend.plugins.background_jobs import BackgroundJobProvider, BackgroundJobContext, JobObservation, SubmissionUncertainError
 
 from backend.agents import (
     AgentCapabilityProvider,
@@ -90,6 +91,7 @@ from backend.runs import InvocationContext, RuntimeInput
 from backend.world.models import Card, CardCreate, CardPatch, Edge
 
 __all__ = [
+    "BackgroundJobProvider", "BackgroundJobContext", "JobObservation", "SubmissionUncertainError",
     "RuntimeModelConnection",
     "DataQuery", "NodeDataConsumer", "NodeDataSource",
     "ExecutionEdge", "ExecutionNode", "ExecutionSnapshot", "NodeExecutionSource",

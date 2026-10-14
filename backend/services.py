@@ -564,6 +564,7 @@ class ApplicationServices:
     card_state: object = None
     node_execution: NodeExecutionService | None = None
     sandbox_operations: Any = None
+    background_jobs: Any = None
     summoning: SummoningService | None = None
     sandbox_backend: SandboxBackend | None = None
     plugin_bootstrap: Any = None
@@ -746,6 +747,7 @@ class ApplicationServices:
         await self.summoning.recover()
         from backend.sandbox.history import recover as recover_commands
         await recover_commands(self)
+        await self.background_jobs.startup()
 
         self.node_execution.continuation_closed = False
         self.node_execution.signal_continuations()
@@ -760,6 +762,7 @@ class ApplicationServices:
         if self.plugin_bootstrap is not None:
             await self.plugin_bootstrap.shutdown()
         await self.node_execution.shutdown()
+        await self.background_jobs.shutdown()
         await self.sandbox_operations.shutdown()
         context = self._node_lifecycle_context()
         for card in self.world.list_cards():
@@ -1105,6 +1108,7 @@ class ApplicationServices:
                 self.world.check_revision(card, (expected_revisions or {}).get(card.id))
             for card in cards:
                 self.resources.artifacts.assert_source_idle(card.id)
+                self.background_jobs.assert_idle(card_id=card.id)
             for card in cards:
                 self.node_execution.assert_editable(card.id, all_states=True)
                 if self.plugins.has_trait(card.type, "core.conversation"):
@@ -3023,8 +3027,8 @@ class ApplicationServices:
     ) -> CommandResult:
         if timeout_seconds is not None:
             import math
-            if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float)) or not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 3600:
-                raise SandboxValidationError("timeout_seconds must be finite and between 0 (exclusive) and 3600 seconds")
+            if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float)) or not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 36000:
+                raise SandboxValidationError("timeout_seconds must be finite and between 0 (exclusive) and 36000 seconds")
         async with self._portable_state_gate.execution():
             # Validate graph authority against a complete formation, but do
             # not hold the graph barrier while an arbitrary command runs.
@@ -3891,6 +3895,8 @@ def create_services(
     services.node_execution = NodeExecutionService(services)
     from backend.sandbox.operations import SandboxOperations
     services.sandbox_operations = SandboxOperations(services)
+    from backend.background_jobs import BackgroundJobs
+    services.background_jobs = BackgroundJobs(services)
     services.summoning = SummoningService(services)
     from backend.security.model_connections import ModelConnectionStore
     services.run_manager = RunManager(

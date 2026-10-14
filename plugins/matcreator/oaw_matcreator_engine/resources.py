@@ -31,6 +31,14 @@ Publish files using publish_artifact. Pass its oaw_artifact_ref to
 submit_step_result.artifacts, never host or Sandbox paths. Retain OAW operation
 IDs while work is running and inspect them before retrying; never duplicate jobs.
 Use the planner/executor/subagent tools for orchestration, not a second scheduler.
+For long compute, inspect_background_jobs discovers durable provider schemas.
+Use submit_background_job (matcreator.bohrium-batch for Bohrium) with a stable
+request_key, or attach_background_job for existing external work. Never resubmit
+an unknown submission. For existing local operations, attach core.sandbox-operation
+using its operation_id as external_id. The host checks jobs without model calls.
+Call submit_step_result(status="waiting", job_ids=[...]) and finish the step
+instead of polling for hours. Only claim completion after collecting and verifying
+outputs. Agent Stop pauses automation; cancelling remote compute is a separate action.
 """
 
 _bridge = None
@@ -38,8 +46,8 @@ _execution_context = ContextVar("matcreator_execution_context", default=None)
 
 
 @contextmanager
-def execution_context(session_id, node_id):
-    token = _execution_context.set((session_id, node_id))
+def execution_context(session_id, node_id, attempt=None):
+    token = _execution_context.set((session_id, node_id, attempt))
     try:
         yield
     finally:
@@ -114,6 +122,13 @@ class ResourceBridge:
 
     async def oaw_invoke_tool(self, capability_id: str, arguments: dict) -> dict:
         """Invoke a currently authorized OAW tool with its exact schema."""
+        context = _execution_context.get()
+        attempt = context[2] if context else None
+        if attempt and capability_id in {"host:submit_background_job", "host:attach_background_job"}:
+            from .agents.execution_agent.recovery import prepare_background_job_request
+            prefix = prepare_background_job_request(attempt)
+            key = str(arguments.get("request_key", ""))
+            arguments = {**arguments, "request_key": key if key.startswith(prefix) else prefix + key[:180]}
         response = await self.rpc("invoke_tool", capability_id=capability_id, arguments=arguments)
         if not response.get("ok"):
             error = unpack(response) or response.get("error")
@@ -121,6 +136,9 @@ class ResourceBridge:
                 error = error.get("error", error)
             return {"ok": False, "error": error}
         value = unpack(response)
+        if attempt and response.get("tool") in {"submit_background_job", "attach_background_job"} and isinstance(value, dict) and value.get("id"):
+            from .agents.execution_agent.recovery import record_background_job_reference
+            record_background_job_reference(attempt, value["id"])
         if response.get("tool") == "publish_artifact" and isinstance(value, dict) and value.get("state") == "ready":
             value = {**value, "oaw_artifact_ref": "oaw:artifact:" + arguments["collection"] + ":" + value["version_id"]}
             _record_artifact(value["oaw_artifact_ref"], produced=True)
@@ -191,3 +209,15 @@ def split_verified_artifacts(artifacts):
 
 def emit_child_event(event):
     bridge().emit_event(event, child=True)
+
+
+async def job_tool(name, arguments):
+    """Use the live catalog even for engine-owned waiting and recovery actions."""
+    definitions = await bridge().rpc("list_tools")
+    definition = next((item for item in definitions if item["name"] == name), None)
+    if definition is None:
+        raise ValueError("Background job capability is unavailable or revoked")
+    result = await bridge().oaw_invoke_tool(definition["capability_id"], arguments)
+    if not result.get("ok"):
+        raise ValueError("Background job operation was rejected; inspect current access and job state")
+    return result["result"]

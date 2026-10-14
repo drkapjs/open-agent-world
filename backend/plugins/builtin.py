@@ -1124,6 +1124,8 @@ class CorePlugin:
     )
 
     def register(self, registration: PluginRegistration) -> None:
+        from backend.sandbox.background_jobs import definition as operation_jobs
+        registration.register_background_job_provider("core.sandbox-operation", operation_jobs)
         from backend.plugins.shadow_collection import register_shadow_collection
         register_shadow_collection(registration)
         _register_builtin(registration)

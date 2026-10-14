@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Optional
 
 from google.adk.runners import Runner
+from google.adk.agents.run_config import RunConfig
+from google.adk.agents.invocation_context import LlmCallsLimitExceededError
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
 from google.adk.tools.agent_tool import ForwardingArtifactService
@@ -342,24 +344,34 @@ async def _stream_step_events(
     step_id: str,
     tool_context: ToolContext,
     graph: AgentGraphLogger,
+    captured: Optional[tuple] = None,
+    run_config=None,
 ) -> tuple[dict, list[str], list[str], dict]:
     """Stream events from the step executor sub-agent and collect results.
 
     Returns (step_state_delta, plot_paths, artifact_paths, event_log). Raises
     CancelledError if the task is cancelled mid-stream.
     """
-    step_state_delta: dict = {}
+    step_state_delta: dict = captured[0] if captured else {}
     pending_tool_calls: dict[str, dict] = {}
-    plot_paths: list[str] = []
-    artifact_paths: list[str] = []
-    event_log: dict = {"conversation": [], "tool_calls": []}
+    plot_paths: list[str] = captured[1] if captured else []
+    artifact_paths: list[str] = captured[2] if captured else []
+    event_log: dict = captured[3] if captured else {"conversation": [], "tool_calls": []}
 
     async with aclosing(
         runner.run_async(
-            user_id=session.user_id, session_id=session.id, new_message=content
+            user_id=session.user_id, session_id=session.id, new_message=content, run_config=run_config
         )
     ) as agen:
         async for event in agen:
+            # Retain provider termination metadata, never infer timeout from an
+            # empty result. Partial captures also survive task cancellation.
+            diagnostics = event_log.setdefault("diagnostics", {})
+            for name in ("finish_reason", "error_code"):
+                value = getattr(event, name, None)
+                if value is not None:
+                    diagnostics[name] = str(getattr(value, "value", value))[:160]
+            diagnostics["last_event_id"] = str(getattr(event, "id", ""))
             emit_child_event(event)
             if event.actions and event.actions.state_delta:
                 tool_context.state.update(event.actions.state_delta)
@@ -428,7 +440,36 @@ async def _stream_step_events(
                         event_log["conversation"].append(entry)
                         await asyncio.to_thread(graph.log_conversation_event, step_id, entry)
 
+            if step_state_delta.get("_step_result"):
+                break  # The validated result is the completion boundary.
+
     return step_state_delta, plot_paths, artifact_paths, event_log
+
+
+async def _run_step_with_result_repair(runner, agent, session, content, step_id, tool_context, graph, captured):
+    await _stream_step_events(runner, session, content, step_id, tool_context, graph, captured)
+    if not captured[0].get("_step_result"):
+        # One bounded repair turn may only report the evidence already obtained.
+        # Removing resource/child tools prevents accidental side-effect replay.
+        original_tools = agent.tools
+        original_schema = agent.input_schema
+        agent.tools = [tool for tool in original_tools if getattr(tool, "name", None) == "submit_step_result"]
+        agent.input_schema = None
+        captured[3].setdefault("diagnostics", {})["result_repair_attempted"] = True
+        try:
+            repair = types.Content(role="user", parts=[types.Part.from_text(text=
+                "Your execution stream ended without submit_step_result. This is not evidence of a timeout. "
+                "Call submit_step_result now using only observed evidence. Do not repeat or invent operations. "
+                "If incomplete, report needs_replanning and the observed blocker; retain known job references.")])
+            async with asyncio.timeout(60):
+                await _stream_step_events(runner, session, repair, step_id, tool_context, graph, captured,
+                    run_config=RunConfig(max_llm_calls=2))
+        except (TimeoutError, LlmCallsLimitExceededError) as error:
+            captured[3]["diagnostics"]["result_repair_exhausted"] = type(error).__name__
+        finally:
+            agent.tools = original_tools
+            agent.input_schema = original_schema
+    return captured
 
 
 MAX_RECURSION_DEPTH = 3
@@ -677,6 +718,7 @@ async def run_step_executor(
     state_dict["recursion_depth"] = recursion_depth + 1
     state_dict["_graph_exec_node_id"] = step_id
     state_dict["_step_label_path"] = step_label_path
+    state_dict["_step_result"] = None
 
     session = await runner.session_service.create_session(
         app_name=child_app_name,
@@ -688,12 +730,15 @@ async def run_step_executor(
     # the current await point (including in-flight LLM HTTP calls).  A sibling
     # watcher task polls cancellation flags on a wall-clock interval and cancels
     # the inner task when a flag is detected.
+    captured = ({}, [], [], {"conversation": [], "tool_calls": []})
+
     async def stream_with_context():
-        with execution_context(session_id, step_id):
+        with execution_context(session_id, step_id, recovery_attempt):
             for delivery in deliveries:
                 if delivery.get("step_id"):
                     graph.log_data_delivery(delivery["step_id"], step_id)
-            return await _stream_step_events(runner, session, content, step_id, tool_context, graph)
+            return await _run_step_with_result_repair(runner, step_executor_agent, session, content,
+                step_id, tool_context, graph, captured)
 
     inner_task = asyncio.create_task(stream_with_context())
     watcher = asyncio.create_task(
@@ -705,10 +750,7 @@ async def run_step_executor(
     timed_out = False
     waiting_remote_job: Optional[dict] = None
     runner_error: Optional[Exception] = None
-    step_state_delta: dict = {}
-    plot_paths: list[str] = []
-    artifact_paths: list[str] = []
-    event_log: dict = {"conversation": [], "tool_calls": []}
+    step_state_delta, plot_paths, artifact_paths, event_log = captured
     try:
         timed_out, waiting_remote_job = await _await_step_completion(
             inner_task,
@@ -774,6 +816,16 @@ async def run_step_executor(
             "message": job_summary,
         }
 
+    if timed_out and recovery_attempt.get("background_jobs"):
+        from ...resources import job_tool
+        identities = recovery_attempt["background_jobs"]
+        await job_tool("wait_background_jobs", {"job_ids": identities})
+        payload = StepExecutorResult(status="waiting", job_ids=identities,
+            concise_summary="Executor released; OAW continues monitoring the existing jobs.").model_dump()
+        await asyncio.to_thread(finish_node_attempt, recovery_attempt, status="waiting", result=payload)
+        await asyncio.to_thread(graph.log_node_complete, step_id, "waiting", summary=payload["concise_summary"])
+        return {**payload, "step_id": step_id}
+
     if timed_out:
         logger.warning(
             "[TIMEOUT] Step %d timed out after %ds (session=%s)",
@@ -802,6 +854,7 @@ async def run_step_executor(
         return {
             "status": "needs_replanning",
             "step_id": step_id,
+            "failure_kind": "executor_timeout",
             "replan_reason": f"Step {step_number} timed out after {_SUB_STEP_TIMEOUT}s.",
         }
 
@@ -868,6 +921,7 @@ async def run_step_executor(
         return {
             "status": "error",
             "step_id": step_id,
+            "failure_kind": "executor_error",
             "message": error_message,
         }
 
@@ -914,6 +968,10 @@ async def run_step_executor(
             artifacts=result.artifacts,
         )
         payload = result.model_dump(exclude_none=True)
+        if result.status == "waiting":
+            from .recovery import record_background_job_reference
+            for identity in result.job_ids:
+                record_background_job_reference(recovery_attempt, identity)
         payload["step_id"] = step_id
         await asyncio.to_thread(graph.log_result, step_id, payload)
         if skill_refresh:
@@ -946,6 +1004,7 @@ async def run_step_executor(
     logger.warning("[step_executor_runner] step %d: submit_step_result was never called", step_number)
     result = StepExecutorResult(
         status="needs_replanning",
+        failure_kind="result_missing",
         replan_reason="step executor did not call submit_step_result — no result captured",
     )
     await asyncio.to_thread(graph.log_node_complete, step_id, "needs_replanning")
@@ -965,4 +1024,4 @@ async def run_step_executor(
         artifacts=artifact_paths,
     )
     clear_step_cancellation(session_id, step_number)
-    return {**result.model_dump(), "step_id": step_id}
+    return {**result.model_dump(), "step_id": step_id, "diagnostics": event_log.get("diagnostics", {})}

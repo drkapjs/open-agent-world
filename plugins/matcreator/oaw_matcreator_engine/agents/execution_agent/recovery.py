@@ -149,6 +149,7 @@ def start_node_attempt(
         "session_id": session_id,
         "graph_id": graph_id,
         "scheduler_node": scheduler_node,
+        "recovery_scope": recovery_scope,
         "node_id": node_id,
         "step_id": step_id,
         "step_number": step_number,
@@ -190,16 +191,24 @@ def record_remote_job_reference(
     provider: str,
     external_id: str | None,
     recovery_base_dir: Optional[str | Path] = None,
+    step_id: str | None = None,
 ) -> None:
     """Attach a persisted remote-job identity to the current node attempt.
 
     The job store remains the authoritative provider state. The recovery record
     only carries enough identity to prevent duplicate submission after restart.
     """
-    latest_path = _recovery_root(session_id, recovery_base_dir) / _safe_id(node_id) / "latest.json"
-    attempt = _read_json(latest_path)
-    if not attempt or attempt.get("session_id") != session_id or attempt.get("node_id") != node_id:
+    candidates = [(path, _read_json(path)) for path in
+                  _recovery_root(session_id, recovery_base_dir).glob("*/latest.json")]
+    candidates = [(path, value) for path, value in candidates
+                  if value.get("session_id") == session_id and value.get("node_id") == node_id
+                  and value.get("status") == "running"
+                  and (step_id is None or value.get("step_id") == step_id)]
+    # Node names can repeat across plans and recursive agents. Never guess an
+    # owner when an old caller has not supplied the immutable attempt identity.
+    if len(candidates) != 1:
         return
+    latest_path, attempt = candidates[0]
     attempt["remote_job"] = {
         "job_id": job_id,
         "provider": provider,
@@ -234,6 +243,66 @@ def finish_node_attempt(
     if message:
         attempt["message"] = message
     _write_attempt(attempt)
+
+
+def prepare_background_job_request(attempt):
+    identity = json.dumps([attempt.get("graph_id"), attempt["node_id"], attempt.get("scheduler_node"),
+        None if attempt.get("scheduler_node") else attempt.get("recovery_scope")])
+    prefix = "matcreator:" + hashlib.sha256(identity.encode()).hexdigest()[:24] + ":"
+    attempt["job_request_prefix"] = prefix
+    _write_attempt(attempt)  # Persist before crossing the remote submission boundary.
+    return prefix
+
+
+def record_background_job_reference(attempt, job_id):
+    identities = attempt.setdefault("background_jobs", [])
+    if job_id not in identities:
+        identities.append(job_id)
+        _write_attempt(attempt)
+
+
+async def reconcile_background_jobs(state):
+    """Resolve durable host references before allowing an existing node to retry."""
+    from ...resources import job_tool
+    graph = get_execution_graph(state) or {}
+    nodes = graph.get("nodes", {})
+    attempts = []
+    for path in _recovery_root(state.get("session_id")).glob("*/latest.json"):
+        attempt = _read_json(path)
+        if (attempt.get("graph_id") == graph.get("graph_id") and attempt.get("scheduler_node", True)
+                and attempt.get("node_id") in nodes and (attempt.get("background_jobs") or attempt.get("job_request_prefix"))):
+            attempts.append((path, attempt))
+    if not attempts:
+        return
+    try:
+        records = (await job_tool("inspect_background_jobs", {}))["jobs"]
+    except ValueError:
+        return  # Keep waiting; missing authority is never proof of completion.
+    by_id = {job["id"]: job for job in records}
+    for path, attempt in attempts:
+        node = nodes[attempt["node_id"]]
+        if node.get("status") not in {"pending", "running", "waiting"}:
+            continue
+        ids = set(attempt.get("background_jobs", []))
+        if attempt.get("job_request_prefix"):
+            ids.update(job["id"] for job in records if job["request_key"].startswith(attempt["job_request_prefix"]))
+        if not ids:
+            # Intent was saved but no host receipt was found. Require inspection;
+            # do not reinterpret this as permission to submit another job.
+            node["status"] = "waiting"
+            node["result"] = "Submission identity requires reconciliation; no host receipt is available."
+            continue
+        attempt["background_jobs"] = sorted(ids)
+        attempt["_latest_path"] = str(path)
+        attempt["_attempt_path"] = str(path.parent / attempt["attempt_file"])
+        _write_attempt(attempt)
+        node["background_jobs"] = sorted(ids)
+        jobs = [by_id[ident] for ident in ids if ident in by_id]
+        settled = len(jobs) == len(ids) and all(job["status"] not in {"submitting", "queued", "running"} and not job["paused"] for job in jobs)
+        node["status"] = "pending" if settled else "waiting"
+        node["recovery"] = {"status": "background_job_settled" if settled else "waiting_background"}
+        node["result"] = "Inspect existing background jobs and collect their results; never resubmit." if settled else "External work is being monitored by OAW."
+    set_execution_graph(state, graph)
 
 
 def _attempt_summary(attempt: dict[str, Any]) -> str:
@@ -381,6 +450,14 @@ def reconcile_recovery_state(
                     history.log_result(attempt["step_id"], attempt["result"])
         node_status = node.get("status")
         attempt_status = attempt.get("status")
+
+        if (attempt.get("background_jobs") or attempt.get("job_request_prefix")) and node_status in {"pending", "running", "waiting"} and attempt_status in {"running", "waiting", "stale"}:
+            if node.get("recovery", {}).get("status") != "background_job_settled":
+                node["status"] = "waiting"
+                node["background_jobs"] = attempt.get("background_jobs", [])
+                node["recovery"] = {"status": "waiting_background"}
+                actions.append({"node_id": node_id, "action": "wait_for_background_job", "status": "waiting"})
+            continue
 
         if node_status in ("pending", "running") and attempt_status == "running" and _is_stale_running_attempt(
             attempt,
