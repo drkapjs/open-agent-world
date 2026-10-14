@@ -98,7 +98,9 @@ async def install_conversation_activity_fixture(incremental: bool = False):
                         if incremental or index == count - 1:
                             await gates[phase][index].wait()
                         yield AgentEvent(context.agent_id, context.run_id, AgentEventType.TOOL_COMPLETED,
-                            {**payload, 'response': {'exit_code': 1 if phase == 1 and index == 0 else 0, 'result': f'Checked module {index}'}})
+                            {**payload, 'response': {'exit_code': 1 if phase == 1 and index == 0 else 0,
+                                'result': f'Checked module {index}',
+                                **({'lines': [f'Line {line}: detailed inspection result' for line in range(30)]} if index == 0 else {})}})
                 yield AgentEvent(context.agent_id, context.run_id, AgentEventType.MESSAGE,
                     {'text': 'Review complete. One check needs attention.', 'provider_message_id': 'answer', 'final': True})
                 yield AgentEvent(context.agent_id, context.run_id, AgentEventType.COMPLETED, run_status='succeeded')

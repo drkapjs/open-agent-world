@@ -6,6 +6,7 @@ test('execution groups stream, archive previous work, and retain their position 
   const profile = await (await request.get('/api/application')).json();
   await request.patch('/api/application/preferences', { data: { profile_id: profile.profile_id, generation: profile.generation, changes: {
     'oaw-onboarding-v1': JSON.stringify({ version: 1, state: { status: 'skipped' } }), 'oaw.locale': 'en',
+    'oaw-progressive-tutorials-v1': JSON.stringify({ version: 1, state: { enabled: false, progress: {} } }),
     'oaw-node-surfaces-v1': null, 'oaw-theme': 'light', 'oaw-canvas-viewport-v1': null,
   } } });
   const agent = await (await request.post('/api/nodes', { data: { type: 'agent', name: 'Review worker' } })).json();
@@ -30,6 +31,10 @@ test('execution groups stream, archive previous work, and retain their position 
     await expect(groups).toHaveCount(1);
     await expect(groups.locator('.run-tool')).toHaveCount(1);
     await expect(groups.locator('[aria-label="Running"]')).toHaveCount(2);
+    const runningTime = groups.locator('.run-tool .conversation-duration');
+    await expect(runningTime).toHaveText(/\d+\.\d+s/);
+    const firstTime = await runningTime.textContent();
+    await expect(runningTime).not.toHaveText(firstTime!);
     const snapshot = await (await request.get(`${base}/timeline`)).json();
     const runId = snapshot.active_runs[0].run_id;
     for (let index = 0; index < 7; index++) {
@@ -45,6 +50,9 @@ test('execution groups stream, archive previous work, and retain their position 
     expect((await groups.boundingBox())!.y - (await narration.boundingBox())!.y - (await narration.boundingBox())!.height).toBeLessThanOrEqual(14);
     await expect(groups.locator('.conversation-execution-summary')).not.toContainText('Review worker');
     await expect(groups.locator('.conversation-execution-summary')).not.toContainText('Execution details');
+    const summaryText = groups.locator('.conversation-execution-summary > span').first();
+    const chevron = groups.locator('.conversation-execution-chevron');
+    expect((await chevron.boundingBox())!.x).toBeGreaterThan((await summaryText.boundingBox())!.x + (await summaryText.boundingBox())!.width);
     const stop = surface.getByRole('button', { name: 'Stop', exact: true });
     expect((await stop.boundingBox())!.width).toBeLessThan(120);
     const scroll = groups.locator('.conversation-execution-scroll');
@@ -65,7 +73,7 @@ test('execution groups stream, archive previous work, and retain their position 
       await request.post(`/api/test/conversation-activity/${runId}/step/0/${index}`);
       await expect(groups.locator('.run-tool')).toHaveCount(index + 2);
     }
-    const capture = async (prefix = '') => { for (const theme of ['light', 'dark']) {
+    const capture = async (prefix = '', folded = false) => { for (const theme of ['light', 'dark']) {
       await page.evaluate(theme => { document.documentElement.dataset.theme = theme; }, theme);
       for (const width of [1060, 360]) {
         const camera = await surface.evaluate((element, width) => {
@@ -77,8 +85,9 @@ test('execution groups stream, archive previous work, and retain their position 
           return { x: 30 - matrix.m41, y: 30 - matrix.m42 };
         }, width);
         const style = await page.addStyleTag({ content: `.react-flow__viewport { transform: translate(${camera.x}px, ${camera.y}px) scale(1) !important; }` });
-        await expect(groups.last()).toBeVisible();
-        const bounds = await groups.last().evaluate(node => ({ w: node.clientWidth, sw: node.scrollWidth }));
+        const target = folded ? surface.locator('.conversation-history') : groups.last();
+        await expect(target).toBeVisible();
+        const bounds = await target.evaluate(node => ({ w: node.clientWidth, sw: node.scrollWidth }));
         expect(bounds.sw).toBeLessThanOrEqual(bounds.w + 1);
         await page.mouse.move(1400, 950);
         await surface.screenshot({ path: `../.outputs/conversation-activity/${prefix}${theme}-${width}.png` });
@@ -109,21 +118,39 @@ test('execution groups stream, archive previous work, and retain their position 
     expect(await groups.evaluateAll(nodes => nodes.map(node => node.getAttribute('data-execution-id')))).toEqual(ids);
     await request.post(`/api/test/conversation-activity/${runId}/advance/1`);
     await expect(surface.getByText('Review complete. One check needs attention.', { exact: true })).toBeVisible();
-    await expect(surface.locator('.conversation-message-bubble')).toHaveCount(3);
+    const workLog = surface.locator('.conversation-history');
+    await expect(workLog).toHaveCount(1);
+    await expect(workLog).not.toHaveAttribute('open');
+    await expect(surface.locator('.conversation-message-bubble')).toHaveCount(1);
+    await expect(groups).toHaveCount(0);
     await expect(surface.getByRole('button', { name: 'Stop', exact: true })).toHaveCount(0);
-    await expect(groups.nth(1).getByRole('button', { name: /tool calls/ })).toHaveAttribute('aria-expanded', 'false');
-    await expect(groups.nth(1)).toContainText('1 failed');
-    await capture('completed-');
+    await capture('completed-', true);
     await page.reload();
-    await expect(groups).toHaveCount(2);
-    await expect(progress).toBeVisible();
-    const toggle = groups.nth(0).getByRole('button', { name: /tool calls/ });
+    await expect(workLog).toHaveCount(1);
+    await expect(workLog).not.toHaveAttribute('open');
+    const toggle = workLog.locator(':scope > summary');
     await toggle.focus();
     await page.keyboard.press('Enter');
+    await expect(groups).toHaveCount(2);
+    await expect(progress).toBeVisible();
+    await expect(surface.locator('.conversation-message-bubble')).toHaveCount(3);
+    await expect(groups.nth(1)).toContainText('1 failed');
     await expect(groups.nth(0).locator('.run-tool')).toHaveCount(12);
+    await expect(groups.locator('.run-tool .conversation-duration')).toHaveCount(20);
+    const durations = await groups.locator('.run-tool .conversation-duration').allTextContents();
+    const firstViewport = groups.nth(0).locator('.conversation-execution-scroll');
+    expect(await firstViewport.evaluate(node => node.clientHeight)).toBeGreaterThan(300);
+    expect(await firstViewport.evaluate(node => node.scrollHeight - node.clientHeight)).toBeLessThanOrEqual(1);
     await groups.nth(0).locator('.run-tool > summary').first().click();
     await expect(groups.nth(0).getByText(/Checked module 0/)).toBeVisible();
-    await surface.screenshot({ path: '../.outputs/conversation-activity/restored.png' });
+    const output = groups.nth(0).locator('.run-tool-details pre').last();
+    expect(await output.evaluate(node => node.clientHeight)).toBeGreaterThan(500);
+    expect(await output.evaluate(node => node.scrollHeight - node.clientHeight)).toBeLessThanOrEqual(1);
+    await capture('expanded-');
+    await page.reload();
+    await workLog.locator(':scope > summary').click();
+    await expect(groups.locator('.run-tool .conversation-duration')).toHaveCount(20);
+    expect(await groups.locator('.run-tool .conversation-duration').allTextContents()).toEqual(durations);
     expect(errors).toEqual([]);
   } finally {
     await request.delete(`/api/nodes/${room.id}`);

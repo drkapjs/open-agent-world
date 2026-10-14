@@ -21,6 +21,7 @@ describe('Conversation execution segments', () => {
     const tool = view.container.querySelector('.run-tool') as HTMLDetailsElement;
     expect(tool.querySelector('pre')).toBeNull();
     act(() => { tool.open = true; fireEvent(tool, new Event('toggle', { bubbles: true })); });
+    expect(screen.getByRole('region').hasAttribute('data-compact')).toBe(false);
     const done: ExecutionGroup = { ...group, items: [{ ...group.items[0], type: 'tool_completed', response: 'File contents' }] };
     view.rerender(<ConversationExecution group={done} agentName="Atlas" />);
     expect(tool.open).toBe(true);
@@ -30,6 +31,7 @@ describe('Conversation execution segments', () => {
     expect(screen.queryByRole('region')).toBeNull();
     fireEvent.click(toggle);
     expect(screen.getByRole('region')).toBeTruthy();
+    expect(screen.getByRole('region').hasAttribute('data-compact')).toBe(false);
     view.rerender(<ConversationExecution group={{ ...done, expanded: false, running: false }} agentName="Atlas" />);
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
   });
@@ -70,5 +72,31 @@ describe('Conversation execution segments', () => {
     render(<RunActivityStatus onStop={stop} />);
     fireEvent.click(screen.getByRole('button', { name: 'Stop' }));
     expect(stop).toHaveBeenCalledOnce();
+  });
+
+  it('opens archived groups for full-height reading and retains each tool duration', () => {
+    const view = render(<ConversationExecution group={{ ...group, running: false, expanded: false,
+      items: [{ ...group.items[0], type: 'tool_completed', started_at: '2026-10-14T00:00:00Z', finished_at: '2026-10-14T00:00:02.500Z' }] }}
+      agentName="Atlas" history />);
+    expect(screen.getByRole('button', { name: /tool calls/ }).getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByRole('region').hasAttribute('data-compact')).toBe(false);
+    expect(view.container.querySelectorAll('.conversation-duration')).toHaveLength(2);
+    expect(screen.getAllByText('2.5s')).toHaveLength(2);
+  });
+
+  it('updates elapsed time while a running group is folded and stops at the recorded completion', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-14T00:00:01Z'));
+    try {
+      const live = { ...group, items: [{ ...group.items[0], started_at: '2026-10-14T00:00:00Z' }] };
+      const view = render(<ConversationExecution group={live} agentName="Atlas" />);
+      fireEvent.click(screen.getByRole('button', { name: /tool calls/ }));
+      act(() => { vi.advanceTimersByTime(2000); });
+      expect(screen.getByText('3.0s')).toBeTruthy();
+      view.rerender(<ConversationExecution group={{ ...live, running: false, expanded: false,
+        items: [{ ...live.items[0], type: 'tool_completed', finished_at: '2026-10-14T00:00:03Z' }] }} agentName="Atlas" />);
+      act(() => { vi.advanceTimersByTime(5000); });
+      expect(screen.getByText('3.0s')).toBeTruthy();
+    } finally { cleanup(); vi.useRealTimers(); }
   });
 });

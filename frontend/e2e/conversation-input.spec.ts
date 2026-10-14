@@ -62,6 +62,10 @@ test('followup stays after the running reply and is consumed in the same run', a
     await expect(surface).toBeVisible();
     for (let i = 0; i < expected.length; i++) await expect(messages.nth(i)).toContainText(expected[i]);
     await request.post(`/api/test/conversation-input/${runId}/return-b`);
+    await expect(surface.getByText('I received your update with the result of b. I skipped c.', { exact: true })).toBeVisible();
+    const workLog = surface.locator('.conversation-history');
+    await expect(workLog).toHaveCount(1);
+    await workLog.locator(':scope > summary').click();
     await expect(messages).toHaveCount(4);
     await expect(messages.nth(3)).toContainText('I received your update with the result of b. I skipped c.');
     await expect(surface.getByRole('button', { name: 'Stop', exact: true })).toHaveCount(0);

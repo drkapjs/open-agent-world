@@ -171,6 +171,21 @@ collapse by default when a newer execution group begins or the Run terminates,
 and can be reopened. Unfinished calls remain visible across user interruptions. Run termination
 never relocates activity underneath the final reply.
 
+Successful Runs expose `final_message_id` in the timeline summary, recorded when
+the final response is persisted. `is_final` only seals an individual streamed
+message; it does not identify the final response. Once that response is visible,
+the preceding process is collapsed as a single work log before the response.
+User messages, speaker changes, and other Runs remain chronological boundaries.
+Failed, incomplete, paged-out, or legacy Runs without this explicit relation
+retain their visible process instead of guessing a final reply.
+
+Tool activity retains separate start and completion timestamps when merging
+events, including completion-before-start repair from REST. Each tool displays
+its own elapsed time; a group displays its wall-clock span (parallel calls are
+not added together). Missing timestamp pairs do not invent durations. Automatic
+live previews stay compact and scroll, while manually opened groups, archived
+groups, and open tool details use the full transcript height for reading.
+
 The bounded Run checkpoint (`tool_trace`, retained for API compatibility) stores
 the latest 50 tool/public-progress events, including `status`, `plan`, and
 `reasoning_summary`. `tool_trace_truncated` explicitly marks omitted earlier
