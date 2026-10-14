@@ -48,6 +48,12 @@ Plugin-specific documentation can remain in its own package or repository. These
 
 ## Developing a plugin
 
+Plugin API 1.32 adds opt-in [context budgeting and compaction](developers/context-compaction.md)
+for runtime plugins, and connection-specific context/output limits on
+`RuntimeModelConnection`. Plugin runtimes retain their own context storage and
+orchestration. Run completion now retains Agent capacity until provider stream
+cleanup settles; terminal result events alone do not grant capacity.
+
 Plugin API 1.31 adds typed execution edges, history revisions, attempt metadata
 and revision-bound pagination. Plugin API 1.30 adds the built-in Agent graph, `NodeExecutionSource`,
 `ExecutionNode` / `ExecutionSnapshot`, and `AgentCapabilityProvider.publish_execution`.

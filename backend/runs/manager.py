@@ -187,9 +187,11 @@ class RunManager:
             self._terminal_done.setdefault(record.run_id, asyncio.Event()).set()
             await self._publish_run(record, EventType.RUN_INTERRUPTED)
         for record in self.list_runs():
-            if record.lifecycle.get('cleanup') in {'pending', 'failed'}:
-                self.store.update_lifecycle(record.run_id, cleanup='uncertain', holds_capacity=False, session_lost=True,
-                    cleanup_reason='Backend restarted during cancellation; external termination is unconfirmed')
+            if (record.lifecycle.get('cleanup') in {'pending', 'failed'}
+                    or record.lifecycle.get('execution') in {'running', 'closing'}):
+                self.store.update_lifecycle(record.run_id, execution='interrupted', cleanup='uncertain',
+                    holds_capacity=False, session_lost=True,
+                    cleanup_reason='Backend restarted before execution settled; external termination is unconfirmed')
 
     async def shutdown(self) -> None:
         self.shutting_down = True
@@ -337,6 +339,20 @@ class RunManager:
             await event.wait()
         return self.get_run(run_id)
 
+    def execution_in_progress(self, run_id: str) -> bool:
+        """A terminal result may still own a provider stream and its cleanup."""
+        task = self._runtime_tasks.get(run_id)
+        return task is not None and not task.done()
+
+    async def wait_settled(self, run_id: str) -> RunRecord:
+        """Wait for a terminal result AND the provider execution to unwind.
+
+        Admission must still be rechecked: failed cleanup can retain capacity.
+        Explicitly suspended Runs are not terminal even after a turn exits.
+        """
+        await self.wait_terminal(run_id)
+        return await self.wait_execution(run_id)
+
     async def wait_terminal(self, run_id: str) -> RunRecord:
         """Wait until the durable Run reaches a terminal lifecycle state."""
 
@@ -447,10 +463,10 @@ class RunManager:
             event_type = EventType.RUN_RESUMED
             self._suspensions.pop(run_id, None)
         if target in TERMINAL_RUN_STATUSES:
-            self._release_agent_slot(run_id)
             self._suspensions.pop(run_id, None)
+            self._release_settled_capacity(run_id)
             self._terminal_done.setdefault(run_id, asyncio.Event()).set()
-            record = self.store.update_lifecycle(run_id, holds_capacity=False, awaiting=None)
+            record = self.store.update_lifecycle(run_id, holds_capacity=self.holds_agent_slot(run_id), awaiting=None)
         await self._publish_run(record, event_type)
         if current.status is RunStatus.WAITING and target is RunStatus.RUNNING:
             await self._publish_agent_operational(record.agent_id, "running", run_id)
@@ -527,6 +543,9 @@ class RunManager:
             self.store.update_lifecycle(run_id, cleanup='uncertain' if current.lifecycle.get('session_lost') or provider is None else 'complete',
                 cleanup_reason=None,
                 termination_scope='provider-owned execution; remote side effects are not inferred')
+            self._release_settled_capacity(run_id)
+            await self._publish_agent_operational(
+                current.agent_id, "running" if self._occupied_agent_runs(current.agent_id) else "idle", run_id)
         pending = self._cleanup_tasks.get(run_id)
         if pending is not None and pending.done() and (pending.cancelled() or pending.exception() is not None):
             self._cleanup_tasks.pop(run_id, None)
@@ -708,10 +727,12 @@ class RunManager:
                     closer = getattr(stream, 'aclose', None)
                     if closer is not None:
                         try:
-                            await closer()
-                        except Exception as error:
+                            self.store.update_lifecycle(record.run_id, execution='closing')
+                            async with asyncio.timeout(self.cleanup_timeout_seconds):
+                                await closer()
+                        except BaseException as error:
                             self.store.update_lifecycle(record.run_id, cleanup='failed',
-                                cleanup_reason=f'Provider stream cleanup failed: {error}')
+                                cleanup_reason=f'Provider stream cleanup failed: {type(error).__name__}: {error}')
                             raise
 
             reader = asyncio.create_task(read_stream(), name=f'provider-stream:{record.run_id}')
@@ -855,6 +876,7 @@ class RunManager:
             self.store.update_lifecycle(record.run_id, execution='finished', active_tools=0)
             _current_invocation.reset(token)
             self._runtime_tasks.pop(record.run_id, None)
+            self._release_settled_capacity(record.run_id)
             execution_done = self._execution_done.get(record.run_id)
             if execution_done is not None:
                 execution_done.set()
@@ -919,8 +941,8 @@ class RunManager:
         execution_done = self._execution_done.get(run_id)
         if execution_done is not None:
             execution_done.set()
-        # Safety net: a terminal Run must never retain its Agent slot, even if
-        # the terminal transition's release was interrupted by an exception.
+        # Safety net after task exit. Cleanup debt must still retain capacity;
+        # a terminal result alone is never evidence of released resources.
         try:
             status = self.store.get(run_id).status
         except Exception:
@@ -928,7 +950,7 @@ class RunManager:
             # map dies with the manager, so there is nothing to reconcile.
             return
         if status in TERMINAL_RUN_STATUSES:
-            self._release_agent_slot(run_id)
+            self._release_settled_capacity(run_id)
             # Successful terminal output has already been checkpointed once
             # before the terminal transition; release the ephemeral overlay.
             self._live_output.pop(run_id, None)
@@ -1005,6 +1027,14 @@ class RunManager:
 
     def _release_agent_slot(self, run_id: str) -> None:
         self._occupied_runs.pop(run_id, None)
+
+    def _release_settled_capacity(self, run_id: str) -> None:
+        record = self.get_run(run_id)
+        if (record.status in TERMINAL_RUN_STATUSES
+                and not self.execution_in_progress(run_id)
+                and record.lifecycle.get('cleanup') not in {'pending', 'failed'}):
+            self._release_agent_slot(run_id)
+            self.store.update_lifecycle(run_id, holds_capacity=False)
 
     def _assert_agent_accepts_runs(self, agent_id: str) -> None:
         if self.admission_check is not None:

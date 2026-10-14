@@ -52,6 +52,7 @@ def test_model_limit_defaults_upgrade_old_catalog_and_edits_survive_restart(tmp_
     old = dict(revision=1, default_model="oaw:model:work", connections=[connection(), connection("personal")])
     for item in old["connections"]:
         item.pop("api_key")
+        item['auth_mode'] = 'none'
     with db.transaction() as sql:
         sql.execute("INSERT INTO application_settings VALUES (?,?)", ("model_connections", json.dumps(old)))
     store = ModelConnectionStore(LlmSettingsStore(db, tmp_path))
@@ -70,6 +71,13 @@ def test_model_limit_defaults_upgrade_old_catalog_and_edits_survive_restart(tmp_
         assert store.context_limits("oaw:model:personal") == (32000, 2048)
         assert runtime._context_budget("oaw:model:work", "openai/same-model").output == 16384
         assert runtime._context_budget("oaw:model:personal", "openai/same-model").limit == 32000
+        from types import SimpleNamespace
+        from backend.capabilities.provider import WorldAgentCapabilityProvider
+        provider = WorldAgentCapabilityProvider(SimpleNamespace(llm_settings=store.secrets))
+        selected = provider.resolve_model('oaw:default')
+        assert (selected.context_window, selected.max_output_tokens) == (1_000_000, 16384)
+        other = provider.resolve_model('oaw:model:personal')
+        assert (other.context_window, other.max_output_tokens) == (32000, 2048)
     finally:
         db.close()
 

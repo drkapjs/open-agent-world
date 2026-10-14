@@ -53,10 +53,10 @@ def _record_artifact(reference, *, produced=False):
         AgentGraphLogger(context[0]).log_artifact(context[1], reference, produced=produced)
 
 
-def configure(rpc, emit_event):
+def configure(rpc, emit_event, contexts=None):
     """Bind once before constructing agents; each worker owns exactly one Run."""
     global _bridge
-    _bridge = ResourceBridge(rpc, emit_event)
+    _bridge = ResourceBridge(rpc, emit_event, contexts)
 
 
 def bridge():
@@ -73,12 +73,13 @@ def unpack(response):
 
 
 class ResourceBridge:
-    def __init__(self, rpc, emit_event):
+    def __init__(self, rpc, emit_event, contexts=None):
         self.rpc = rpc
         self.emit_event = emit_event
         self.verified = set()
         self.input_lock = asyncio.Lock()
         self.conversation_input = {}
+        self.contexts = contexts
 
     async def before_model(self, callback_context, llm_request):
         # One worker hosts the native planner and recursive executors. Broadcast
@@ -89,12 +90,18 @@ class ResourceBridge:
                 raise RuntimeError('Conversation input bridge failed')
             for message in pending:
                 self.conversation_input[message['id']] = message
-            llm_request.contents.extend(types.Content(role='user', parts=[
-                types.Part.from_text(text=message['text'])]) for message in self.conversation_input.values())
-            if pending:
-                result = await self.rpc('acknowledge_conversation_input', message_ids=[m['id'] for m in pending])
-                if not isinstance(result, dict) or result.get('ok') is not True:
-                    raise RuntimeError('Conversation input acknowledgement failed')
+            injected = [types.Content(role='user', parts=[types.Part.from_text(text=message['text'])])
+                        for message in self.conversation_input.values()]
+        llm_request.contents.extend(injected)
+        # Slow summaries serialize only their own context, not parallel agents
+        # or inbox reads. Acknowledge new input after preparing a usable request.
+        if self.contexts is not None:
+            await self.contexts.before_model(callback_context, llm_request,
+                [item.model_dump(mode='json', exclude_none=True) for item in injected])
+        if pending:
+            result = await self.rpc('acknowledge_conversation_input', message_ids=[m['id'] for m in pending])
+            if not isinstance(result, dict) or result.get('ok') is not True:
+                raise RuntimeError('Conversation input acknowledgement failed')
 
     async def oaw_list_tools(self) -> dict:
         """Discover currently connected OAW tools and their argument schemas."""

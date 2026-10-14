@@ -283,7 +283,7 @@ class NodeExecutionService(NodeDelegationMixin, NodeContinuationMixin):
                                 context_id=active_state_session.get())
                             entry["run_id"] = record.run_id
                             self.save(node_id, state)
-                            waiter = asyncio.create_task(manager.wait_terminal(record.run_id))
+                            waiter = asyncio.create_task(manager.wait_settled(record.run_id))
                             active[waiter] = entry
                             self.apply(node_id, WorkOutcome(item_id=item.id, run_id=record.run_id, status="running"))
                     if not active:

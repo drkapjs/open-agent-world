@@ -13,6 +13,13 @@ in `oaw_matcreator_engine/` and is included in the Pack wheel alongside the
 worker; no upstream checkout, MatCreator PyPI/Git installation, source fingerprint
 update or separate service is required.
 
+Context compression uses OAW's [shared budget policy](../../docs/developers/context-compaction.md).
+The planner, execution orchestrator and each recursive executor check their own
+assembled request before calling the model. Catalog context/output limits take
+priority; compression triggers on budget pressure, not every three turns.
+Checkpoints are private to each native session/branch/agent and preserve the
+original event history. A normal final reply does not start a post-turn summary.
+
 The engine was adapted from AI4MS/MatCreator revision
 `0328c8b814499cbf3e49116323cee050145fa08f`. Its import provenance is recorded in
 [`oaw_matcreator_engine/UPSTREAM.json`](oaw_matcreator_engine/UPSTREAM.json);
@@ -152,7 +159,7 @@ user-owned; redeploy the preset or arrange its tabs with **Edit layout**.
 
 ## Execution history and dependency evidence
 
-Pack 0.7 requires OAW plugin API 1.31. The Pack records immutable Step attempts,
+Pack 0.8 requires OAW plugin API 1.32. The Pack records immutable Step attempts,
 plan identities, timestamps, retry/replan links and versioned artifact producers.
 The host stores a full read-only projection with each Run and exposes authorized,
 revision-consistent pages. A completed Conversation turn does not turn unfinished

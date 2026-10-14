@@ -29,6 +29,15 @@ def send(value):
 
 
 def configure(request):
+    # Load only the public package, without adding host site-packages or the
+    # backend source root to this isolated worker's import search path.
+    import importlib.util
+    package = Path(request['public_api_package'])
+    spec = importlib.util.spec_from_file_location('open_agent_world', package / '__init__.py',
+                                                submodule_search_locations=[str(package)])
+    module = importlib.util.module_from_spec(spec)
+    sys.modules['open_agent_world'] = module
+    spec.loader.exec_module(module)
     activate_engine()
     root = Path(request["root"])
     model = request["model"]
@@ -106,7 +115,8 @@ async def run(request, reader, start_reader):
                 raise RuntimeError("Invalid host response")
             pending[message["id"]].set_result(message["value"])
 
-    app = install(rpc, emit_event)
+    from native_context import NativeContexts
+    app = install(rpc, emit_event, NativeContexts(root, request['model'], send))
     app.root_agent.planning_agent.instruction += "\n" + request["instruction"]
     class CheckpointSessions(InMemorySessionService):
         live = None

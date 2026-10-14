@@ -49,12 +49,18 @@ class AgentConfig:
 
 @dataclass(frozen=True, slots=True)
 class RuntimeModelConnection:
-    """Run-local model credentials for trusted runtime adapters; never persist."""
+    """Run-local credentials and optional catalog limits; never persist secrets.
+
+    Limits are connection-specific. None means a legacy reference without saved
+    limits; adapters can use exact model metadata or a declared estimate.
+    """
 
     model: str
     adapter: str = "legacy"
     base_url: str = ""
     api_key: str = field(default="", repr=False)
+    context_window: int | None = None
+    max_output_tokens: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

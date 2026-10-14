@@ -62,8 +62,8 @@ def read_agent_graph(path):
 
 
 
-def install(rpc, emit_event):
+def install(rpc, emit_event, contexts=None):
     from oaw_matcreator_engine.resources import configure
-    configure(rpc, emit_event)
+    configure(rpc, emit_event, contexts)
     from oaw_matcreator_engine.agent import app
     return app

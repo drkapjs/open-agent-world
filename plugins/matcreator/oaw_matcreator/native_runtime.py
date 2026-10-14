@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import open_agent_world
 
 from open_agent_world.plugin_api import (
     AgentConfigurationError, AgentDependencyError, AgentEvent, AgentEventType,
@@ -160,6 +161,7 @@ class MatCreatorRuntime(RuntimeProvider):
 
             stderr_task = asyncio.create_task(drain_stderr())
             await write({"type": "start", "root": str(root),
+                "public_api_package": str(Path(open_agent_world.__file__).parent),
                 "model": asdict(model), "mode": settings.agent_mode, "instruction": config.system_instruction,
                 "prompt": runtime_input.prompt, "run_id": context.run_id})
 
@@ -240,3 +242,4 @@ class MatCreatorRuntime(RuntimeProvider):
         active = self.active.get(run_id)
         if active:
             await self._close(active[1])
+            self.active.pop(run_id, None)

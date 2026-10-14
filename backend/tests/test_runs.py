@@ -418,7 +418,7 @@ async def test_root_and_child_run_lineage_and_registry_provider(tmp_path: Path) 
         agent = await services.create_card(CardCreate(type="agent", name="Atlas"))
         manager = services._require_run_manager()
         root = await manager.start_run(agent.id, "root", task_id="task-a")
-        await manager.wait_terminal(root.run_id)
+        await manager.wait_settled(root.run_id)
         child = await manager.start_run(
             agent.id,
             "child",
@@ -591,7 +591,7 @@ async def test_tool_activity_does_not_change_status_or_release_slot(
             await manager.start_run(agent.id, "second")
 
         provider.continue_tool.set()
-        assert (await manager.wait_terminal(run.run_id)).status is RunStatus.SUCCEEDED
+        assert (await manager.wait_settled(run.run_id)).status is RunStatus.SUCCEEDED
         assert not manager.holds_agent_slot(run.run_id)
     finally:
         services.close()
@@ -731,6 +731,7 @@ async def test_inactive_provider_stream_fails_run_instead_of_stalling(
         record = await manager.wait_terminal(run.run_id)
         assert record.status is RunStatus.FAILED
         assert "no activity" in (record.error or "")
+        await manager.wait_execution(run.run_id)
         assert not manager.holds_agent_slot(run.run_id)
         assert services.get_card(agent.id).status == "idle"
     finally:
@@ -796,6 +797,7 @@ async def test_final_text_reads_from_state_and_terminal_task_releases_slot(
         assert record.status is RunStatus.SUCCEEDED
         # The durable state store is the only source for run output.
         assert manager.final_text(run.run_id) == "produce output"
+        await manager.wait_execution(run.run_id)
         assert not manager.holds_agent_slot(run.run_id)
 
         # Safety net: even if a terminal transition failed to release the slot,

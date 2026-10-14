@@ -163,7 +163,12 @@ def scripted_model(request):
             original = next((m['content'] for m in request['messages'] if m['role'] == 'user'), '')
             layer = ('planner' if 'run_flash_step' in names else 'executor' if 'run_node_executor' in names
                 else ('recursive' if 'child bridge check' in str(original) else 'step') if 'run_sub_agent' in names else None)
-            if inject_errors and layer and layer not in injected:
+            if any('Create a compact continuation checkpoint' in str(m.get('content', ''))
+                   for m in request['messages'] if m['role'] == 'system'):
+                reply = {'role': 'assistant', 'content': 'Goal: verify the OAW bridge. The plan is ready; retain the current user approval and inspect tool results.'}
+            elif layer == 'planner' and 'Only inspect context pressure' in str(request['messages']):
+                reply = {'role': 'assistant', 'content': 'Context inspected; awaiting approval.'}
+            elif inject_errors and layer and layer not in injected:
                 injected.add(layer)
                 reply = {'role': 'assistant', 'content': None, 'tool_calls': [
                     {'id': f'fault_{layer}_{i}', 'type': 'function', 'function': {'name': name, 'arguments': json.dumps(args)}}
@@ -431,6 +436,47 @@ while sys.stdin.readline(): pass
     assert process.returncode is not None
     assert not runtime.active
     assert all(event.type.value != 'agent_completed' for event in events)
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not os.environ.get('OAW_MATCREATOR_MANAGED'), reason='requires Pack orchestration dependencies')
+async def test_managed_worker_compacts_only_over_budget_context_and_keeps_native_history(tmp_path, scripted_model):
+    url, calls = scripted_model
+    provider = Provider(tmp_path, url)
+    provider.resolve_model = lambda _: RuntimeModelConnection('native-test', 'openai', url, 'test-secret',
+        context_window=32768, max_output_tokens=1024)
+    runtime = MatCreatorRuntime(provider)
+    config = AgentConfig('agent-a', 'Native')
+    await runtime.create_agent(config)
+
+    async def turn(run, prompt):
+        async with asyncio.timeout(60):
+            return [e async for e in runtime.execute(config, context(run=run), RuntimeInput(prompt))]
+
+    await turn('first', 'Plan a bridge test')
+    path = next(tmp_path.rglob('session.json'))
+    retained = json.loads(path.read_text(encoding='utf8'))
+    last_time = retained['events'][-1]['timestamp']
+    for i in range(70):
+        retained['events'].append({'id': f'archive-{i}', 'invocation_id': f'old-{i}',
+            'author': 'user', 'timestamp': last_time + (i + 1) / 1000,
+            'content': {'role': 'user', 'parts': [{'text': f'Historical observation {i}: ' + 'evidence ' * 300}]}})
+    path.write_text(json.dumps(retained), encoding='utf8')
+    observed = await turn('second', 'Only inspect context pressure; do not execute')
+    summaries = [r for r in calls if any('Create a compact continuation checkpoint' in str(m.get('content', ''))
+        for m in r['messages'] if m['role'] == 'system')]
+    assert summaries and all(not r.get('tools') for r in summaries)
+    assert any(e.payload.get('context_state') == 'compacting' and e.payload.get('author') == 'thinking_agent'
+               for e in observed)
+    restored = json.loads(path.read_text(encoding='utf8'))
+    assert {e['id'] for e in restored['events']} >= {f'archive-{i}' for i in range(70)}
+    assert not any(e.get('actions', {}).get('compaction') for e in restored['events'])
+    assert list(tmp_path.rglob('contexts/*.json'))
+    assert not runtime.active
+    count = len(summaries)
+    await turn('third', 'Only inspect context pressure; do not execute')
+    assert len([r for r in calls if any('Create a compact continuation checkpoint' in str(m.get('content', ''))
+        for m in r['messages'] if m['role'] == 'system')]) == count
 
 
 @pytest.mark.asyncio

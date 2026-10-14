@@ -1,11 +1,51 @@
 ﻿import asyncio
 import pytest
 from backend.tests.test_runs import RecordingProvider, _services, HangingStopProvider
+from backend.tests.test_runs import TerminalAcloseProvider
 from backend.tests.conversation_helpers import wait_for_conversation_run, wait_for_conversation_delivery
 from backend.world.models import CardCreate, EdgeCreate
 from backend.conversations import ConversationPost, ConversationSessionCreate
 from backend.runs import RunStatus
 from backend.errors import RuntimeUnavailableError
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('limit', [1, 2])
+async def test_followups_wait_for_terminal_stream_cleanup(tmp_path, limit):
+    provider = TerminalAcloseProvider()
+    services = _services(tmp_path, provider)
+    try:
+        manager = services.run_manager
+        agent = await services.create_card(CardCreate(type='agent', config={'max_concurrent_runs': limit}))
+        room = await services.create_card(CardCreate(type='conversation'))
+        await services.create_edge(EdgeCreate(source=agent.id, target=room.id, relationship='participate'))
+        session = await services.create_conversation_session(room.id, ConversationSessionCreate(participant_ids=[agent.id]))
+        sent = await services.post_conversation_message(room.id, session.id,
+            ConversationPost(content='first', mention_agent_ids=[agent.id]))
+        first = await wait_for_conversation_run(services, sent.message.id, agent.id)
+        followup = await services.post_conversation_message(room.id, session.id,
+            ConversationPost(content='next', mention_agent_ids=[agent.id]))
+        provider.emit_terminal.set()
+        await asyncio.wait_for(provider.aclose_started.wait(), 2)
+        assert manager.get_run(first.run_id).status == RunStatus.SUCCEEDED
+        assert manager.holds_agent_slot(first.run_id)
+        if limit == 1:
+            with pytest.raises(RuntimeUnavailableError):
+                await manager.start_run(agent.id, 'direct call must also wait')
+        # Exercise admission during cleanup, including with a spare Agent slot.
+        await services._drain_conversation_agent(agent.id)
+        assert len(manager.list_runs(agent_id=agent.id)) == 1
+        assert services.deliveries.pending_messages(agent.id, room.id, session.id) == [followup.message.id]
+        provider.release_aclose.set()
+        await wait_for_conversation_delivery(services, room.id, session.id)
+        runs = manager.list_runs(agent_id=agent.id)
+        assert len(runs) == 2 and all(r.status == RunStatus.SUCCEEDED for r in runs)
+        assert not manager.holds_agent_slot(first.run_id)
+    finally:
+        provider.emit_terminal.set()
+        provider.release_aclose.set()
+        await services.shutdown()
+        services.close()
 from backend.agents import AgentEvent, AgentEventType
 import contextvars
 
@@ -102,6 +142,7 @@ async def test_cleanup_pending_is_durable_and_retry_joins_same_stop(tmp_path):
         record = manager.get_run(run.run_id)
         assert record.status == RunStatus.CANCELLED
         assert record.lifecycle['cleanup'] == 'pending'
+        assert manager.holds_agent_slot(run.run_id)
         provider.release_stop.set()
         await manager._cleanup_tasks[run.run_id]
         assert manager.get_run(run.run_id).lifecycle['cleanup_reason'] is None
@@ -110,6 +151,33 @@ async def test_cleanup_pending_is_durable_and_retry_joins_same_stop(tmp_path):
         assert record.lifecycle['cleanup'] == 'complete'
         assert provider.stopped_run_ids == [run.run_id]
     finally:
+        services.close()
+
+
+@pytest.mark.asyncio
+async def test_terminal_stream_cleanup_timeout_blocks_admission_until_stop(tmp_path):
+    provider = TerminalAcloseProvider()
+    services = _services(tmp_path, provider)
+    try:
+        manager = services.run_manager
+        manager.cleanup_timeout_seconds = .03
+        agent = await services.create_card(CardCreate(type='agent'))
+        run = await manager.start_run(agent.id, 'finish then stall cleanup')
+        provider.emit_terminal.set()
+        await asyncio.wait_for(manager.wait_execution(run.run_id), 2)
+        record = manager.get_run(run.run_id)
+        assert record.status == RunStatus.SUCCEEDED  # Preserve the result.
+        assert record.lifecycle['cleanup'] == 'failed'
+        assert 'TimeoutError' in record.lifecycle['cleanup_reason']
+        assert manager.holds_agent_slot(run.run_id)
+        with pytest.raises(RuntimeUnavailableError, match='cleanup'):
+            manager.assert_can_start(agent.id)
+        await manager.cancel_run(run.run_id)
+        assert not manager.holds_agent_slot(run.run_id)
+        manager.assert_can_start(agent.id)
+    finally:
+        provider.release_aclose.set()
+        await services.shutdown()
         services.close()
 
 

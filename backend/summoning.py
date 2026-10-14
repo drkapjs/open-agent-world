@@ -409,12 +409,13 @@ class SummoningService:
         records = [self.find_instance(node_id, key, capability) for key in ids]
         manager = self.services.run_manager
         pending = [record for record in records if record["attempts"] and
-                   manager.get_run(record["attempts"][-1]["run_id"]).status not in TERMINAL_RUN_STATUSES]
+                   (manager.get_run(record["attempts"][-1]["run_id"]).status not in TERMINAL_RUN_STATUSES
+                    or manager.execution_in_progress(record["attempts"][-1]["run_id"]))]
         already_done = len(pending) != len(records)
         waiters = []
         try:
             if pending and request.timeout_seconds and not (request.wait_mode == "any" and already_done):
-                waiters = [asyncio.create_task(manager.wait_terminal(r["attempts"][-1]["run_id"])) for r in pending]
+                waiters = [asyncio.create_task(manager.wait_settled(r["attempts"][-1]["run_id"])) for r in pending]
                 await asyncio.wait(waiters, timeout=request.timeout_seconds,
                     return_when=asyncio.FIRST_COMPLETED if request.wait_mode == "any" else asyncio.ALL_COMPLETED)
         finally:
@@ -427,7 +428,8 @@ class SummoningService:
         self.authorize(node_id, capability)
         results = [self.view(self.find_instance(node_id, key, capability)) for key in ids]
         return {"instances": results, "pending_instance_ids": [r["id"] for r in results
-            if r["status"] not in {"succeeded", "failed", "cancelled", "interrupted", "reclaimed", "ready"}]}
+            if r["status"] not in {"succeeded", "failed", "cancelled", "interrupted", "reclaimed", "ready"}
+            or (r['run_id'] and manager.execution_in_progress(r['run_id']))]}
 
     def find_instance(self, node_id, instance_id, capability):
         record = next((r for r in self.records() if r["id"] == instance_id and r["library_id"] == node_id), None)

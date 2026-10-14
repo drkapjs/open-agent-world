@@ -78,6 +78,13 @@ class RuntimeProvider(ABC):
         context: InvocationContext,
         runtime_input: RuntimeInput,
     ) -> AsyncIterator[AgentEvent]:
+        """Emit result events; release execution resources when the stream closes.
+
+        A terminal event records an outcome, not reusable Agent capacity. The
+        host joins stream closure before admitting a replacement. Cleanup must
+        be bounded, and ``stop`` must be idempotent and able to retry failed
+        cleanup. Explicit suspension retains its declared capacity policy.
+        """
         pass
 
     @abstractmethod

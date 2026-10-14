@@ -2677,7 +2677,7 @@ class ApplicationServices:
                 # Follow-ups belong to the current session's Run even if this
                 # Agent has spare slots for other sessions. Providers pull them
                 # at a model boundary; unsupported providers retain the queue.
-                if any(run.status not in TERMINAL_RUN_STATUSES
+                if any((run.status not in TERMINAL_RUN_STATUSES or manager.execution_in_progress(run.run_id))
                        and manager._conversation_scope(run) == (conversation_id, session_id)
                        for run in manager.list_runs(agent_id=agent_id)):
                     raise RuntimeUnavailableError('Conversation session is already running')
@@ -2686,7 +2686,7 @@ class ApplicationServices:
                 runs = manager.list_runs(agent_id=agent_id)
                 active = [
                     run for run in runs
-                    if run.status not in TERMINAL_RUN_STATUSES
+                    if run.status not in TERMINAL_RUN_STATUSES or manager.execution_in_progress(run.run_id)
                 ]
                 cleanup_blockers = [
                     run for run in runs
@@ -2762,7 +2762,7 @@ class ApplicationServices:
     ) -> None:
         manager = self._require_run_manager()
         waiters = [
-            asyncio.create_task(manager.wait_terminal(run_id))
+            asyncio.create_task(manager.wait_settled(run_id))
             for run_id in run_ids
         ]
         try:
