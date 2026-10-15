@@ -1,4 +1,40 @@
 {
+  "All": ["All","全部"],
+  "All providers": ["All providers","全部提供方"],
+  "Background jobs from connected Agents appear here automatically.": ["Background jobs from connected Agents appear here automatically.","已连接 Agent 的后台作业会自动显示在这里。"],
+  "Cancel external job": ["Cancel external job","取消外部作业"],
+  "Connect an Agent": ["Connect an Agent","连接 Agent"],
+  "Details": ["Details","详情"],
+  "Filter jobs": ["Filter jobs","筛选作业"],
+  "Finished": ["Finished","已结束"],
+  "Hide job details": ["Hide job details","收起作业详情"],
+  "Job ID": ["Job ID","作业 ID"],
+  "Job provider": ["Job provider","作业提供方"],
+  "Jobs": ["Jobs","作业"],
+  "Jobs are available in the editor workspace.": ["Jobs are available in the editor workspace.","请在编辑器工作区查看作业。"],
+  "Keep running": ["Keep running","继续运行"],
+  "Last observed": ["Last observed","最近观测"],
+  "Loading jobs…": ["Loading jobs…","正在加载作业…"],
+  "Manage jobs": ["Manage jobs","管理作业"],
+  "Monitoring detached": ["Monitoring detached","已解除监控"],
+  "Monitoring paused": ["Monitoring paused","监控已暂停"],
+  "No jobs in this session": ["No jobs in this session","当前会话暂无作业"],
+  "No matching jobs": ["No matching jobs","没有匹配的作业"],
+  "Not observed yet": ["Not observed yet","尚未观测"],
+  "Observe jobs": ["Observe jobs","查看作业"],
+  "Pause monitoring": ["Pause monitoring","暂停监控"],
+  "Pause monitoring; external work continues.": ["Pause monitoring; external work continues.","暂停监控；外部作业会继续运行。"],
+  "Refresh job status": ["Refresh job status","刷新作业状态"],
+  "Refresh jobs": ["Refresh jobs","刷新作业"],
+  "Request cancellation of this external job? Its status changes only after provider confirmation.": ["Request cancellation of this external job? Its status changes only after provider confirmation.","请求取消此外部作业？只有提供方确认后，才会更新取消状态。"],
+  "Resume monitoring": ["Resume monitoring","恢复监控"],
+  "Search jobs": ["Search jobs","搜索作业"],
+  "Show job details": ["Show job details","展开作业详情"],
+  "Source run": ["Source run","来源 Run"],
+  "Submitted": ["Submitted","已提交"],
+  "Submitting": ["Submitting","正在提交"],
+  "Succeeded": ["Succeeded","已成功"],
+  "Use Observe jobs to view its work, or Manage jobs to enable controls.": ["Use Observe jobs to view its work, or Manage jobs to enable controls.","通过“查看作业”连接查看状态，或通过“管理作业”连接启用操作。"],
   "Work log": ["Work log", "执行过程"],
   "Elapsed time": ["Elapsed time", "运行时间"],
   "{seconds}s": ["{seconds}s", "{seconds} 秒"],
@@ -3269,6 +3305,22 @@
   "Ready": [
     "Ready",
     "就绪"
+  ],
+  "Ready on demand": [
+    "Ready on demand",
+    "按需就绪"
+  ],
+  "Enabled on execution": [
+    "Enabled on execution",
+    "执行时启用"
+  ],
+  "Save or reset settings before running commands.": [
+    "Save or reset settings before running commands.",
+    "请先保存或重置设置，再执行命令。"
+  ],
+  "Execution environment unavailable.": [
+    "Execution environment unavailable.",
+    "执行环境不可用。"
   ],
   "Ready for a command.": [
     "Ready for a command.",

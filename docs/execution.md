@@ -171,6 +171,15 @@ it does not stop the external job or its charges.
 
 The backend must be running to check or deliver notifications. Closing it pauses
 local observation; remote compute can continue and checking resumes at startup.
+Startup schedules an immediate check for active jobs instead of retaining a
+previous process's retry delay. Providers using Sandbox commands restore a
+stopped Sandbox only through the owning Agent's current `sandbox.start` grant;
+execute-only access still requires the Sandbox to be running. Paused monitors
+and stopped Agent turns remain paused. An unavailable Sandbox is reported in
+the job's observation error without changing the remote computation state.
+Ordinary commands and managed Python installation use the same on-demand
+preparation. The Sandbox UI accepts commands without a separate Start action;
+Stop remains available for active work, recovery, and editing locked settings.
 There is no OS wake service. `core.sandbox-operation` can attach to an already
 admitted operation, but local Sandbox processes remain interrupted after host
 restart. This release is a single-host monitor, not a multi-worker distributed

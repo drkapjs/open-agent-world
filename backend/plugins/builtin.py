@@ -1133,6 +1133,8 @@ class CorePlugin:
         register_file_preview(registration)
         from backend.execution_graph import register as register_execution_graph
         register_execution_graph(registration)
+        from backend.job_board import register as register_job_board
+        register_job_board(registration)
         registration.register_pack(PackDefinition(id='open-agent-world.core.default', name='Core essentials',
             description='Agents, resources and workspaces for your world.', cards=tuple(registration.nodes), packaging='collector'))
 

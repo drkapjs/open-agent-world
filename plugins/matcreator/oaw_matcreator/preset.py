@@ -33,7 +33,7 @@ def initial_knowledge():
 def native_definition():
     """Native orchestration with the same connected research surfaces."""
     layout = {"version": 2, "hidden_sections": [], "root": split("horizontal", .18,
-        pane("execution"),
+        split("vertical", .6, pane("execution"), pane("jobs")),
         split("horizontal", .76,
             tabs(view("conversation", "conversation"), view("knowledge"), view("structure"),
                  view("sandbox", "preview"), view("artifacts"), view("sandbox")),
@@ -45,7 +45,8 @@ def native_definition():
         PresetNode(key="conversation", type="conversation", name="Research conversation", x=850, y=450),
         PresetNode(key="sandbox", type="sandbox", name="Research files & compute", x=1990, y=450, config={"network_enabled": True}),
         PresetNode(key="execution", type="core.execution-graph", name="Agent graph", x=220, y=1200),
-        PresetNode(key="artifacts", type="core.artifact-collection", name="Research artifacts", x=220, y=1850),
+        PresetNode(key="jobs", type="core.jobs", name="Research jobs", x=220, y=1850),
+        PresetNode(key="artifacts", type="core.artifact-collection", name="Research artifacts", x=220, y=2500),
         PresetNode(key="structure", type="science.structure-viewer", name="Structure viewer", x=600, y=1200),
         PresetNode(key="knowledge", type="matcreator.kdg", name="Skills & knowledge", x=1100, y=1200, initial_document=initial_knowledge()),
     )
@@ -53,7 +54,8 @@ def native_definition():
         ("conversation", "participate"), ("sandbox", "execute_manage"),
         ("knowledge", "matcreator.kdg.learn"), ("artifacts", "artifact.manage"))]
     edges.append(PresetEdge(source="execution", target="agent", relationship="core.execution-source"))
+    edges.append(PresetEdge(source="jobs", target="agent", relationship="core.jobs-manage"))
     edges.extend(PresetEdge(source="structure", target=target, relationship="core.file-preview") for target in ("conversation", "sandbox"))
-    return LegionPresetDefinition(id="matcreator.native-research", name="MatCreator native research", revision=2,
+    return LegionPresetDefinition(id="matcreator.native-research", name="MatCreator native research", revision=3,
         description="MatCreator devel planner, execution orchestrator and recursive subagents, with connected OAW tools and views.",
         nodes=nodes, edges=tuple(edges))

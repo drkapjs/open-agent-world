@@ -2974,6 +2974,14 @@ class ApplicationServices:
                 self.capabilities.capability_for_id(agent_id, f"sandbox.start:{sandbox_id}")
             return await self._start_sandbox_locked(sandbox_id)
 
+    async def ensure_sandbox_running(self, sandbox_id: str, *, agent_id: str | None = None) -> Any:
+        """Prepare execution on demand using the caller's live lifecycle grant."""
+        from backend.sandbox.models import SandboxState
+        info = await self.get_sandbox(sandbox_id)
+        if info.state is SandboxState.STOPPED:
+            return await self.start_sandbox(sandbox_id, agent_id=agent_id)
+        return info
+
     async def _start_sandbox_locked(self, sandbox_id: str) -> Any:
         from backend.sandbox.models import SandboxState
         self._require_card_type(sandbox_id, CardType.SANDBOX)
@@ -3043,6 +3051,7 @@ class ApplicationServices:
                 raise SandboxValidationError("provide exactly one of command or argv")
             from backend.sandbox.commands import require_noninteractive
             require_noninteractive(argv if _skill_request is None else None, command)
+            await self.ensure_sandbox_running(sandbox_id, agent_id=agent_id)
             if command is not None:
                 info = await backend.get(sandbox_id)
                 if not info.shell:
@@ -3245,6 +3254,9 @@ class ApplicationServices:
         backend = self._require_sandbox_backend()
         if not isinstance(backend, SandboxManager):
             raise SandboxValidationError("Managed Python installation is unavailable on this backend")
+        await self.ensure_sandbox_running(sandbox_id, agent_id=agent_id)
+        if agent_id is not None:
+            self.capabilities.require_sandbox_execute(agent_id, sandbox_id)
         return await backend.install_python_packages(sandbox_id, requirements)
 
     async def publish_sandbox_event(self, event: SandboxEvent) -> None:

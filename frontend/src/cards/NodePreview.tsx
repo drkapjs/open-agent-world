@@ -1,4 +1,5 @@
 import { ExecutionGraphCard } from './ExecutionGraph';
+import { JobsCard } from './Jobs';
 import { isMissingCard, MissingPlugin } from "./MissingPlugin";
 import { t, useLocale } from "../i18n";
 import { Bot, FileText, Image as ImageIcon, MessagesSquare, ShieldCheck } from "lucide-react";
@@ -34,6 +35,7 @@ function DefaultNodePreview({ card }: { card: WorldCard }) {
   const catalog = useWorldStore((state) => state.catalog);
   const modelCatalog = useWorldStore((state) => state.modelCatalog);
   if (card.type === "core.execution-graph") return <div data-material-layer="top-print" style={{height: "100%"}}><ExecutionGraphCard card={card} /></div>;
+  if (card.type === 'core.jobs') return <div data-material-layer="top-print" style={{ height: '100%' }}><JobsCard card={card} /></div>;
   if (card.type === MINISTER_ROLE_CARD) return <div data-material-layer="top-print"><MinisterRoleCardPreview /></div>;
 
 

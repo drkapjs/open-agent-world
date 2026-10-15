@@ -142,7 +142,7 @@ export function SandboxWorkspace({ card }: { card: WorldCard }) {
   const activeCommands = history.filter(h => h.state === "running");
   const running = activeCommands.length === 1 ? activeCommands[0] : undefined;
   const occupied = !!busy || !!running || card.status === "running" || diagnosticBusy;
-  const ready = (info?.state === "ready" || info?.state === "running") && !busy && !diagnosticBusy;
+  const ready = !!info?.available && info.state !== "error" && !busy && !diagnosticBusy && !settingsDirty;
   const output = Array.isArray(card.config.output) && card.config.output.length
     ? card.config.output.map(String).slice(-250).join("\n")
     : history.map(h => [`$ ${h.argv.at(-1) ?? h.argv.join(" ")}`, h.stdout, h.stderr, h.error].filter(Boolean).join("\n")).join("\n");
@@ -422,7 +422,7 @@ export function SandboxWorkspace({ card }: { card: WorldCard }) {
               onScroll={e => { const el = e.currentTarget; followOutput.current = el.scrollHeight - el.scrollTop - el.clientHeight < 32; }}
               onClick={() => { if (!window.getSelection()?.toString()) terminalInput.current?.focus(); }}>
               <div role="log" aria-live="polite" aria-label={t("Command output")}>
-                {output ? <pre>{output}</pre> : <span>{ready ? t("Ready for a command.") : occupied ? t("Command running?") : t("Start the sandbox to run commands.")}</span>}
+                {output ? <pre>{output}</pre> : <span>{ready ? t("Ready for a command.") : occupied ? t("Command running?") : settingsDirty ? t("Save or reset settings before running commands.") : t("Execution environment unavailable.")}</span>}
               </div>
               <form className="sandbox-command-form" onSubmit={e => { e.preventDefault(); void run(); }}>
                 <span className="sandbox-prompt" aria-hidden="true">$</span>

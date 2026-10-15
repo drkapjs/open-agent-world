@@ -18,14 +18,18 @@ def deploy(client):
 def test_native_preset_is_the_only_research_legion_and_deploys_without_upstream(client):
     presets = {p['id']: p for p in client.get('/api/legions/presets').json()}
     assert 'matcreator.research' not in presets
-    assert presets['matcreator.native-research']['revision'] == 2
+    assert presets['matcreator.native-research']['revision'] == 3
     catalog = client.get('/api/catalog').json()
     assert 'matcreator.tasks' not in {node['id'] for node in catalog['node_types']}
     assert presets['matcreator.native-research']['compatible']
     instance = deploy(client)
     ids = instance['node_ids']
     nodes = {n['id']: n for n in instance['nodes']}
-    assert set(ids) == {'group', 'agent', 'conversation', 'sandbox', 'knowledge', 'structure', 'artifacts', 'execution'}
+    assert set(ids) == {'group', 'agent', 'conversation', 'sandbox', 'knowledge', 'structure', 'artifacts', 'execution', 'jobs'}
+    assert nodes[ids['jobs']]['type'] == 'core.jobs'
+    assert nodes[ids['jobs']]['state_scope'] == 'session'
+    assert any(edge['source'] == ids['jobs'] and edge['target'] == ids['agent']
+               and edge['relationship'] == 'core.jobs-manage' for edge in instance['edges'])
     agent = nodes[ids['agent']]
     assert agent['type'] == 'matcreator.agent'
     assert agent['config']['runtime_provider_id'] == 'matcreator.native'

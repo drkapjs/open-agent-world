@@ -1,4 +1,5 @@
 import { cardStateSession, stateSessionHeaders } from "../state/cardState";
+import type { BackgroundJob, JobAction, JobsSnapshot } from '../cards/jobTypes';
 import { normalizeCardFinish } from '../cards/cardFinish';
 import { fetchWithRetry } from './fetchWithRetry';
 import type { SummoningSnapshot, SummonedInstance } from "../cards/Barracks";
@@ -305,6 +306,14 @@ function unwrap<T>(input: unknown, key: string): T {
 }
 
 export const worldApi = {
+  backgroundJobs(id: string, sessionId: string | null): Promise<JobsSnapshot> {
+    return request(`/nodes/${encodeURIComponent(id)}/jobs`, { headers: stateSessionHeaders(sessionId) });
+  },
+  controlBackgroundJob(id: string, jobId: string, action: JobAction, revision: number, sessionId: string | null): Promise<BackgroundJob> {
+    return request(`/nodes/${encodeURIComponent(id)}/jobs/${encodeURIComponent(jobId)}/actions`, {
+      method: 'POST', headers: stateSessionHeaders(sessionId), body: JSON.stringify({ action, revision }),
+    });
+  },
   factory<T>(nodeId: string, action: string, body?: unknown): Promise<T> {
     return request(`/packs/factory/${encodeURIComponent(nodeId)}/${action}`, {
       method: action === 'context' ? 'GET' : 'POST', headers: { 'X-OAW-Pack-Install': '1' },

@@ -272,6 +272,41 @@ async def test_failed_world_save_restores_native_binding(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_commands_prepare_sandbox_without_a_separate_start(tmp_path):
+    manager, backend = make_manager(tmp_path)
+    services = create_services(Settings.for_data_root(manager.root), sandbox_backend=manager)
+    try:
+        card = await services.create_card(CardCreate(type='sandbox'))
+        assert (await manager.get(card.id)).state == SandboxState.STOPPED
+        result = await services.execute_sandbox(card.id, command='echo first')
+        assert result.exit_code == 0 and len(backend.commands) == 1
+        await services.stop_sandbox(card.id)
+        result = await services.execute_sandbox(card.id, argv=['echo', 'second'])
+        assert result.exit_code == 0 and len(backend.commands) == 2
+        assert (await manager.get(card.id)).state == SandboxState.READY
+    finally:
+        await services.shutdown()
+        services.close()
+
+
+@pytest.mark.asyncio
+async def test_python_install_prepares_sandbox_without_a_separate_start(tmp_path, monkeypatch):
+    manager, backend = make_manager(tmp_path)
+    async def install(sandbox_id, requirements):
+        assert (await manager.get(sandbox_id)).state == SandboxState.READY
+        return {'requirements': requirements}
+    monkeypatch.setattr(manager, 'install_python_packages', install)
+    services = create_services(Settings.for_data_root(manager.root), sandbox_backend=manager)
+    try:
+        card = await services.create_card(CardCreate(type='sandbox'))
+        result = await services.install_python_packages(card.id, ['example'])
+        assert result['requirements'] == ['example']
+    finally:
+        await services.shutdown()
+        services.close()
+
+
+@pytest.mark.asyncio
 async def test_repeated_status_reads_do_not_reprobe_runtime_until_explicit_refresh(tmp_path):
     manager, _ = make_manager(tmp_path)
     calls = []

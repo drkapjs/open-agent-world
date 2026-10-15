@@ -1,4 +1,5 @@
 import { ExecutionGraphCard } from './ExecutionGraph';
+import { JobsCard } from './Jobs';
 import { isMissingCard, MissingPlugin } from "./MissingPlugin";
 import { CardLODView } from './CardLODView';
 import { useCardRenderLOD } from '../canvas/useCardRendering';
@@ -53,6 +54,7 @@ interface BodyProps { card: WorldCard; level: NodeSurfaceLevel }
 
 const BODIES: Partial<Record<CardType, ComponentType<BodyProps>>> = {
   'core.execution-graph': ExecutionGraphCard,
+  'core.jobs': JobsCard,
   agent: AgentCardBody,
   conversation: ConversationCardBody,
   text: TextCardBody,

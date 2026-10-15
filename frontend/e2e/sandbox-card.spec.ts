@@ -110,6 +110,7 @@ test("sandbox window keeps files, preview and terminal together with separate se
     if (path.endsWith("/start")) { state = "ready"; locked = true; return reply(info()); }
     if (path.endsWith("/stop")) { state = "stopped"; return reply(info()); }
     if (path.endsWith("/execute")) {
+      state = "ready"; locked = true;
       executions++;
       expect(route.request().postDataJSON()).toEqual({ command: "printf 'hello'" });
       receipts.push({ id: `manual-${executions}`, caller: "user", state: "finished", argv: ["/bin/sh", "-c", "printf 'hello'"], stdout: "hello", stderr: "", exit_code: 0, duration_seconds: 0.01 });
@@ -121,7 +122,7 @@ test("sandbox window keeps files, preview and terminal together with separate se
   await page.goto("/");
   const panel = page.locator(`[data-card-id="${card.id}"]`);
   await expect(panel).toHaveAttribute("data-surface-level", "workspace");
-  await expect(panel.getByRole("status")).toHaveText("Stopped");
+  await expect(panel.getByRole("status")).toHaveText("Ready on demand");
   await expect(panel.getByLabel("Working folder", { exact: true })).toBeHidden();
 
   const window = page.getByRole("dialog", { name: "Project workspace workspace" });
@@ -145,7 +146,7 @@ test("sandbox window keeps files, preview and terminal together with separate se
   })).toBe(true);
   await sidebar.getByRole("button", { name: "result.txt", exact: true }).click();
   await expect(preview.locator("pre")).toHaveText("hello");
-  await expect(window.getByLabel("Command", { exact: true })).not.toBeEditable();
+  await expect(window.getByLabel("Command", { exact: true })).toBeEditable();
   expect(executions).toBe(0);
 
   await window.getByRole("button", { name: /^Settings/ }).click();
@@ -154,7 +155,7 @@ test("sandbox window keeps files, preview and terminal together with separate se
   await expect(window.getByRole("button", { name: "Check execution environment" })).toBeHidden();
   await window.getByLabel("Working folder", { exact: true }).fill("D:\\projects\\demo");
   await window.getByLabel("Folder access").selectOption("read_only");
-  await expect(window.getByRole("button", { name: "Start", exact: true })).toBeDisabled();
+  await expect(window.getByRole("button", { name: "Start", exact: true })).toHaveCount(0);
   await window.getByRole("button", { name: "Save", exact: true }).click();
   await expect(window.getByRole("alert")).toHaveText("Working folder does not exist.");
   await expect(window.getByLabel("Working folder", { exact: true })).toHaveValue("D:\\projects\\demo");
@@ -165,21 +166,20 @@ test("sandbox window keeps files, preview and terminal together with separate se
   await expect(preview.locator("pre")).toHaveText("hello");
   await expect(terminal).toBeVisible();
   await expect(window.getByLabel("Command", { exact: true })).toHaveValue("");
-  await expect(window.getByRole("button", { name: "Start", exact: true })).toBeDisabled();
+  await expect(window.getByLabel("Command", { exact: true })).not.toBeEditable();
+  await expect(window.getByRole("button", { name: "Start", exact: true })).toHaveCount(0);
   await window.getByRole("button", { name: /^Settings/ }).click();
   await expect(window.getByLabel("Working folder", { exact: true })).toHaveValue("D:\\projects\\demo");
   rejectSave = false;
   await window.getByRole("button", { name: "Save", exact: true }).click();
   await expect(window.getByLabel("Working folder", { exact: true })).toBeDisabled();
-  await expect(window.getByRole("button", { name: "Start", exact: true })).toBeDisabled();
+  await expect(window.getByRole("button", { name: "Start", exact: true })).toHaveCount(0);
   await expect.poll(() => savedRequest).toEqual({ runtime: "auto", workspace_path: "D:\\projects\\demo", workspace_access: "read_only" });
   await expect.poll(() => typeof releaseSave).toBe("function");
   releaseSave!();
   await expect(window.getByText("Settings saved", { exact: true })).toBeVisible();
-  await window.getByRole("button", { name: "Start", exact: true }).click();
-  await expect(window.getByRole("status").filter({ hasText: "Ready" })).toBeVisible();
-  await expect(window.getByRole("combobox", { name: "Runtime", exact: true })).toBeDisabled();
-  await expect(window.getByLabel("Working folder", { exact: true })).toBeDisabled();
+  await expect(window.getByRole("status")).toHaveText("Ready on demand");
+  await expect(window.getByRole("combobox", { name: "Runtime", exact: true })).toBeEnabled();
   await window.locator("summary").filter({ hasText: /^Diagnostics$/ }).click();
   await window.getByRole("button", { name: "Check execution environment" }).click();
   await expect(window).toContainText("python3: available");

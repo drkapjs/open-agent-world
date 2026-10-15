@@ -14,6 +14,7 @@ from backend.agents import ScopedToolDefinition
 from backend.errors import ConflictError, NotFoundError, PermissionDeniedError, ResourceValidationError, RuntimeUnavailableError, PluginUnavailableError
 from backend.plugins.background_jobs import JobAttach, JobControl, JobInspect, JobObservation, JobSubmit, JobWait
 from backend.runs.models import RunStatus, TERMINAL_RUN_STATUSES
+from backend.sandbox.models import SandboxStateError
 
 ACTIVE = {"submitting", "queued", "running"}
 TOOLS = {
@@ -39,6 +40,13 @@ class JobContext:
         return self.job["sandbox_id"]
 
     async def execute(self, argv, *, timeout_seconds=60):
+        self.service.authorize(self.job)
+        # Monitoring outlives its submitting Run and local runtime. Restore
+        # prerequisites through the owning Agent's authority, never as user.
+        try:
+            await self.service.services.ensure_sandbox_running(self.sandbox_id, agent_id=self.agent_id)
+        except PermissionDeniedError as error:
+            raise SandboxStateError("Background monitoring requires a running Sandbox or Start permission") from error
         self.service.authorize(self.job)
         result = await self.service.services.execute_sandbox(self.sandbox_id, argv,
             agent_id=self.agent_id, timeout_seconds=timeout_seconds)
@@ -268,16 +276,29 @@ class BackgroundJobs:
 
     async def control(self, agent_id, request):
         job = self.owned(agent_id, request.job_id)
+        return await self.control_record(job, request,
+            resume_run_id=self.current(agent_id).run_id,
+            reauthorize=lambda: self.owned(agent_id, request.job_id))
+
+    async def control_record(self, job, request, *, resume_run_id=None, reauthorize=None):
+        """Shared controls; callers establish either Run or connected board authority."""
+        self.authorize(job)
+        if reauthorize:
+            reauthorize()
         if request.action == "cancel":
             provider = self.services.plugins.background_job_provider(job["provider"])
             if provider.cancel is None or not job["external_id"]:
                 raise ResourceValidationError("Provider cannot cancel this job; inspect its external identity")
-            self.update(job["id"], paused=True, wake_requested=False, detail="External cancellation requested; termination unconfirmed.")
+            job = self.update(job["id"], paused=True, wake_requested=False, detail="External cancellation requested; termination unconfirmed.")
             async with asyncio.timeout(90):
                 await provider.cancel(JobContext(self, job), job["external_id"])
+                if reauthorize:
+                    reauthorize()
                 observation = JobObservation.model_validate(await provider.inspect(JobContext(self, job), job["external_id"]))
             self.authorize(job)
-            job = self.update(job["id"], **observation.model_dump(), last_observed_at=time.time())
+            if reauthorize:
+                reauthorize()
+            job = self.update(job["id"], expected_revision=job['revision'], **observation.model_dump(), last_observed_at=time.time())
         elif request.action == "acknowledge":
             job = self.update(job["id"], wake_requested=False)
         elif request.action == "detach":
@@ -287,7 +308,12 @@ class BackgroundJobs:
             paused = request.action == "pause"
             changes = {"paused": paused}
             if not paused:
-                changes.update(wake_run_id=self.current(agent_id).run_id, wake_requested=True, notification_run_id=None, next_check_at=0, tracking_released=False)
+                changes.update(next_check_at=0, tracking_released=False)
+                if resume_run_id:
+                    changes.update(wake_run_id=resume_run_id, wake_requested=True, notification_run_id=None, monitor_after_stop=False)
+                elif self.stopped(job):
+                    # A user may monitor surviving compute without reviving a stopped Agent turn.
+                    changes.update(monitor_after_stop=True, wake_requested=False)
             job = self.update(job["id"], **changes)
         self.services.node_execution.signal_continuations()
         return self.public(job)
@@ -316,7 +342,7 @@ class BackgroundJobs:
                 continue
             try:
                 self.authorize(job)
-                if self.stopped(job):
+                if self.stopped(job) and not job.get('monitor_after_stop'):
                     self.update(job["id"], paused=True, wake_requested=False, detail="Automatic monitoring stopped; external termination is unconfirmed.")
                     continue
             except (PermissionDeniedError, NotFoundError, RuntimeUnavailableError, PluginUnavailableError):
@@ -344,8 +370,12 @@ class BackgroundJobs:
             raise
         except Exception as error:
             failures = job["failures"] + 1
+            detail = (
+                "Sandbox is unavailable for background checks. Start the connected Sandbox or grant the Agent Start permission."
+                if isinstance(error, SandboxStateError) else "status unavailable; existing work was not resubmitted."
+            )
             self.update(job["id"], expected_revision=job["revision"], failures=failures,
-                observation_error=f"{type(error).__name__}: status unavailable; existing work was not resubmitted.",
+                observation_error=f"{type(error).__name__}: {detail}",
                 next_check_at=time.time() + min(3600, interval * 2 ** min(failures, 8)))
         finally:
             self.services.node_execution.signal_continuations()
@@ -375,6 +405,10 @@ class BackgroundJobs:
 
     async def startup(self):
         for job in self.records():
+            if job["status"] in ACTIVE and not job["paused"]:
+                # A fresh host can restore local prerequisites. Do not retain
+                # an hour-long retry delay from the previous host process.
+                job = self.update(job["id"], next_check_at=0)
             if job["status"] == "submitting" and not job["external_id"]:
                 self.update(job["id"], status="unknown", detail="Host restarted during submission. Reconcile existing work; never replay.")
             if job["notification_run_id"]:

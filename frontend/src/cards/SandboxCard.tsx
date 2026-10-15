@@ -1,5 +1,5 @@
 import { t, useLocale } from "../i18n";
-import { CircleStop, Folder, Play, RefreshCw, Settings2, SquareArrowOutUpRight } from "lucide-react";
+import { CircleStop, Folder, RefreshCw, Settings2, SquareArrowOutUpRight } from "lucide-react";
 import { useEffect, useState } from "react";
 import { worldApi, apiErrorMessage } from "../api/client";
 import { useNodeSurfaceStore, type NodeSurfaceLevel, surfaceDraftKey, useSurfaceDraft } from "../state/nodeSurfaces";
@@ -29,14 +29,14 @@ function useSandboxRuntime(card: WorldCard) {
     : !info.available ? t("Runtime unavailable")
     : card.status === "error" ? t("Needs attention")
     : card.status === "ready" ? t("Ready")
-    : stopped ? t("Stopped")
+    : stopped ? t("Ready on demand")
     : card.status;
   const network = info ?? selectedRuntime;
   const enabled = info?.network_enabled ?? Boolean(card.config.network_enabled);
   const networkLabel = !enabled ? t("Disabled") : network?.network_status === "unsupported" ? t("Requested · unsupported")
     : network?.network_status === "setup_failed" ? t("Requested · setup failed")
     : !network?.network_available ? t("Requested · prerequisites unavailable")
-    : ready ? t("Enabled · runtime ready") : t("Requested · start to apply");
+    : ready ? t("Enabled · runtime ready") : t("Enabled on execution");
   const runtimeIssue = !info && selectedRuntime && !selectedRuntime.available ? selectedRuntime.reason : undefined;
   return {
     info, busy, selectedRuntime, network, networkLabel, ready, stopped, statusLabel,
@@ -51,21 +51,21 @@ export function SandboxRuntimeControls({ card, disabled = false, compact = false
   const startSandbox = useWorldStore((state) => state.startSandbox);
   const stopSandbox = useWorldStore((state) => state.stopSandbox);
   const { info, busy, selectedRuntime, network, ready, stopped, statusLabel, runtimeLabel } = useSandboxRuntime(card);
-  const canStop = ready || card.status === "error" || busy === "executing";
+  const canStop = card.status === "running" || card.status === "error" || busy === "executing";
   const enabled = info?.network_enabled ?? Boolean(card.config.network_enabled);
   const supported = (network?.supported_network_modes ?? selectedRuntime?.supported_network_modes)?.includes("enabled");
   const retry = enabled && supported && (!network?.network_available || network.network_status === "setup_failed");
   return <div className="sandbox-status-panel">
     {!compact && <div className="instrument-gauge" data-active={ready && info?.available === true} aria-hidden="true"><i /><i /><i /></div>}
     <div><span>{runtimeLabel}</span><strong role="status">{statusLabel}</strong></div>
-    <button type="button" className={canStop ? "secondary-button" : "primary-button"}
+    {(canStop || retry) && <button type="button" className="secondary-button"
       disabled={canStop ? !!busy && busy !== "executing"
         : disabled || !!busy || !info?.available || !stopped || (enabled && !supported)}
       title={!canStop && disabled ? t("Save or reset settings before starting") : undefined}
       onClick={() => void (canStop ? stopSandbox(card.id) : startSandbox(card.id))}>
-      {canStop ? <CircleStop size={14} /> : <Play size={14} fill="currentColor" />}
-      {canStop ? t("Stop") : retry ? t("Retry / Recheck") : t("Start")}
-    </button>
+      {canStop ? <CircleStop size={14} /> : <RefreshCw size={14} />}
+      {canStop ? t("Stop") : t("Retry / Recheck")}
+    </button>}
   </div>;
 }
 
@@ -120,6 +120,7 @@ export function SandboxSettings({ card, onDirtyChange, compact = false }: { card
   useLocale();
   const edges = useWorldStore((state) => state.edges);
   const saveConfig = useWorldStore((state) => state.saveSandboxConfig);
+  const stopSandbox = useWorldStore((state) => state.stopSandbox);
   const refreshSandbox = useWorldStore((state) => state.refreshSandbox);
   const loadRuntimes = useWorldStore((state) => state.loadSandboxRuntimes);
   const runtimes = useWorldStore((state) => state.sandboxRuntimes);
@@ -238,6 +239,8 @@ export function SandboxSettings({ card, onDirtyChange, compact = false }: { card
         </details>
         <div className="sandbox-config-actions">
           <span>{busy === "saving" ? t("Saving…") : dirty ? t("Unsaved changes") : stopped ? t("Settings saved") : t("Stop to edit settings")}</span>
+          {!stopped && <button type="button" className="secondary-button" disabled={!!busy && busy !== "executing"}
+            onClick={() => void stopSandbox(card.id)}>{t("Stop to edit settings")}</button>}
           <button type="button" className="secondary-button" disabled={!canConfigure || !dirty} onClick={() => {
             useNodeSurfaceStore.getState().setDraft(draftKey, "");
           }}>{t("Reset")}</button>

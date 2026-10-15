@@ -14,6 +14,24 @@ Place cards from the bottom tray. Move and resize them to organize your work; op
 
 Plugins add more cards, such as task boards and specialized viewers.
 
+## Track background jobs
+
+Place **Jobs** from the Core essentials pack, then connect it to an Agent using
+**Observe jobs** or **Manage jobs**. The board displays that Agent's tracked jobs
+in the selected Conversation session, with filters, provider identities and
+expandable details. It works with any registered background-job provider,
+including MatCreator cloud jobs and tracked Sandbox operations.
+
+**Manage jobs** enables the controls supported by each provider. Pausing monitoring
+leaves external work running. Cancelling requests external termination; the board
+shows cancellation only when the provider confirms it. Resuming monitoring after
+stopping an Agent does not restart its stopped turn. Success records the provider's
+execution outcome; inspect the outputs before accepting a scientific result.
+
+New MatCreator native research formations include this card beneath the Agent
+graph. Existing formations retain their saved layout; add and connect a Jobs card
+to include the board. The board is currently available in editor workspaces.
+
 ## Connections give access
 
 Drag between cards and choose one of the supported relationships. Read the relationship's description before selecting it.

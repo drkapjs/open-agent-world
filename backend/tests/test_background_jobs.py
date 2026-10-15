@@ -422,3 +422,108 @@ async def test_revocation_during_probe_cannot_publish_completion(research, monke
     followup = await services.run_manager.start_run(ids["agent"], "Inspect authorized work")
     await services.run_manager.wait_execution(followup.run_id)
     assert not runtime.errors
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('manage,ready', [(True, False), (False, False), (False, True)])
+async def test_monitor_restores_sandbox_only_with_live_start_permission(research, monkeypatch, tmp_path, manage, ready):
+    from backend.tests.test_sandbox_manager import RecordingBackend
+    from backend.sandbox.models import SandboxState
+    from backend.world.models import EdgeCreate
+
+    services, ids, runtime, compute, invoke, request = setup(research)
+    sandbox = RecordingBackend(tmp_path / 'monitor-sandbox')
+    await sandbox.create(ids['sandbox'])
+    monkeypatch.setattr(services, 'sandbox_backend', sandbox)
+    if ready:
+        await services.start_sandbox(ids['sandbox'])
+    if not manage:
+        edge = next(e for e in services.world.list_edges() if e.source == ids['agent'] and e.target == ids['sandbox'])
+        await services.delete_edge(edge.id)
+        await services.create_edge(EdgeCreate(source=ids['agent'], target=ids['sandbox'], relationship='execute'))
+
+    definition = services.plugins.background_job_provider('test.compute')
+    async def inspect(context, external_id):
+        result = await context.execute(['inspect-existing-job', external_id])
+        assert result['exit_code'] == 0
+        return JobObservation(status='succeeded')
+    monkeypatch.setitem(services.plugins._background_job_providers, 'test.compute', replace(definition, inspect=inspect))
+    captured = {}
+    async def script(context):
+        if context.caller.kind != 'delegation':
+            captured.update(await invoke('submit_background_job', **request))
+            await invoke('wait_background_jobs', job_ids=[captured['id']])
+    runtime.script = script
+    root = await services.run_manager.start_run(ids['agent'], 'Submit')
+    await services.run_manager.wait_execution(root.run_id)
+    await services.background_jobs.tick()
+    await asyncio.gather(*services.background_jobs.probes.values())
+    job = services.background_jobs.get(captured['id'])
+    assert compute.submissions == 1 and not runtime.errors
+    if manage or ready:
+        assert job['status'] == 'succeeded' and job['observation_error'] is None
+        assert (await sandbox.get(ids['sandbox'])).state == SandboxState.READY
+        assert sandbox.commands == [['inspect-existing-job', 'remote-123']]
+        await services.background_jobs.tick()
+        await until(lambda: len(runtime.contexts) == 2)
+        await services.run_manager.wait_execution(runtime.contexts[-1].run_id)
+        await services.background_jobs.tick()
+        assert len(runtime.contexts) == 2 and compute.submissions == 1
+    else:
+        assert job['status'] == 'queued' and job['failures'] == 1
+        assert 'Start permission' in job['observation_error']
+        assert (await sandbox.get(ids['sandbox'])).state == SandboxState.STOPPED
+        assert not sandbox.commands and len(runtime.contexts) == 1
+
+
+@pytest.mark.asyncio
+async def test_monitor_reauthorizes_after_start_before_inspection(research, monkeypatch, tmp_path):
+    from backend.tests.test_sandbox_manager import RecordingBackend
+
+    services, ids, runtime, compute, invoke, request = setup(research)
+    sandbox = RecordingBackend(tmp_path / 'monitor-sandbox')
+    await sandbox.create(ids['sandbox'])
+    monkeypatch.setattr(services, 'sandbox_backend', sandbox)
+    start = services.start_sandbox
+    async def start_then_revoke(self, sandbox_id, *, agent_id):
+        result = await start(sandbox_id, agent_id=agent_id)
+        edge = next(e for e in services.world.list_edges() if e.source == agent_id and e.target == sandbox_id)
+        await services.delete_edge(edge.id)
+        return result
+    monkeypatch.setattr(type(services), 'start_sandbox', start_then_revoke)
+    definition = services.plugins.background_job_provider('test.compute')
+    async def inspect(context, external_id):
+        await context.execute(['inspect-existing-job', external_id])
+        return JobObservation(status='succeeded')
+    monkeypatch.setitem(services.plugins._background_job_providers, 'test.compute', replace(definition, inspect=inspect))
+    captured = {}
+    async def script(context):
+        captured.update(await invoke('submit_background_job', **request))
+    runtime.script = script
+    root = await services.run_manager.start_run(ids['agent'], 'Submit')
+    await services.run_manager.wait_execution(root.run_id)
+    await services.background_jobs.tick()
+    await asyncio.gather(*services.background_jobs.probes.values())
+    await services.background_jobs.tick()
+    job = services.background_jobs.get(captured['id'])
+    assert not sandbox.commands and job['paused'] and job['status'] == 'queued'
+    assert len(runtime.contexts) == 1 and compute.submissions == 1
+
+
+@pytest.mark.asyncio
+async def test_startup_rechecks_active_jobs_without_losing_user_pause(research):
+    services, ids, runtime, compute, invoke, request = setup(research)
+    captured = []
+    async def script(context):
+        for key in ('active', 'paused'):
+            captured.append(await invoke('submit_background_job', **{**request, 'request_key': key}))
+    runtime.script = script
+    root = await services.run_manager.start_run(ids['agent'], 'Submit')
+    await services.run_manager.wait_execution(root.run_id)
+    for index, job in enumerate(captured):
+        services.background_jobs.update(job['id'], paused=bool(index), next_check_at=10**15, failures=18)
+    await services.background_jobs.startup()
+    active, paused = [services.background_jobs.get(job['id']) for job in captured]
+    assert active['next_check_at'] == 0 and active['failures'] == 18
+    assert paused['paused'] and paused['next_check_at'] == 10**15
+    assert compute.submissions == 2 and not runtime.errors

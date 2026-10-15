@@ -1,4 +1,5 @@
 import { ExecutionGraphCard } from './ExecutionGraph';
+import { JobsCard } from './Jobs';
 import { isMissingCard, MissingPlugin } from "./MissingPlugin";
 import { useWorkspaceAccess } from '../workspace/WorkspaceAccess';
 import { t, useLocale } from "../i18n";
@@ -182,6 +183,7 @@ export function WorkspaceContent({ card }: WorkspaceSurfaceProps) {
         </>
         : catalog.node_types.find((definition) => definition.id === card.type)?.traits.includes("ui.agent-barracks.v1") ? <BarracksBody card={card} workspace />
         : card.type === "core.execution-graph" ? <ExecutionGraphCard card={card} />
+        : card.type === 'core.jobs' ? <JobsCard card={card} />
         : card.type === "sandbox" ? <SandboxWorkspace card={card} />
         : card.type === "core.artifact-collection" ? <ArtifactCollection card={card} />
         : card.type === "conversation" ? <ConversationWorkspace card={card} />

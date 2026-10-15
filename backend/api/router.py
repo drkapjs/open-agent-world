@@ -27,6 +27,7 @@ from backend.api.knowledge_bridge import router as knowledge_bridge_router
 from backend.api.card_library import router as card_library_router
 from backend.api.card_state import router as card_state_router
 from backend.api.file_preview import router as file_preview_router
+from backend.api.job_board import router as job_board_router
 from backend.plugins import PluginCatalog
 from backend.services import ApplicationServices
 
@@ -47,6 +48,7 @@ async def plugin_catalog(
 
 
 api_router.include_router(world_router)
+api_router.include_router(job_board_router)
 api_router.include_router(ministers_router)
 api_router.include_router(file_preview_router)
 api_router.include_router(card_library_router)

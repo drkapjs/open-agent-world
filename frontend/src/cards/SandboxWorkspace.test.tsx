@@ -442,6 +442,28 @@ describe("Sandbox workspace interaction", () => {
     expect((command as HTMLTextAreaElement).value).toBe("unfinished");
   });
 
+  it("accepts a command while stopped and blocks execution with unsaved settings", async () => {
+    const stopped = { ...info, state: 'stopped' };
+    useWorldStore.setState({ cards: [{ ...card, status: 'stopped' }], sandboxInfo: { [card.id]: stopped } });
+    vi.mocked(worldApi.getSandbox).mockResolvedValue(stopped);
+    const start = vi.spyOn(worldApi, 'startSandbox');
+    const execute = vi.spyOn(worldApi, 'executeSandbox').mockResolvedValue({ stdout: 'done', stderr: '', exit_code: 0 });
+    render(<Workspace />);
+    await screen.findByRole('button', { name: 'first.txt' });
+    const command = screen.getByRole('textbox', { name: 'Command' }) as HTMLTextAreaElement;
+    expect(command.readOnly).toBe(false);
+    expect(screen.queryByRole('button', { name: 'Start' })).toBeNull();
+    fireEvent.change(command, { target: { value: 'echo first' } });
+    act(() => useNodeSurfaceStore.getState().setDraft(`sandbox-settings:${card.id}`, JSON.stringify({ workspace: 'D:\\unsaved' })));
+    expect(command.readOnly).toBe(true);
+    fireEvent.keyDown(command, { key: 'Enter' });
+    expect(execute).not.toHaveBeenCalled();
+    act(() => useNodeSurfaceStore.getState().setDraft(`sandbox-settings:${card.id}`, ''));
+    fireEvent.keyDown(command, { key: 'Enter' });
+    await waitFor(() => expect(execute).toHaveBeenCalledWith(card.id, 'echo first'));
+    expect(start).not.toHaveBeenCalled();
+  });
+
   it("refreshes files after starting and rebinding the workspace without a socket event", async () => {
     const stopped = { ...info, state: "stopped", runtime_locked: false };
     useWorldStore.setState({ cards: [{ ...card, status: "stopped" }], sandboxInfo: { [card.id]: stopped } });
