@@ -47,7 +47,22 @@ def test_internal_tool_failure_does_not_publish_its_raw_report():
     emitted = list(public_events(event))
     assert emitted == [{"type": "event", "event": "tool_completed", "payload": {
         "author": "execution_orchestrator", "subagent": False, "name": "validate_graph",
-        "call_id": "validate", "ok": False}}]
+        "call_id": "validate", "ok": False, "success": False,
+        "response": {"success": False, "status": "error"}, "response_visibility": "summary"}}]
+
+
+def test_resource_output_is_public_bounded_and_sanitized_without_changing_native_result():
+    result = {"ok": True, "result": {"exit_code": 0, "api_key": "private-token", "stdout": "x" * 100_000}}
+    event = Event(author="step_executor", content=types.Content(role="user", parts=[
+        types.Part(function_response=types.FunctionResponse(id="command", name="oaw_invoke_tool", response=result)),
+    ]))
+    payload = list(public_events(event, child=True))[0]['payload']
+    assert payload['response']['result']['api_key'] == '[REDACTED]'
+    assert payload['response']['result']['exit_code'] == 0
+    assert len(payload['response']['result']['stdout']) < 17_000
+    assert payload['truncated'] and payload['success'] and payload['subagent']
+    assert payload['response_visibility'] == 'full'
+    assert result['result']['api_key'] == 'private-token'
 
 
 @pytest.mark.asyncio

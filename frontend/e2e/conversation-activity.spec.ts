@@ -30,6 +30,8 @@ test('execution groups stream, archive previous work, and retain their position 
     const groups = surface.locator('.conversation-execution');
     await expect(groups).toHaveCount(1);
     await expect(groups.locator('.run-tool')).toHaveCount(1);
+    await expect(groups.locator('.run-tool-name')).toHaveText('write_session_summary');
+    await expect(groups.locator('.run-tool-summary')).not.toContainText('src/module-0.ts');
     await expect(groups.locator('[aria-label="Running"]')).toHaveCount(2);
     const runningTime = groups.locator('.run-tool .conversation-duration');
     await expect(runningTime).toHaveText(/\d+\.\d+s/);
@@ -75,7 +77,7 @@ test('execution groups stream, archive previous work, and retain their position 
     }
     const capture = async (prefix = '', folded = false) => { for (const theme of ['light', 'dark']) {
       await page.evaluate(theme => { document.documentElement.dataset.theme = theme; }, theme);
-      for (const width of [1060, 360]) {
+      for (const width of [1060, 600, 360]) {
         const camera = await surface.evaluate((element, width) => {
           const host = element as HTMLElement;
           host.style.width = `${width}px`; host.style.height = '720px';
@@ -85,10 +87,14 @@ test('execution groups stream, archive previous work, and retain their position 
           return { x: 30 - matrix.m41, y: 30 - matrix.m42 };
         }, width);
         const style = await page.addStyleTag({ content: `.react-flow__viewport { transform: translate(${camera.x}px, ${camera.y}px) scale(1) !important; }` });
-        const target = folded ? surface.locator('.conversation-history') : groups.last();
+        const target = prefix === 'system-' ? surface.locator('.conversation-system-notice')
+          : folded ? surface.locator('.conversation-history') : groups.last();
         await expect(target).toBeVisible();
         const bounds = await target.evaluate(node => ({ w: node.clientWidth, sw: node.scrollWidth }));
         expect(bounds.sw).toBeLessThanOrEqual(bounds.w + 1);
+        expect(await outer.evaluate(node => node.scrollWidth - node.clientWidth)).toBeLessThanOrEqual(1);
+        if (prefix === 'expanded-') await outer.evaluate(node => { node.scrollTop = 0; });
+        if (prefix === 'system-') await outer.evaluate(node => { node.scrollTop = node.scrollHeight; });
         await page.mouse.move(1400, 950);
         await surface.screenshot({ path: `../.outputs/conversation-activity/${prefix}${theme}-${width}.png` });
         await style.evaluate(node => node.remove());
@@ -143,7 +149,19 @@ test('execution groups stream, archive previous work, and retain their position 
     expect(await firstViewport.evaluate(node => node.scrollHeight - node.clientHeight)).toBeLessThanOrEqual(1);
     await groups.nth(0).locator('.run-tool > summary').first().click();
     await expect(groups.nth(0).getByText(/Checked module 0/)).toBeVisible();
-    const output = groups.nth(0).locator('.run-tool-details pre').last();
+    const outputSection = groups.nth(0).locator('.run-tool').first().getByRole('region', { name: 'Output' });
+    const inputSection = groups.nth(0).locator('.run-tool').first().getByRole('region', { name: 'Input' });
+    await expect(inputSection.getByRole('table')).toHaveCount(1);
+    await expect(inputSection.locator('th[title="summary"]')).toHaveAttribute('rowspan', '6');
+    await expect(inputSection.getByText('Keep the approved plan.', { exact: true })).toBeVisible();
+    await expect(inputSection.locator('details, ol, button')).toHaveCount(0);
+    await expect(groups.locator('.run-tool-details')).not.toContainText('oaw_invoke_tool');
+    await expect(groups.locator('.run-tool-details')).not.toContainText('operation:read_file');
+    await expect(groups.getByText('Raw JSON', { exact: true })).toHaveCount(0);
+    await expect(outputSection.getByRole('rowheader', { name: 'exit code' })).toBeVisible();
+    await expect(outputSection.locator('th[title="lines"]')).toHaveAttribute('rowspan', '30');
+    await expect(outputSection.getByText('Line 29: detailed inspection result', { exact: true })).toBeVisible();
+    const output = outputSection.getByRole('table');
     expect(await output.evaluate(node => node.clientHeight)).toBeGreaterThan(500);
     expect(await output.evaluate(node => node.scrollHeight - node.clientHeight)).toBeLessThanOrEqual(1);
     await capture('expanded-');
@@ -151,6 +169,23 @@ test('execution groups stream, archive previous work, and retain their position 
     await workLog.locator(':scope > summary').click();
     await expect(groups.locator('.run-tool .conversation-duration')).toHaveCount(20);
     expect(await groups.locator('.run-tool .conversation-duration').allTextContents()).toEqual(durations);
+    // Only the notice fixture is synthetic here; the activity/history above is
+    // restored through the actual host. Verify long job identities in the UI.
+    await page.route(`**${base}/timeline*`, async route => {
+      const response = await route.fetch();
+      const body = await response.json();
+      const last = body.items.at(-1);
+      body.items.push({ id: 'monitoring-notice', conversation_id: room.id, session_id: session.id,
+        sender_kind: 'system', sender_name: 'System', mention_agent_ids: [], kind: 'run_outcome',
+        sequence: (last?.sequence ?? 0) + 1, created_at: new Date(Date.parse(last.created_at) + 1).toISOString(),
+        content: 'Review worker handed off 1 background job for automatic monitoring. The conversation resumes when results are available.\n\n'
+          + 'melt_quench_md · matcreator.bohrium-batch\nExternal ID: remote-job-123\nJob ID: 6a22cb7d-8ec0-4ad8-9d84-23a319a20fa0\n\nFind these jobs by name or ID in Jobs.' });
+      await route.fulfill({ response, json: body });
+    });
+    await page.reload();
+    await expect(surface.locator('.conversation-system-label')).toHaveText('System');
+    await expect(surface.locator('.conversation-system-notice')).toContainText('remote-job-123');
+    await capture('system-');
     expect(errors).toEqual([]);
   } finally {
     await request.delete(`/api/nodes/${room.id}`);

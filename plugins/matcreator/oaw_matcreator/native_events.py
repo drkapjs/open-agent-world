@@ -23,12 +23,20 @@ def public_events(event, *, child=False):
             yield {"type": "event", "event": "tool_started", "payload": {**base,
                 "name": call.name, "call_id": call.id, "arguments": call.args}}
         if response:
-            # Raw tool output belongs to the private native session.
+            from open_agent_world.tool_activity import public_tool_payload
+
             result = response.response or {}
             failed = result.get("ok") is False or bool(result.get("error")) or result.get("status") in (
                 "error", "failed", "cancelled", "needs_replanning")
-            yield {"type": "event", "event": "tool_completed", "payload": {**base,
-                "name": response.name, "call_id": response.id, "ok": not failed}}
+            payload = public_tool_payload({**base,
+                "name": response.name, "call_id": response.id, "success": not failed,
+                # Resource results are public tool evidence, sanitized/bounded
+                # by the host before WS publication and durable checkpointing.
+                # Internal planner/executor reports remain in the native session.
+                "response": (result if response.name in {"oaw_invoke_tool", "oaw_list_tools"}
+                    else {"success": not failed, **{key: result[key] for key in ("ok", "status", "job_ids") if key in result}}),
+                "response_visibility": "full" if response.name in {"oaw_invoke_tool", "oaw_list_tools"} else "summary"})
+            yield {"type": "event", "event": "tool_completed", "payload": {**payload, "ok": not failed}}
         if getattr(part, "text", None) and is_conversation_author(event, child=child):
             yield {"type": "event", "event": "agent_message", "payload": {**base,
                 "text": part.text, "final": bool(event.is_final_response()),

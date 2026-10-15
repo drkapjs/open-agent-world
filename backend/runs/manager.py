@@ -1117,6 +1117,15 @@ class RunManager:
         payload = (public_tool_payload(event.payload)
                    if event.type.value in {"tool_started", "tool_completed"}
                    else dict(event.payload))
+        if event.type.value == 'tool_completed' and payload.get('call_id'):
+            # Carry the original tool identity into the result checkpoint too.
+            # Match only explicit call IDs; concurrent wrapper calls share names.
+            for start in reversed(self.get_run(record.run_id).lifecycle.get('tool_trace') or []):
+                if start.get('type') == 'tool_started' and start.get('call_id') == payload['call_id']:
+                    for key in ('tool_name', 'capability_id', 'author', 'subagent'):
+                        if key in start:
+                            payload.setdefault(key, start[key])
+                    break
         if self.conversation_event is not None:
             message_id = await self.conversation_event(event, record)
             if message_id:

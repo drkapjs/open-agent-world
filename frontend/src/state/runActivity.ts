@@ -11,6 +11,11 @@ export interface RunActivityItem {
   conversation_message_id?: string;
   call_id?: string;
   name?: string;
+  tool_name?: string;
+  capability_id?: string;
+  author?: string;
+  subagent?: boolean;
+  response_visibility?: string;
   arguments?: unknown;
   response?: unknown;
   error?: unknown;
@@ -97,10 +102,16 @@ export function mergeRunActivity(
       ...(type === 'tool_started' && event.timestamp ? { started_at: existing?.started_at ?? event.timestamp } : {}),
       ...(type === 'tool_completed' && event.timestamp ? { finished_at: existing?.finished_at ?? event.timestamp } : {}),
       name, call_id: callId,
+      ...(typeof payload.tool_name === 'string' ? { tool_name: payload.tool_name } : {}),
+      ...(typeof payload.capability_id === 'string' ? { capability_id: payload.capability_id } : {}),
+      ...(typeof payload.author === 'string' ? { author: payload.author } : {}),
+      ...(typeof payload.subagent === 'boolean' ? { subagent: payload.subagent } : {}),
+      ...(typeof payload.response_visibility === 'string' ? { response_visibility: payload.response_visibility } : {}),
       ...(Object.hasOwn(payload, "arguments") ? { arguments: payload.arguments } : {}),
       ...(Object.hasOwn(payload, "response") ? { response: payload.response } : {}),
       ...(Object.hasOwn(payload, "error") ? { error: payload.error } : {}),
-      ...(typeof payload.success === "boolean" ? { success: payload.success } : {}),
+      ...(typeof payload.success === "boolean" ? { success: payload.success }
+        : typeof payload.ok === 'boolean' ? { success: payload.ok } : {}),
       truncated: Boolean(existing?.truncated || payload.truncated),
     };
     if (index < 0) items.push(item);
@@ -116,9 +127,13 @@ export function mergeRunActivity(
 
 export function toolFailed(item: RunActivityItem): boolean {
   const response = object(item.response);
-  const exitCode = response.exitCode ?? response.exit_code;
-  return item.success === false || Boolean(item.error) || Boolean(response.error) ||
-    (typeof exitCode === "number" && exitCode !== 0) || response.status === "failed";
+  const result = object(response.result);
+  const failed = (value: Record<string, unknown>) => {
+    const exitCode = value.exitCode ?? value.exit_code;
+    return value.ok === false || value.success === false || Boolean(value.error) ||
+      (typeof exitCode === 'number' && exitCode !== 0) || ['failed', 'error'].includes(String(value.status));
+  };
+  return item.success === false || Boolean(item.error) || failed(response) || failed(result);
 }
 
 /** The durable reply owns the final text; keep the live cache untouched.

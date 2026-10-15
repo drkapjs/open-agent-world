@@ -67,6 +67,17 @@ describe("ConversationWorkspace snapshots", () => {
 
   afterEach(() => cleanup());
 
+  it('renders system notices as a distinct label above the body without an agent avatar', async () => {
+    vi.mocked(worldApi.getConversationTimeline).mockResolvedValue({ items: [{ ...historicalMessage,
+      sender_kind: 'system', sender_name: 'System', kind: 'run_outcome', content: 'Monitoring md-run\nExternal ID: remote-123' }],
+      has_before: false, has_after: false });
+    const view = render(<ConversationWorkspace card={card} />);
+    const text = await screen.findByText(/Monitoring md-run/);
+    expect(text.closest('.conversation-system-notice')).toBeTruthy();
+    expect(view.container.querySelector('.conversation-system-label')?.textContent).toBe('System');
+    expect(view.container.querySelector('.workspace-message.is-system > span')).toBeNull();
+  });
+
   it('restarts in a fresh session with an editable draft instead of resending into the old context', async () => {
     const branch = { ...session, id: 'branch', restart_before_message_id: historicalMessage.id };
     const create = vi.spyOn(worldApi, 'createConversationSession').mockResolvedValue(branch);

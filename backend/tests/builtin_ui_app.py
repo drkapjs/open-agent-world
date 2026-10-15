@@ -92,13 +92,18 @@ async def install_conversation_activity_fixture(incremental: bool = False):
                         yield AgentEvent(context.agent_id, context.run_id, AgentEventType.PROGRESS,
                             {'text': 'The files agree. I am checking the implementation next.', 'kind': 'reasoning_summary', 'provider_message_id': 'plan'})
                     for index in range(count):
-                        payload = {'name': 'read_file' if phase == 0 else 'check_result', 'call_id': f'{phase}-{index}',
-                            'arguments': {'path': f'src/module-{index}.ts'}}
+                        arguments = {'summary': {'goal': 'Review the computation and record its evidence.',
+                            'approach': 'Reuse the existing job, inspect its results, and summarize the findings.',
+                            'key_decisions': ['Keep the approved plan.', 'Verify outputs before accepting the result.'],
+                            'evidence': {'result': {'path': 'outputs/report.json', 'verified': True}}}} if index == 0 else {'path': f'src/module-{index}.ts'}
+                        payload = {'name': 'oaw_invoke_tool' if phase == 0 else 'check_result', 'call_id': f'{phase}-{index}',
+                            'arguments': ({'capability_id': 'operation:write_session_summary' if index == 0 else 'operation:read_file', 'arguments': arguments}
+                                if phase == 0 else {'path': f'src/module-{index}.ts'})}
                         yield AgentEvent(context.agent_id, context.run_id, AgentEventType.TOOL_STARTED, payload)
                         if incremental or index == count - 1:
                             await gates[phase][index].wait()
                         yield AgentEvent(context.agent_id, context.run_id, AgentEventType.TOOL_COMPLETED,
-                            {**payload, 'response': {'exit_code': 1 if phase == 1 and index == 0 else 0,
+                            {'name': payload['name'], 'call_id': payload['call_id'], 'response': {'exit_code': 1 if phase == 1 and index == 0 else 0,
                                 'result': f'Checked module {index}',
                                 **({'lines': [f'Line {line}: detailed inspection result' for line in range(30)]} if index == 0 else {})}})
                 yield AgentEvent(context.agent_id, context.run_id, AgentEventType.MESSAGE,

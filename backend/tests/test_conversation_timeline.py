@@ -109,7 +109,9 @@ async def test_public_activity_checkpoint_restores_boundaries_and_reports_trunca
             for index in range(count):
                 for kind in (AgentEventType.TOOL_STARTED, AgentEventType.TOOL_COMPLETED):
                     yield AgentEvent(context.agent_id, context.run_id, kind,
-                        {'name': 'read', 'call_id': f'call-{index}', 'arguments': {'path': str(index)}})
+                        {'name': 'oaw_invoke_tool', 'call_id': f'call-{index}',
+                         **({'arguments': {'capability_id': 'operation:read_file', 'arguments': {'path': str(index)}}}
+                            if kind is AgentEventType.TOOL_STARTED else {'response': {'content': f'file-{index}'}})})
                 yield AgentEvent(context.agent_id, context.run_id, AgentEventType.PROGRESS,
                     {'kind': 'reasoning_summary', 'text': f'Checked file {index}', 'provider_message_id': f'progress-{index}'})
             yield AgentEvent(context.agent_id, context.run_id, AgentEventType.PROGRESS,
@@ -134,6 +136,10 @@ async def test_public_activity_checkpoint_restores_boundaries_and_reports_trunca
         assert len(summary.tool_trace) == min(count * 3, 50)
         assert summary.tool_trace_truncated is (count * 3 > 50)
         assert summary.tool_trace[-1]['text'] == f'Checked file {count - 1}'
+        completion = summary.tool_trace[-2]
+        assert completion['tool_name'] == 'read_file'
+        assert completion['capability_id'] == 'operation:read_file'
+        assert completion['response'] == {'content': f'file-{count - 1}'}
         assert all(item.get('kind') != 'raw_reasoning' for item in summary.tool_trace)
         assert all(item['id'] and item['timestamp'] for item in summary.tool_trace)
         assert [item.content for item in page.items] == ['Start', 'Draft reply', 'Done']

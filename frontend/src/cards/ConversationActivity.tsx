@@ -6,19 +6,8 @@ import type { ExecutionGroup } from '../state/conversationTranscript';
 import type { ConversationHistorySection } from '../state/conversationSections';
 import { elapsedMilliseconds, executionElapsed, toolElapsed } from '../state/activityTiming';
 import { MarkdownMessage } from "./MarkdownMessage";
-
-function format(value: unknown): string {
-  if (typeof value === "string") return value;
-  try { return JSON.stringify(value, null, 2) ?? ""; }
-  catch { return t("No additional details"); }
-}
-function preview(value: unknown): string {
-  if (typeof value === "string") return value.split("\n")[0].slice(0, 100);
-  if (!value || typeof value !== "object" || Array.isArray(value)) return "";
-  const input = value as Record<string, unknown>;
-  const hint = input.path ?? input.command ?? input.query ?? input.filename;
-  return typeof hint === "string" ? hint.split("\n")[0].slice(0, 100) : "";
-}
+import { hasToolData, ToolData } from './ToolData';
+import { toolPresentation } from '../state/toolPresentation';
 
 function Duration({ milliseconds }: { milliseconds?: number }) {
   if (milliseconds === undefined) return null;
@@ -49,22 +38,28 @@ const ToolActivity = memo(function ToolActivity({ item, active, now, open, onOpe
   const status = failed ? t("Failed") : completed ? t("Completed") : pending ? t("Running") : t("Stopped");
   const Icon = failed ? CircleAlert : completed ? Check : pending ? LoaderCircle : Square;
   const response = item.response;
-  const hasDetails = item.arguments !== undefined || response !== undefined || item.error !== undefined;
-  return <details className={`run-tool${failed ? " is-error" : ""}`} open={open} data-activity-id={item.id}
-    onToggle={event => onOpen(item.id, event.currentTarget.open)}>
-    <summary>
+  const presentation = toolPresentation(item);
+  const hasInput = hasToolData(presentation.input);
+  const hasOutput = hasToolData(response);
+  const hasError = hasToolData(item.error);
+  const hasDetails = hasInput || hasOutput || hasError;
+  const className = `run-tool${failed ? ' is-error' : ''}`;
+  const heading = <>
       <Icon size={12} className={pending ? "run-activity-spinner" : undefined} aria-label={status} />
-      <span className="run-tool-name">{item.name}</span>
-      <code className="run-tool-preview">{preview(item.arguments)}</code>
+      <span className="run-tool-name" title={presentation.name}>{presentation.name}</span>
       <Duration milliseconds={toolElapsed(item, active, now)} />
-      <ChevronRight size={12} className="run-tool-chevron" aria-hidden="true" />
-    </summary>
+      {hasDetails && <ChevronRight size={12} className="run-tool-chevron" aria-hidden="true" />}
+    </>;
+  if (!hasDetails) return <div className={className} data-activity-id={item.id}>
+    <div className="run-tool-summary">{heading}</div>
+  </div>;
+  return <details className={className} open={open} data-activity-id={item.id}
+    onToggle={event => { if (event.target === event.currentTarget) onOpen(item.id, event.currentTarget.open); }}>
+    <summary className="run-tool-summary">{heading}</summary>
     {open ? <div className="run-tool-details">
-      {item.arguments !== undefined ? <section><span>{t("Input")}</span><pre>{format(item.arguments)}</pre></section> : null}
-      {response !== undefined ? <section><span>{t("Output")}</span><pre>{format(response)}</pre></section> : null}
-      {item.error !== undefined && item.error !== null ? <section><span>{t("Error")}</span><pre>{format(item.error)}</pre></section> : null}
-      {!hasDetails ? <p>{t("No additional details")}</p> : null}
-      {pending ? <small>{t("Running")}</small> : null}
+      {hasInput && <section aria-label={t('Input')}><span>{t('Input')}</span><ToolData value={presentation.input} /></section>}
+      {hasOutput && <section aria-label={t('Output')}><span>{t('Output')}</span><ToolData value={response} /></section>}
+      {hasError && <section aria-label={t('Error')}><span>{t('Error')}</span><ToolData value={item.error} /></section>}
       {item.truncated ? <small>{t("Details truncated")}</small> : null}
     </div> : null}
   </details>;

@@ -11,6 +11,46 @@ const group: ExecutionGroup = { kind: 'execution', id: 'run:read', timestamp: ''
 afterEach(cleanup);
 
 describe('Conversation execution segments', () => {
+  it('uses a name-only tool row and shows only available details for wrapped and direct calls', () => {
+    useLocale.setState({ locale: 'en' });
+    const item = { id: 'command', type: 'tool_completed' as const, name: 'oaw_invoke_tool',
+      arguments: { capability_id: 'operation:execute_command', arguments: { sandbox: 'compute', command: 'pwd' } },
+      response: { exit_code: 0, stdout: '/workspace', warnings: [] } };
+    const view = render(<ConversationExecution group={{ ...group, items: [item] }} agentName="Atlas" />);
+    const tool = view.container.querySelector('.run-tool') as HTMLDetailsElement;
+    expect(tool.querySelector('summary')?.textContent).toBe('execute_command');
+    act(() => { tool.open = true; fireEvent(tool, new Event('toggle')); });
+    const output = screen.getByRole('region', { name: 'Output' });
+    expect(within(output).getByRole('rowheader', { name: 'exit code' })).toBeTruthy();
+    expect(within(output).getByText('/workspace')).toBeTruthy();
+    expect(within(output).getByText('[]')).toBeTruthy();
+    expect(view.container.textContent).not.toContain('oaw_invoke_tool');
+    expect(view.container.textContent).not.toContain('operation:execute_command');
+    expect(screen.queryByText('Raw JSON')).toBeNull();
+    view.rerender(<ConversationExecution group={{ ...group, items: [{ ...item,
+      name: 'execute_command', arguments: item.arguments.arguments }] }} agentName="Atlas" />);
+    expect(tool.querySelector('summary')?.textContent).toBe('execute_command');
+    expect(within(screen.getByRole('region', { name: 'Input' })).getByText('pwd')).toBeTruthy();
+    view.rerender(<ConversationExecution group={{ ...group, items: [{ ...item, response: undefined }] }} agentName="Atlas" />);
+    expect(screen.queryByRole('region', { name: 'Output' })).toBeNull();
+    view.rerender(<ConversationExecution group={{ ...group, items: [{ ...item, type: 'tool_started', response: undefined }] }} agentName="Atlas" />);
+    expect(screen.queryByRole('region', { name: 'Output' })).toBeNull();
+    for (const empty of [undefined, null, '', {}, [], '{}', '[]']) {
+      view.rerender(<ConversationExecution group={{ ...group, items: [{ ...item,
+        arguments: { capability_id: 'operation:execute_command', arguments: empty }, response: empty }] }} agentName="Atlas" />);
+      expect(view.container.querySelector('.run-tool-details')).toBeNull();
+      expect(view.container.querySelector('details.run-tool')).toBeNull();
+      expect(view.container.querySelector('.run-tool-chevron')).toBeNull();
+      expect(view.container.querySelector('.run-tool-summary')?.textContent).toBe('execute_command');
+    }
+    view.rerender(<ConversationExecution group={{ ...group, items: [{ ...item, name: 'set_node_status',
+      arguments: { node_id: 'n7_publish_and_summarize' }, response: false }] }} agentName="Atlas" />);
+    const direct = view.container.querySelector('details.run-tool') as HTMLDetailsElement;
+    act(() => { direct.open = true; fireEvent(direct, new Event('toggle')); });
+    expect(direct.querySelector('summary')?.textContent).toBe('set_node_status');
+    expect(within(screen.getByRole('region', { name: 'Output' })).getByText('false')).toBeTruthy();
+  });
+
   it('keeps one expandable group, updates tools in place, then folds when archived', () => {
     useLocale.setState({ locale: 'en' });
     const view = render(<ConversationExecution group={group} agentName="Atlas" />);
@@ -21,17 +61,17 @@ describe('Conversation execution segments', () => {
     const tool = view.container.querySelector('.run-tool') as HTMLDetailsElement;
     expect(tool.querySelector('pre')).toBeNull();
     act(() => { tool.open = true; fireEvent(tool, new Event('toggle', { bubbles: true })); });
-    expect(screen.getByRole('region').hasAttribute('data-compact')).toBe(false);
+    expect(screen.getByRole('region', { name: 'Execution activity for Atlas' }).hasAttribute('data-compact')).toBe(false);
     const done: ExecutionGroup = { ...group, items: [{ ...group.items[0], type: 'tool_completed', response: 'File contents' }] };
     view.rerender(<ConversationExecution group={done} agentName="Atlas" />);
     expect(tool.open).toBe(true);
     expect(within(tool).getByText('File contents')).toBeTruthy();
     view.rerender(<ConversationExecution group={{ ...done, expanded: false }} agentName="Atlas" />);
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
-    expect(screen.queryByRole('region')).toBeNull();
+    expect(screen.queryByRole('region', { name: 'Execution activity for Atlas' })).toBeNull();
     fireEvent.click(toggle);
-    expect(screen.getByRole('region')).toBeTruthy();
-    expect(screen.getByRole('region').hasAttribute('data-compact')).toBe(false);
+    expect(screen.getByRole('region', { name: 'Execution activity for Atlas' })).toBeTruthy();
+    expect(screen.getByRole('region', { name: 'Execution activity for Atlas' }).hasAttribute('data-compact')).toBe(false);
     view.rerender(<ConversationExecution group={{ ...done, expanded: false, running: false }} agentName="Atlas" />);
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
   });

@@ -90,6 +90,9 @@ async def test_wait_has_durable_system_notice_and_resumes_once(research, monkeyp
     assert notice.sender_kind == 'system' and notice.kind == 'run_outcome'
     assert '1 background job' in notice.content and 'automatic monitoring' in notice.content
     assert 'conversation resumes' in notice.content
+    assert request['request_key'] in notice.content and request['provider'] in notice.content
+    assert captured['id'] in notice.content and 'remote-123' in notice.content
+    assert 'Find these jobs by name or ID in Jobs.' in notice.content
     assert 'without producing' not in notice.content
     assert len(page.items) == (3 if narrate else 2)
     root = services.run_manager.get_run(notice.run_id)

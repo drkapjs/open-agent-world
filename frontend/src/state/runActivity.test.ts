@@ -10,6 +10,23 @@ function event(id: number, type: string, payload: Record<string, unknown> = {}):
 }
 
 describe("ordered Run activity", () => {
+  it('pairs concurrent wrappers by call ID and retains identity and legacy failure on reload', () => {
+    const events = [
+      event(1, 'tool_started', { name: 'oaw_invoke_tool', call_id: 'a', tool_name: 'read_file', arguments: { path: 'a' } }),
+      event(2, 'tool_started', { name: 'oaw_invoke_tool', call_id: 'b', tool_name: 'execute_command' }),
+      event(3, 'tool_completed', { name: 'oaw_invoke_tool', call_id: 'b', ok: false, response: { error: 'denied' } }),
+      event(4, 'tool_completed', { name: 'oaw_invoke_tool', call_id: 'a', response: { content: 'A' } }),
+    ];
+    const state = mergeRunActivity(undefined, run, [...events].reverse());
+    const restored = mergeRunActivity(undefined, { ...run, tool_trace: events.map(event => ({
+      ...event.payload, id: event.id, timestamp: event.timestamp, type: event.type })) }, []);
+    expect(restored.items).toEqual(state.items);
+    expect(state.items[0]).toMatchObject({ tool_name: 'read_file', response: { content: 'A' } });
+    expect(state.items[1]).toMatchObject({ tool_name: 'execute_command', success: false });
+    expect(toolFailed(state.items[1])).toBe(true);
+    expect(toolFailed({ id: 'nested', type: 'tool_completed', response: { ok: true, result: { exit_code: 1 } } })).toBe(true);
+  });
+
   it("interleaves public progress and tools, updating completion in place", () => {
     const state = mergeRunActivity(undefined, run, [
       event(5, "agent_message", { text: "Answer" }),

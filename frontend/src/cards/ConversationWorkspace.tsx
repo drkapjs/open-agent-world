@@ -623,8 +623,10 @@ export function ConversationWorkspace({ card }: { card: WorldCard }) {
             <article className={`workspace-message is-${message.sender_kind}`} key={message.id} data-message-id={message.id}
               data-actions-open={touchedMessageId === message.id || undefined}
               onPointerDown={(event) => { if (event.pointerType === 'touch') setTouchedMessageId(message.id); }}>
-              {turn.kind !== 'agent' && <span>{message.sender_kind === "system" ? <Info size={13} /> : <UserRound size={13} />}</span>}
-              <div className={turn.kind === 'agent' ? 'conversation-message-bubble' : undefined}>{turn.kind !== 'agent' && <strong>{message.sender_name}</strong>}
+              {turn.kind !== 'agent' && message.sender_kind !== 'system' && <span><UserRound size={13} /></span>}
+              <div className={message.sender_kind === 'system' ? 'conversation-system-notice' : turn.kind === 'agent' ? 'conversation-message-bubble' : undefined}>
+                {message.sender_kind === 'system' ? <span className="conversation-system-label"><Info size={10} aria-hidden="true" />{t('System')}</span>
+                  : turn.kind !== 'agent' && <strong>{message.sender_name}</strong>}
                 {message.kind?.startsWith("tool_")
                   ? <details className="conversation-tool-message"><summary>{message.content.split("\n")[0]}</summary><pre>{message.content.split("\n").slice(1).join("\n").trim() || t("No additional details")}</pre></details>
                   : message.content ? (message.sender_kind === "agent" ? <MarkdownMessage content={message.content} /> : <p>{message.content}</p>) : null}

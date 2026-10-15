@@ -74,3 +74,19 @@ def test_source_payload_is_not_mutated():
     before = json.dumps(source)
     public_tool_payload(source)
     assert json.dumps(source) == before
+
+
+def test_named_wrapper_identity_and_legacy_failure_survive_public_projection():
+    start = public_tool_payload({'name': 'oaw_invoke_tool', 'call_id': 'c', 'author': 'executor',
+        'subagent': True, 'arguments': {'capability_id': 'operation:execute_command', 'arguments': {'command': 'pwd'}}})
+    assert start['tool_name'] == 'execute_command'
+    assert start['capability_id'] == 'operation:execute_command'
+    assert start['author'] == 'executor' and start['subagent']
+    done = public_tool_payload({'name': 'oaw_invoke_tool', 'ok': False, 'truncated': True,
+        'response': {'ok': False}, 'response_visibility': 'summary'})
+    assert done['success'] is False and done['truncated']
+    assert done['response_visibility'] == 'summary'
+    # A second projection at the host preserves the worker's truncation marker.
+    assert public_tool_payload(done) == done
+    assert 'tool_name' not in public_tool_payload({'name': 'oaw_invoke_tool',
+        'arguments': {'capability_id': 'opaque:resource'}})

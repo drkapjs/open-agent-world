@@ -493,6 +493,11 @@ async def test_pack_engine_planner_checkpoint_executor_recursive_child_and_oaw_t
         ('agent-a', 'inspect', {'collection': 'outputs', 'version_id': 'v1'}),
     ]
     assert any(e.payload.get('subagent') for e in finished)
+    resource_results = [e.payload for e in finished if e.type.value == 'tool_completed'
+                        and e.payload.get('name') == 'oaw_invoke_tool']
+    assert any(p.get('response', {}).get('result', {}).get('verified') == 'native-child'
+               for p in resource_results)
+    assert all(p.get('response_visibility') == 'full' and 'success' in p for p in resource_results)
     assert any(node.kind == 'agent' and node.parent_id for node in provider.projection.nodes)
     projected_step = next(node for node in provider.projection.nodes if node.role == 'step' and node.plan_id)
     assert projected_step.status == 'success'

@@ -186,6 +186,23 @@ not added together). Missing timestamp pairs do not invent durations. Automatic
 live previews stay compact and scroll, while manually opened groups, archived
 groups, and open tool details use the full transcript height for reading.
 
+All tool rows display only the resolved tool name, status and elapsed time.
+Wrapper names, capability IDs and argument previews are omitted from the UI.
+Available input, output and errors use continuous hierarchy tables. Parent fields
+span their descendant rows, each nesting level gets a column, and values share
+the final column. Arrays use numbered rows in the same table. There are no inner
+disclosures or collection-type groups. Narrow panes show each full field path
+above its value to avoid squeezing deep hierarchies into tiny columns.
+Empty sections are omitted; calls without details have no disclosure.
+There is no raw JSON view or placeholder for unrecorded data.
+The dependency-free `open_agent_world.tool_activity` projection
+bounds and masks tool evidence in isolated workers and again before host
+publication. MatCreator resource tools include their results; internal executor
+reports retain only an outcome summary, and private reasoning is excluded.
+System notices have a separate label and body. Background monitoring handoff
+notices record request keys, providers, external IDs and OAW job IDs so users can
+locate the work in Jobs; these identities describe the handoff, not live status.
+
 The bounded Run checkpoint (`tool_trace`, retained for API compatibility) stores
 the latest 50 tool/public-progress events, including `status`, `plan`, and
 `reasoning_summary`. `tool_trace_truncated` explicitly marks omitted earlier

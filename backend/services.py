@@ -3426,6 +3426,24 @@ class ApplicationServices:
             f"{'job' if count == 1 else 'jobs'} for automatic monitoring. "
             "The conversation resumes when results are available."
         )
+        from backend.runs.trace import public_tool_payload
+        references = []
+        for job_id in jobs:
+            try:
+                job = self.background_jobs.get(job_id)
+                self.background_jobs.authorize(job)
+            except (NotFoundError, PermissionDeniedError, RuntimeUnavailableError, PluginUnavailableError):
+                references.append(f"Job ID: {job_id}")
+                continue
+            # Record the identity at handoff, not a misleading live status.
+            identity = public_tool_payload({"response": {key: job.get(key) for key in
+                ("request_key", "provider", "external_id", "id")}})["response"]
+            references.append(
+                f"{identity['request_key']} · {identity['provider']}\n"
+                f"External ID: {identity['external_id'] or 'Not assigned yet'}\n"
+                f"Job ID: {identity['id']}"
+            )
+        notice += "\n\n" + "\n\n".join(references) + "\n\nFind these jobs by name or ID in Jobs."
         message_id = str(uuid5(NAMESPACE_URL,
             f"{conversation_id}/{session_id}/{record.run_id}/background-wait"))
         # Also repair historical Runs whose progress was promoted to a final

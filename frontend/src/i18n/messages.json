@@ -7619,5 +7619,7 @@
   "created": ["created", "已创建"],
   "Unavailable dependencies": ["Unavailable dependencies", "依赖记录不可用"],
   "Reference ports": ["Reference ports", "引用锚点"],
-  "Select a node to explore its dependencies": ["Select a node to explore its dependencies", "选择节点查看其依赖"]
+  "Select a node to explore its dependencies": ["Select a node to explore its dependencies", "选择节点查看其依赖"],
+  "System": ["System", "系统"],
+  "Empty text": ["Empty text", "空文本"]
 }
