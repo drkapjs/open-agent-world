@@ -207,6 +207,9 @@ Previous findings: {summarize}
 5. For waiting work inspect existing OAW operations before resuming; never submit
    duplicate jobs. Use set_node_status and resume_execution only after inspection.
 6. On failure, explain why a revised plan is needed and obtain its approval.
+7. You own user communication. Executors return internal reports and artifact
+   references; present their verified results and ask any questions yourself.
+   Plan nodes must return results to you, not send messages to the user.
 Use validate_summarize and write_session_summary to preserve verified findings.
 """
 
@@ -275,7 +278,7 @@ thinking_agent = LlmAgent(
         validate_graph, validate_intent, validate_summarize, write_session_summary,
         confirm_plan_and_start_execution, resume_execution, set_node_status,
         run_flash_step, read_session_log, read_execution_history,
-    )] + resource_tools(),
+    )] + resource_tools(conversation_owner=True),
     before_agent_callback=before_agent_callback,
     before_model_callback=before_model_conversation_input,
     on_tool_error_callback=on_tool_error,

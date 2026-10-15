@@ -344,6 +344,9 @@ def set_node_status(
         return {"status": "error", "message": "Unsupported node status. Use pending, running, waiting, success, failed, blocked or cancelled."}
     if not graph or node_id not in (graph.get("nodes") or {}):
         return {"status": "error", "message": f"Node '{node_id}' not found in execution_graph."}
+    node = graph["nodes"][node_id]
+    if node.get("status") == "waiting" and node.get("background_jobs") and status in {"pending", "running", "success", "failed"}:
+        return {"status": "error", "message": "OAW owns this job wait. Inspect existing jobs and let recovery release the node; waiting is not failure or success."}
     graph["nodes"][node_id]["status"] = status
     if result is not None:
         graph["nodes"][node_id]["result"] = result

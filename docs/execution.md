@@ -131,6 +131,13 @@ terminal observation or an uncertain submission admits a new Agent turn, through
 the same capacity, permission, queued-input and continuation-budget checks used
 by work sources. The 64-turn limit counts Agent continuations, not status probes.
 
+A conversation turn that registers `wait_background_jobs` ends with a durable
+system notice explaining automatic monitoring and continuation. Earlier progress
+messages remain in history without becoming a final Agent reply. Startup restores
+missing notices, including for older turns that incorrectly promoted progress to
+their final reply. An explicit empty provider completion clears the Run output;
+only completions that omit output retain the legacy latest-message fallback.
+
 Agents with an authorized Sandbox discover these tools in their live catalog:
 
 | Tool | Contract |

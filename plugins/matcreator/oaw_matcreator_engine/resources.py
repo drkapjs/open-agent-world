@@ -159,9 +159,38 @@ async def before_model_conversation_input(callback_context, llm_request):
     await bridge().before_model(callback_context, llm_request)
 
 
-def resource_tools():
+def resource_tools(*, conversation_owner=False):
+    """Bind communication ownership per agent, including recursive executors.
+
+    Filtering discovery alone is insufficient: old plans and checkpoints can
+    contain a send capability ID. Recheck its current name before invocation.
+    This role restriction is additional to the host's resource authorization.
+    """
     value = bridge()
-    return [ResilientFunctionTool(value.oaw_list_tools), ResilientFunctionTool(value.oaw_invoke_tool)]
+    if conversation_owner:
+        return [ResilientFunctionTool(value.oaw_list_tools), ResilientFunctionTool(value.oaw_invoke_tool)]
+
+    conversation_tools = {"send_conversation_message", "request_conversation_turn"}
+
+    async def oaw_list_tools() -> dict:
+        """Discover connected OAW tools available to this internal executor."""
+        catalog = await value.oaw_list_tools()
+        if "tools" not in catalog:
+            return catalog
+        return {"tools": [tool for tool in catalog["tools"] if tool["name"] not in conversation_tools]}
+
+    async def oaw_invoke_tool(capability_id: str, arguments: dict) -> dict:
+        """Invoke an executor tool; return user decisions and messages to the planner."""
+        catalog = await value.oaw_list_tools()
+        if "tools" not in catalog:
+            return catalog
+        tool = next((tool for tool in catalog["tools"] if tool["capability_id"] == capability_id), None)
+        if tool is None or tool["name"] in conversation_tools:
+            return {"ok": False, "error": {"code": "executor_tool_unavailable", "side_effects": "none",
+                "message": "This tool is unavailable to internal executors. Return findings, artifact references and needed user decisions to the planner."}}
+        return await value.oaw_invoke_tool(capability_id, arguments)
+
+    return [ResilientFunctionTool(oaw_list_tools), ResilientFunctionTool(oaw_invoke_tool)]
 
 
 async def read_artifact_input(reference):

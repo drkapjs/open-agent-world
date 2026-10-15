@@ -68,6 +68,37 @@ class TranscriptRuntime(MockAgentRuntime):
 
 
 @pytest.mark.asyncio
+async def test_explicit_empty_completion_does_not_promote_progress_to_final_reply(data_root: Path):
+    services = create_services(Settings.for_data_root(data_root))
+
+    class NoReply(MockAgentRuntime):
+        async def execute(self, config, context, runtime_input):
+            yield AgentEvent(context.agent_id, context.run_id, AgentEventType.MESSAGE,
+                {'text': 'Preparing the remaining steps.', 'final': False})
+            yield AgentEvent(context.agent_id, context.run_id, AgentEventType.COMPLETED,
+                {'text': ''}, run_status='succeeded')
+
+    services.install_runtime_provider('core.mock', NoReply(WorldAgentCapabilityProvider(services)), default=True)
+    try:
+        agent = await services.create_card(CardCreate(type='agent', name='Atlas'))
+        room = await services.create_card(CardCreate(type='conversation', name='Room'))
+        await services.create_edge(EdgeCreate(source=agent.id, target=room.id, relationship='participate'))
+        session = await services.create_conversation_session(room.id, ConversationSessionCreate(participant_ids=[agent.id]))
+        await services.post_conversation_message(room.id, session.id, ConversationPost(content='Start', mention_agent_ids=[agent.id]))
+        await wait_for_conversation_delivery(services, room.id, session.id)
+        page = services.conversations.page_messages(room.id, session.id)
+        assert [m.sender_kind for m in page.items] == ['user', 'agent', 'system']
+        assert page.items[1].content == 'Preparing the remaining steps.'
+        assert 'finished without producing a response' in page.items[-1].content
+        run_id = page.items[-1].run_id
+        assert page.run_summaries[run_id].final_message_id is None
+        assert services.run_manager.final_text(run_id) == ''
+    finally:
+        await services.shutdown()
+        services.close()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('count', [2, 28])
 async def test_public_activity_checkpoint_restores_boundaries_and_reports_truncation(data_root: Path, count: int):
     settings = Settings.for_data_root(data_root)

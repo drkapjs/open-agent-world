@@ -66,6 +66,21 @@ artifacts. The separate **Agent graph** observes the Agent through a read-only
 connection. Structure viewer follows files from
 Conversation and Sandbox. No OAW Barracks or second task scheduler is deployed.
 
+The planner owns user communication in both normal and Flash modes. Execution
+orchestrators and recursive step executors return internal reports and artifact
+references to their caller. Their text remains in native checkpoints for review;
+only planner text becomes Conversation replies, while tool activity stays visible.
+`to_planner` ends the execution stream after its tool response, before another
+executor model round. The planner then reviews the report and, when needed,
+presents a revised plan for confirmation. Internal executors cannot send
+Conversation messages or request another Conversation turn through the resource
+bridge, including capability IDs remembered in older plans or checkpoints.
+Model error events, including `MAX_TOKENS` with only reasoning and no visible
+answer, fail the Run with a specific diagnosis. Ending an ADK stream does not
+make an unsuccessful model response a successful Run; earlier tools are not
+automatically replayed. Each new worker uses the selected connection's saved
+output token limit, which includes reasoning tokens on compatible providers.
+
 The Pack owns its orchestration tools, graph validation, recursive runner,
 result schemas and recovery ledger. Planner and child agents are constructed
 with the same explicit OAW resource bridge; they never construct standalone

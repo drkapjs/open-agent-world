@@ -76,6 +76,8 @@ You are the MatCreator Execution Orchestrator. You manage the full execution of 
 7. Execution is complete only when every graph node has status `success`.
 
 ## Rules
+- Report to the planner, not the user. If a user decision is needed, include it
+  in `to_planner(reason=...)`; the planner will ask and wait for confirmation.
 - NEVER execute code directly — all work goes through `run_node_executor`.
 - A ready node with a legacy `remote_job` must inspect the existing job through
   connected OAW tools. If unavailable, report the limitation; never resubmit it.
@@ -125,6 +127,8 @@ async def run_node_executor(
         workspace_dir:    Absolute path to the session workspace.
         prior_context:    Brief summary of predecessor results for context.
     """
+    if tool_context.state.get("return_to_planner", False):
+        return {"status": "error", "message": "Execution has handed control to the planner; no new nodes may start."}
     plan = get_execution_graph(tool_context.state) or {}
     node = plan.get("nodes", {}).get(node_id)
     ready = {value["node_id"] for value in get_ready_nodes(tool_context)["ready_nodes"]}

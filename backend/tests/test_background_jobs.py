@@ -6,13 +6,15 @@ import pytest
 from pydantic import BaseModel, ConfigDict
 
 from backend.capabilities.provider import WorldAgentCapabilityProvider
-from backend.conversations.models import ConversationSessionCreate
+from backend.agents import AgentEvent, AgentEventType
+from backend.conversations.models import ConversationSessionCreate, ConversationPost
 from backend.errors import ConflictError, PermissionDeniedError
 from backend.plugins.background_jobs import BackgroundJobProvider, JobObservation
 from backend.services import create_services
 from backend.api.card_library import plugin_usage
 from backend.tests.plugin_support import install_test_plugin
 from backend.tests.test_node_delegation import research, until
+from backend.tests.conversation_helpers import wait_for_conversation_delivery
 
 
 class Spec(BaseModel):
@@ -55,6 +57,98 @@ def setup(research):
         return await WorldAgentCapabilityProvider(services).invoke_tool(ids["agent"], "host:" + name, args)
     request = dict(provider="test.compute", sandbox_id=ids["sandbox"], request_key="plan:md", specification={})
     return services, ids, runtime, compute, invoke, request
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('narrate', [False, True])
+async def test_wait_has_durable_system_notice_and_resumes_once(research, monkeypatch, narrate):
+    services, ids, runtime, compute, invoke, request = setup(research)
+    captured = {}
+    async def execute(config, context, runtime_input):
+        runtime.contexts.append(context)
+        if context.extensions.get('background_job_notification'):
+            assert context.extensions['background_job_notification'] == captured['id']
+            yield AgentEvent(context.agent_id, context.run_id, AgentEventType.MESSAGE, {'text': 'Collected the result.'})
+            yield AgentEvent(context.agent_id, context.run_id, AgentEventType.COMPLETED,
+                {'text': 'Collected the result.'}, run_status='succeeded')
+            return
+        if narrate:
+            yield AgentEvent(context.agent_id, context.run_id, AgentEventType.MESSAGE,
+                {'text': 'Re-planning the remaining steps.', 'final': False})
+        captured.update(await invoke('submit_background_job', **request))
+        await invoke('wait_background_jobs', job_ids=[captured['id']])
+        yield AgentEvent(context.agent_id, context.run_id, AgentEventType.COMPLETED,
+            {'text': ''}, run_status='succeeded')
+    monkeypatch.setattr(runtime, 'execute', execute)
+    session = await services.create_conversation_session(ids['conversation'],
+        ConversationSessionCreate(participant_ids=[ids['agent']]))
+    await services.post_conversation_message(ids['conversation'], session.id,
+        ConversationPost(content='Compute', mention_agent_ids=[ids['agent']]))
+    await wait_for_conversation_delivery(services, ids['conversation'], session.id)
+    page = services.conversations.page_messages(ids['conversation'], session.id)
+    notice = page.items[-1]
+    assert notice.sender_kind == 'system' and notice.kind == 'run_outcome'
+    assert '1 background job' in notice.content and 'automatic monitoring' in notice.content
+    assert 'conversation resumes' in notice.content
+    assert 'without producing' not in notice.content
+    assert len(page.items) == (3 if narrate else 2)
+    root = services.run_manager.get_run(notice.run_id)
+    assert root.status == 'succeeded'  # Only this bounded turn has finished.
+    assert services.background_jobs.get(captured['id'])['status'] == 'queued'
+    assert root.lifecycle['awaiting_jobs'] == [captured['id']]
+    assert page.run_summaries[root.run_id].final_message_id is None
+    assert services.run_manager.final_text(root.run_id) == ''
+    assert not page.active_runs and not services.run_manager.holds_agent_slot(root.run_id)
+    await services._persist_conversation_run(ids['agent'], root.run_id, ids['conversation'], session.id)
+    assert [m.id for m in services.conversations.page_messages(ids['conversation'], session.id).items] == [m.id for m in page.items]
+    assert services.run_manager.get_run(root.run_id).updated_at == root.updated_at
+
+    compute.status = 'succeeded'
+    await services.background_jobs.tick()
+    await asyncio.gather(*services.background_jobs.probes.values())
+    await services.background_jobs.tick()
+    await until(lambda: len(runtime.contexts) == 2)
+    child = runtime.contexts[-1]
+    await services.run_manager.wait_execution(child.run_id)
+    await until(lambda: services.run_manager.get_run(child.run_id).lifecycle.get('final_message_id'))
+    await services.background_jobs.tick()
+    result = services.conversations.page_messages(ids['conversation'], session.id)
+    assert result.items[-1].content == 'Collected the result.'
+    assert result.run_summaries[child.run_id].final_message_id == result.items[-1].id
+    assert len(runtime.contexts) == 2 and compute.submissions == 1
+    assert child.parent_run_id == root.run_id and child.context_id == session.id
+
+
+@pytest.mark.asyncio
+async def test_startup_repairs_legacy_wait_final_reply_once(research):
+    services, ids, runtime, compute, invoke, request = setup(research)
+    session = await services.create_conversation_session(ids['conversation'],
+        ConversationSessionCreate(participant_ids=[ids['agent']]))
+    async def script(context):
+        job = await invoke('submit_background_job', **request)
+        await invoke('wait_background_jobs', job_ids=[job['id']])
+    runtime.script = script
+    run = await services.run_manager.start_run(ids['agent'], 'Compute', caller_kind='conversation',
+        caller_id=ids['conversation'], context_id=session.id)
+    await services.run_manager.wait_execution(run.run_id)
+    progress = services._conversation_final_message(ids['conversation'], session.id,
+        sender_id=ids['agent'], sender_name='Researcher', content='Coordinator finished', run_id=run.run_id)
+    assert services.run_manager.get_run(run.run_id).lifecycle['final_message_id'] == progress.id
+    await services.shutdown()
+
+    for _ in range(2):
+        restored = create_services(services.settings, plugins=services.plugins)
+        try:
+            await restored.startup()
+            page = restored.conversations.page_messages(ids['conversation'], session.id)
+            assert len(page.items) == 2
+            assert page.items[0].id == progress.id
+            assert page.items[1].sender_kind == 'system' and 'automatic monitoring' in page.items[1].content
+            assert page.run_summaries[run.run_id].final_message_id is None
+            assert compute.submissions == 1 and len(runtime.contexts) == 1
+        finally:
+            await restored.shutdown()
+            restored.close()
 
 
 @pytest.mark.asyncio

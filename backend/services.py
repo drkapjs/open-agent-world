@@ -695,6 +695,8 @@ class ApplicationServices:
             ):
                 continue
             self.conversations.finalize_run_messages(run.run_id)
+            if await self._persist_background_wait_notice(run, conversation_id, session_id):
+                continue
             with self.database.locked() as db:
                 already_visible = db.execute(
                     """SELECT 1 FROM conversation_messages
@@ -3334,6 +3336,8 @@ class ApplicationServices:
             if record.status not in TERMINAL_RUN_STATUSES:
                 # WAITING is live Run state, not durable chat history.
                 record = await manager.wait_terminal(run_id)
+            if await self._persist_background_wait_notice(record, conversation_id, session_id):
+                return
             final_text = manager.final_text(run_id)
             if record.status is RunStatus.SUCCEEDED and final_text:
                 if self._can_agent_post_to_conversation_session(
@@ -3393,12 +3397,46 @@ class ApplicationServices:
         agent = self.world.maybe_get_card(agent_id)
         return agent.name if agent is not None else "The agent"
 
+    async def _persist_background_wait_notice(
+        self, record: RunRecord, conversation_id: str, session_id: str,
+    ) -> bool:
+        # A completed provider turn releases capacity while the durable Job
+        # monitor owns continuation. Its earlier narration is not a final reply.
+        # Use the host's registered wait, not provider-specific status text.
+        jobs = record.lifecycle.get("awaiting_jobs")
+        if record.status is not RunStatus.SUCCEEDED or not jobs:
+            return False
+        if record.lifecycle.get("final_message_id") is not None:
+            self._require_run_manager().store.update_lifecycle(record.run_id, final_message_id=None)
+        count = len(jobs)
+        notice = (
+            f"{self._conversation_agent_name(record.agent_id)} handed off {count} background "
+            f"{'job' if count == 1 else 'jobs'} for automatic monitoring. "
+            "The conversation resumes when results are available."
+        )
+        message_id = str(uuid5(NAMESPACE_URL,
+            f"{conversation_id}/{session_id}/{record.run_id}/background-wait"))
+        # Also repair historical Runs whose progress was promoted to a final
+        # reply. Repeated startup/finalization must not duplicate the notice.
+        with self.database.locked() as db:
+            visible = db.execute(
+                "SELECT 1 FROM conversation_messages WHERE id=?",
+                (message_id,),
+            ).fetchone()
+        if visible is None:
+            await self._persist_conversation_outcome_notice(
+                record.run_id, conversation_id, session_id, notice, message_id=message_id
+            )
+        return True
+
     async def _persist_conversation_outcome_notice(
         self,
         run_id: str,
         conversation_id: str,
         session_id: str,
         content: str,
+        *,
+        message_id: str | None = None,
     ) -> None:
         try:
             self.conversations.get_session(conversation_id, session_id)
@@ -3413,6 +3451,7 @@ class ApplicationServices:
             content=content,
             run_id=run_id,
             kind="run_outcome",
+            message_id=message_id,
         )
         await self._publish_conversation_message(message)
 

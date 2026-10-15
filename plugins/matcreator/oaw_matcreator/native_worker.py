@@ -18,6 +18,7 @@ sys.stdout = sys.stderr
 # Add only the adapter and the Pack's installed orchestration dependencies.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from native_environment import activate, activate_engine
+from native_events import is_conversation_author, public_events
 
 if len(sys.argv) == 3 and sys.argv[1] == "--environment":
     activate(Path(sys.argv[2]))
@@ -55,26 +56,8 @@ def configure(request):
 
 
 def emit_event(event, child=False):
-    for index, part in enumerate(getattr(getattr(event, "content", None), "parts", None) or []):
-        if getattr(part, "thought", False):
-            continue
-        call = getattr(part, "function_call", None)
-        response = getattr(part, "function_response", None)
-        base = {"author": getattr(event, "author", "MatCreator"), "subagent": child}
-        if call:
-            send({"type": "event", "event": "tool_started", "payload": {**base,
-                "name": call.name, "call_id": call.id, "arguments": call.args}})
-        if response:
-            # Tool output remains in the worker's ADK session; avoid emitting file
-            # bytes, credentials or complete model context into OAW activity logs.
-            result = response.response or {}
-            failed = result.get("ok") is False or bool(result.get("error")) or result.get("status") in ("error", "failed", "cancelled", "needs_replanning")
-            send({"type": "event", "event": "tool_completed", "payload": {**base,
-                "name": response.name, "call_id": response.id, "ok": not failed}})
-        if getattr(part, "text", None) and not child:
-            send({"type": "event", "event": "agent_message", "payload": {**base,
-                "text": part.text, "final": bool(event.is_final_response()),
-                "provider_message_id": f"{event.id}:{index}"}})
+    for message in public_events(event, child=child):
+        send(message)
 
 
 async def run(request, reader, start_reader):
@@ -232,7 +215,7 @@ async def run(request, reader, start_reader):
                     emit_event(event)
                     persist()
                     snapshot()
-                    if event.is_final_response():
+                    if is_conversation_author(event) and event.is_final_response():
                         texts = [p.text for p in (getattr(event.content, "parts", None) or []) if p.text and not p.thought]
                         if texts:
                             final_text = "\n".join(texts)
@@ -240,7 +223,8 @@ async def run(request, reader, start_reader):
         graph = get_execution_graph(stored.state) or {}
         waiting = any(node.get("status") == "waiting" for node in graph.get("nodes", {}).values())
         snapshot("waiting" if waiting else "idle")
-        send({"type": "completed", "text": final_text, "workflow_status": "waiting" if waiting else "idle"})
+        send({"type": "completed", "text": "" if waiting else final_text,
+            "workflow_status": "waiting" if waiting else "idle"})
     except asyncio.CancelledError:
         from oaw_matcreator_engine.agents.graph_logger import AgentGraphLogger
         AgentGraphLogger(session.id).mark_running_nodes_cancelled()

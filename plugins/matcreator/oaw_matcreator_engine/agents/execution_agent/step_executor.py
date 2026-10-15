@@ -97,6 +97,9 @@ Keep operation IDs and inspect running jobs before retrying. Publish outputs wit
 publish_artifact and use its oaw_artifact_ref in submit_step_result. A success claim
 requires evidence and verification. If blocked, submit needs_replanning with a
 specific reason. Never treat a successful model response as scientific validation.
+Report results and artifact references to your caller through submit_step_result.
+Only the planner communicates with the user; return needed decisions as
+needs_replanning rather than asking the user or sending conversation messages.
 Always call submit_step_result before ending. A missing result, a model output
 limit, a missing dependency and an execution timeout are different outcomes.
 Do not claim a computation ran or a remote fleet is empty without tool evidence.

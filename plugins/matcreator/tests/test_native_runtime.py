@@ -158,6 +158,7 @@ def scripted_model(request):
 
         def do_POST(self):
             nonlocal planner_round, executor_round
+            forced_finish_reason = None
             request = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
             calls.append(request)
             names = {t['function']['name'] for t in request.get('tools', [])}
@@ -194,6 +195,23 @@ def scripted_model(request):
                 reply = (function('run_node_executor', {'node_id': 'step_check', 'action': 'Verify the connected tool',
                     'suggested_skills': [], 'workspace_dir': ''}) if executor_round in (1, 2)
                     else {'role': 'assistant', 'content': 'Waiting for external work.' if executor_round == 2 else 'Collected existing output.'})
+            elif scenario == 'executor_limit' and layer == 'executor':
+                reply = {'role': 'assistant', 'content': None, 'reasoning_content': 'Internal unfinished reasoning.'}
+                forced_finish_reason = 'length'
+            elif scenario in ('handoff', 'handoff_batch', 'planner_limit') and layer == 'executor':
+                executor_round += 1
+                if executor_round == 1:
+                    reply = function('get_ready_nodes', {})
+                    reply['content'] = 'INTERNAL REPORT: user approval is needed.'
+                elif executor_round == 2:
+                    reply = function('to_planner', {'reason': 'Need user choice of machine and payment source.'})
+                    if scenario == 'handoff_batch':
+                        late = function('run_node_executor', {'node_id': 'step_check', 'action': 'Must not start',
+                            'suggested_skills': [], 'workspace_dir': ''})['tool_calls'][0]
+                        late['id'] += '_late'
+                        reply['tool_calls'].append(late)
+                else:
+                    reply = {'role': 'assistant', 'content': 'BUG: executor continued after handing control to planner.'}
             elif inject_errors and layer and layer not in injected:
                 injected.add(layer)
                 reply = {'role': 'assistant', 'content': None, 'tool_calls': [
@@ -214,6 +232,11 @@ def scripted_model(request):
                     reply = {'role': 'assistant', 'content': 'Plan ready. Please approve.'}
                 elif planner_round == 3:
                     reply = function('confirm_plan_and_start_execution', {})
+                elif scenario == 'planner_limit':
+                    reply = {'role': 'assistant', 'content': None, 'reasoning_content': 'Internal unfinished reasoning.'}
+                    forced_finish_reason = 'length'
+                elif scenario in ('handoff', 'handoff_batch'):
+                    reply = {'role': 'assistant', 'content': 'Please confirm machine and payment before execution.'}
                 else:
                     reply = {'role': 'assistant', 'content': 'Verified native subagents completed.'}
             elif 'run_node_executor' in names:
@@ -250,6 +273,7 @@ def scripted_model(request):
             else:
                 reply = {'role': 'assistant', 'content': 'Conversation summary.'}
             base = {'id': 'chatcmpl-test', 'model': 'native-test', 'created': 1}
+            finish_reason = forced_finish_reason or ('tool_calls' if reply.get('tool_calls') else 'stop')
             if request.get('stream'):
                 self.send_response(200)
                 self.send_header('Content-Type', 'text/event-stream')
@@ -259,7 +283,7 @@ def scripted_model(request):
                     tool_call['index'] = index
                 first = {**base, 'object': 'chat.completion.chunk', 'choices': [{'index': 0, 'delta': delta, 'finish_reason': None}]}
                 last = {**base, 'object': 'chat.completion.chunk', 'choices': [{'index': 0, 'delta': {},
-                    'finish_reason': 'tool_calls' if reply.get('tool_calls') else 'stop'}]}
+                    'finish_reason': finish_reason}]}
                 for item in (first, last):
                     self.wfile.write(('data: ' + json.dumps(item) + '\n\n').encode())
                 self.wfile.write(b'data: [DONE]\n\n')
@@ -268,7 +292,7 @@ def scripted_model(request):
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
                 self.wfile.write(json.dumps({**base, 'object': 'chat.completion',
-                    'choices': [{'index': 0, 'message': reply, 'finish_reason': 'tool_calls' if reply.get('tool_calls') else 'stop'}]}).encode())
+                    'choices': [{'index': 0, 'message': reply, 'finish_reason': finish_reason}]}).encode())
 
     server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -277,6 +301,77 @@ def scripted_model(request):
     server.shutdown()
     server.server_close()
     thread.join()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not os.environ.get('OAW_MATCREATOR_MANAGED'), reason='requires Pack orchestration dependencies')
+@pytest.mark.parametrize('scripted_model', ['planner_limit', 'executor_limit'], indirect=True)
+async def test_native_model_token_limit_fails_without_empty_success_or_tool_replay(tmp_path, scripted_model):
+    from open_agent_world.plugin_api import AgentDependencyError
+    url, calls = scripted_model
+    provider = Provider(tmp_path, url)
+    provider.resolve_model = lambda _: RuntimeModelConnection('native-test', 'openai', url, 'test-secret',
+        context_window=1_000_000, max_output_tokens=32768)
+    runtime = MatCreatorRuntime(provider)
+    config = AgentConfig('agent-a', 'Native')
+    await runtime.create_agent(config)
+    async with asyncio.timeout(60):
+        planned = [event async for event in runtime.execute(config, context('plan'), RuntimeInput('Plan a check'))]
+        assert planned[-1].type.value == 'agent_completed'
+        events = []
+        with pytest.raises(AgentDependencyError, match='MAX_TOKENS'):
+            async for event in runtime.execute(config, context('execute'), RuntimeInput('Approve initial plan')):
+                events.append(event)
+    assert not runtime.active
+    assert not provider.calls
+    assert not any(event.type.value == 'agent_completed' for event in events)
+    assert not any('unfinished reasoning' in str(dict(event.payload)) for event in events)
+    assert all(request.get('max_completion_tokens', request.get('max_tokens')) == 32768 for request in calls)
+    saved = json.loads(next(tmp_path.rglob('session.json')).read_text(encoding='utf-8'))
+    errors = [event for event in saved['events'] if event.get('error_code') == 'MAX_TOKENS']
+    assert len(errors) == 1, 'a failed invocation must not replay tools or silently retry'
+    history = next(tmp_path.rglob('agent_graphs/native.json'))
+    nodes = json.loads(history.read_text(encoding='utf-8'))['nodes']
+    assert nodes['orchestrator']['status'] == 'failed'
+    assert any(node['status'] == 'failed' for node in nodes.values() if node['type'] in ('planning', 'execution'))
+    assert provider.projection.phase == 'error'
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not os.environ.get('OAW_MATCREATOR_MANAGED'), reason='requires Pack orchestration dependencies')
+@pytest.mark.parametrize('scripted_model', ['handoff', 'handoff_batch'], indirect=True)
+async def test_native_handoff_stops_executor_and_only_planner_asks_user(tmp_path, scripted_model):
+    url, calls = scripted_model
+    provider = Provider(tmp_path, url)
+    runtime = MatCreatorRuntime(provider)
+    config = AgentConfig('agent-a', 'Native')
+    await runtime.create_agent(config)
+    for run, prompt in [('plan', 'Plan a check'), ('execute', 'Approve initial plan')]:
+        async with asyncio.timeout(60):
+            events = [event async for event in runtime.execute(config, context(run), RuntimeInput(prompt))]
+    executor_calls = [call for call in calls if any(
+        tool['function']['name'] == 'run_node_executor' for tool in call.get('tools', []))]
+    assert len(executor_calls) == 2, 'to_planner must prevent the next executor model round'
+    assert not provider.calls, 'no computation should start while the decision is unresolved'
+    assert not runtime.active
+    assert events[-1].type.value == 'agent_completed'
+    assert events[-1].payload['text'] == 'Please confirm machine and payment before execution.'
+    messages = [event.payload for event in events if event.type.value == 'agent_message']
+    assert messages and all(message['author'] == 'thinking_agent' for message in messages)
+    assert not any('INTERNAL REPORT' in message['text'] or 'BUG:' in message['text'] for message in messages)
+    assert any(event.type.value == 'tool_completed' and event.payload.get('name') == 'to_planner' for event in events)
+    saved = json.loads(next(tmp_path.rglob('session.json')).read_text(encoding='utf-8'))
+    assert 'INTERNAL REPORT' in json.dumps(saved['events']), 'private evidence must remain durable'
+    assert 'Need user choice of machine and payment source.' in json.dumps(calls[-1]['messages'])
+    assert saved['state']['execution_approved'] is False
+    assert saved['state']['return_to_planner'] is False
+    graph = saved['state']['execution_graph']
+    if isinstance(graph, list):
+        graph = graph[0]
+    assert graph['nodes']['step_check']['status'] == 'pending'
+    responses = [part['function_response'] for event in saved['events']
+        for part in (event.get('content') or {}).get('parts', []) if part.get('function_response')]
+    assert any(response['name'] == 'to_planner' for response in responses)
 
 
 @pytest.mark.asyncio
@@ -310,6 +405,7 @@ async def test_native_wait_releases_worker_and_restores_existing_approved_plan(t
     await turn('plan', 'Plan compute')
     waiting = await turn('submit', 'Approve')
     assert waiting[-1].payload['workflow_status'] == 'waiting'
+    assert waiting[-1].payload['text'] == ''
     assert not runtime.active
     saved = json.loads(next(tmp_path.rglob('session.json')).read_text(encoding='utf-8'))['state']
     graph = saved['execution_graph'][0] if isinstance(saved['execution_graph'], list) else saved['execution_graph']

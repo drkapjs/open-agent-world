@@ -828,11 +828,14 @@ class RunManager:
                         }]
                         self.store.update_lifecycle(record.run_id, tool_trace=trace[-50:],
                             tool_trace_truncated=bool(lifecycle.get('tool_trace_truncated')) or len(trace) > 50)
-                    if event_kind == "agent_completed" and isinstance(text, str) and text.strip():
+                    if event_kind == "agent_completed" and isinstance(text, str):
+                        # An explicit empty result must clear earlier narration.
+                        # Only providers omitting the result may use the latest
+                        # message as their legacy terminal-output fallback.
                         self._live_output[record.run_id] = text
                     if event.run_status is not None:
                         final_text = self._live_output.get(record.run_id)
-                        if isinstance(final_text, str) and final_text.strip():
+                        if isinstance(final_text, str):
                             self.state.set(
                                 context.state_context.local_scope,
                                 "output_text",

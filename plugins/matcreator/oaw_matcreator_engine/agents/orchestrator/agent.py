@@ -96,6 +96,31 @@ def _get_planning_node_id(state: dict, graph: AgentGraphLogger) -> str:
     return node_id
 
 
+def _raise_model_error(event: Event) -> None:
+    """ADK can end a stream with an error event instead of raising.
+
+    Stream exhaustion alone is not successful completion. Do not retry an
+    entire agent invocation here: earlier tools may already have side effects.
+    The caller yields the event first so its diagnostics remain checkpointed.
+    """
+    reason = getattr(event, "finish_reason", None)
+    reason = str(getattr(reason, "value", reason) or "")
+    code = str(getattr(event, "error_code", None) or "")
+    role = {"thinking_agent": "planner", "execution_orchestrator": "execution orchestrator"}.get(
+        getattr(event, "author", None), "agent")
+    if reason == "MAX_TOKENS" or code == "MAX_TOKENS":
+        raise RuntimeError(
+            f"MatCreator {role} reached the model output token limit (MAX_TOKENS) "
+            "before completing its response. Increase maximum output tokens in Settings / Models "
+            "before resuming. Execution history is retained; tools have not been automatically retried."
+        )
+    if code or reason in {"SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII", "MALFORMED_FUNCTION_CALL"}:
+        # Provider error messages can contain request details. Keep them in the
+        # native checkpoint; publish only a bounded, non-sensitive diagnosis.
+        raise RuntimeError(f"MatCreator {role} model response failed before completion. "
+            "Execution history is retained; inspect the model connection before resuming.")
+
+
 async def _stream_execution_with_recovery(
     execution_agent: BaseAgent,
     ctx: InvocationContext,
@@ -117,6 +142,12 @@ async def _stream_execution_with_recovery(
             async with aclosing(execution_agent.run_async(ctx)) as execution_events:
                 async for event in execution_events:
                     yield event
+                    _raise_model_error(event)
+                    if ctx.session.state.get("return_to_planner", False):
+                        # Persist/deliver the tool response, then close this
+                        # stream before another executor model/tool round. The
+                        # planner owns any subsequent request for user input.
+                        return
                     if _waiting_for_external_work(ctx.session.state):
                         return  # No extra model round can reinterpret a durable wait.
             return
@@ -181,6 +212,7 @@ async def _stream_planning_with_recovery(
             async with aclosing(planning_agent.run_async(ctx)) as planning_events:
                 async for event in planning_events:
                     yield event
+                    _raise_model_error(event)
                     if state.get("execution_approved", False):
                         logger.info("[orchestrator] approval received; ending planning phase")
                         break
