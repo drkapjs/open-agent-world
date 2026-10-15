@@ -22,6 +22,7 @@ from backend.packs.installation import PackInstallationManager
 from backend.packs.manifest import PackManifest
 from backend.packs.requirements import aggregate_requirements
 from backend.plugins.builtin import create_builtin_registry
+from backend.plugins.registry import PLUGIN_API_VERSION
 from backend.plugins.loader import load_installed_packs
 
 MANIFEST = {

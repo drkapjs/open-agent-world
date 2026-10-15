@@ -16,7 +16,9 @@ individual devices.
    Advanced mode exposes layers, shapes, constraints and style tokens.
 3. **Function Designer** defines text, number and switch fields with defaults.
    Basic operations support `{{name}}` templates, sum, product and ordered
-   concatenation. Test the operation on its test bench.
+   concatenation. Test the operation on its test bench. A connected Face Designer
+   exposes saved buttons from enabled views; new workbenches include this link.
+   Custom button logic bindings are reserved metadata and do not execute yet.
 4. **Card Printer** connects one face designer and one function designer.
    Save the designs and choose **Print Card** to create an independent card.
    Open the printed card to fill its form and run it. Later designer edits
@@ -79,3 +81,9 @@ layers. Legacy recipes without `studio` retain their original configuration.
 
 Run the factory, content-Pack and installation backend tests, the frontend
 build, and `e2e/card-factory.spec.ts` when changing this workflow.
+
+Card recipes may include `tutorials` for [progressive tutorials and offline
+documentation](developers/progressive-tutorials.md). The host registers node types
+and renders forms; archives still cannot contain Python wheels, JavaScript,
+undeclared files or install hooks. Factory devices can be saved in Legions;
+the Packer's external source references are cleared when captured.
