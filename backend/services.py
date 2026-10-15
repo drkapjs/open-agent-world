@@ -60,7 +60,7 @@ from backend.events.hub import EventHub
 from backend.events.models import EventType, RuntimeEvent
 from backend.persistence.database import Database
 from backend.idempotency import IdempotencyStore
-from backend.request_context import LOCAL_TENANT, RequestContext
+from backend.request_context import RequestContext
 from backend.legions import (
     LegionBlueprint,
     LegionBounds,
@@ -2453,7 +2453,7 @@ class ApplicationServices:
     ) -> ConversationSession:
         # This repository still owns one local profile. A new context cannot
         # select another tenant until repositories actually enforce that scope.
-        if request_context is not None and request_context.tenant != LOCAL_TENANT:
+        if request_context is not None and request_context.tenant != self.settings.tenant_scope:
             raise NotFoundError("Conversation does not exist in this scope")
         participants = list(dict.fromkeys(request.participant_ids))
 
@@ -3874,6 +3874,7 @@ def create_services(
     default_runtime_provider_id: str | None = None,
     sandbox_backend: SandboxBackend | None = None,
     plugins: PluginRegistry | None = None,
+    sandbox_registry_factory=None,
 ) -> ApplicationServices:
     settings.data_root.mkdir(parents=True, exist_ok=True)
     for directory in ("projects", "assets", "sandboxes", "database", "logs"):
@@ -4012,7 +4013,7 @@ def create_services(
     if services.sandbox_backend is None and settings.sandbox_runtime is not None:
         services.sandbox_backend = SandboxManager(
             settings.data_root,
-            builtin_sandbox_registry(settings.data_root, services.publish_sandbox_event),
+            (sandbox_registry_factory or builtin_sandbox_registry)(settings.data_root, services.publish_sandbox_event),
             preferred=settings.sandbox_runtime,
         )
     from backend.plugins.bootstrap import PluginEnvironmentBootstrap
