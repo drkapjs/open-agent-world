@@ -5,7 +5,7 @@ test.afterEach(async ({ request }) => {
   if (nodes.length) expect((await request.post('/api/nodes/batch-delete', { data: { node_ids: nodes.map((node: { id: string }) => node.id) } })).ok()).toBe(true);
 });
 
-test('MatCreator preset opens sessions, files, conversation and a persistent research board', async ({ page, request }) => {
+test('MatCreator native preset opens from the deck with graph, central tabs and right-side sections', async ({ page, request }) => {
   test.setTimeout(90_000);
   await page.setViewportSize({ width: 1600, height: 1000 });
   const errors: string[] = [];
@@ -14,10 +14,11 @@ test('MatCreator preset opens sessions, files, conversation and a persistent res
   expect((await request.patch('/api/application/preferences', { data: { profile_id: profile.profile_id, generation: profile.generation, changes: {
     'oaw-onboarding-v1': JSON.stringify({ version: 1, state: { status: 'skipped' } }), 'oaw.locale': 'en',
     'oaw-canvas-viewport-v1': null, 'oaw-node-surfaces-v1': null, 'oaw-theme': 'light',
+    'oaw-active-workspace-v1': null,
   } } })).ok()).toBe(true);
   // Presets are available in the Library but are not auto-equipped in new decks.
   let library = await (await request.get('/api/card-library')).json();
-  const sourcePack = Object.values(library.packs).find((pack: any) => pack.definition.cards.includes('matcreator.tasks')) as any;
+  const sourcePack = Object.values(library.packs).find((pack: any) => pack.definition.cards.includes('matcreator.agent')) as any;
   const opened = await request.post('/api/card-library/actions', { data: {
     expected_revision: library.revision, action: 'open_pack', id: sourcePack.definition.id,
   } });
@@ -25,30 +26,28 @@ test('MatCreator preset opens sessions, files, conversation and a persistent res
   library = await opened.json();
   const equipped = await request.post('/api/card-library/actions', { data: {
     expected_revision: library.revision, action: 'update_deck', id: 'saved-legions',
-    entries: [{ kind: 'legion', id: 'matcreator.research' }],
+    entries: [{ kind: 'legion', id: 'matcreator.native-research' }],
   } });
   expect(equipped.ok(), await equipped.text()).toBe(true);
   await page.goto('/');
   await page.getByRole('tab', { name: /Legions/ }).click();
-  const deployed = page.waitForResponse(response => response.url().includes('/presets/matcreator.research/instances'));
+  const deployed = page.waitForResponse(response => response.url().includes('/presets/matcreator.native-research/instances'));
   // Open the remaining owned dependencies, including Published artifacts.
   page.once('dialog', async dialog => {
     expect(dialog.type()).toBe('confirm');
     expect(dialog.message()).toContain('Open these owned packs and continue?');
     await dialog.accept();
   });
-  await page.getByRole('button', { name: 'Place MatCreator research', exact: true }).click();
+  await page.getByRole('button', { name: 'Place MatCreator native research', exact: true }).click();
   const response = await deployed;
   expect(response.status(), await response.text()).toBe(201);
   const instance = await response.json();
-  expect(instance.nodes.find((node: { id: string }) => node.id === instance.node_ids.summoning).equipment.owner_id).toBe(instance.node_ids.agent);
-  expect(instance.nodes.find((node: { id: string }) => node.id === instance.node_ids.executor).parent_id).toBe(instance.node_ids.barracks);
   const group = instance.node_ids.group;
   const groupCard = page.locator(`.react-flow__node[data-id="${group}"]`);
   await expect(groupCard).toBeAttached();
   expect(instance.nodes.find((node: { id: string }) => node.id === instance.node_ids.artifacts).type).toBe('core.artifact-collection');
   await page.getByRole('button', { name: 'Fit view', exact: true }).click();
-  const toolsets = ['knowledge', 'barracks'].map(key => page.locator(`[data-card-id="${instance.node_ids[key]}"]`));
+  const toolsets = ['knowledge', 'sandbox'].map(key => page.locator(`[data-card-id="${instance.node_ids[key]}"]`));
   for (const toolset of toolsets) await expect(toolset).toBeVisible();
   const bounds = await Promise.all(toolsets.map(toolset => toolset.boundingBox()));
   for (let i = 0; i < bounds.length; i++) for (let j = i + 1; j < bounds.length; j++) {
@@ -59,55 +58,18 @@ test('MatCreator preset opens sessions, files, conversation and a persistent res
   const open = async () => {
     await page.getByRole('button', { name: 'Fit view', exact: true }).click();
     await groupCard.getByRole('button', { name: 'Workspace mode', exact: true }).click();
-    return page.getByRole('dialog', { name: 'MatCreator research workspace mode' });
+    return page.getByRole('dialog', { name: 'MatCreator native research workspace mode' });
   };
   const workspace = await open();
-  await expect(workspace.getByRole('region', { name: 'Research task board', exact: true })).toBeVisible();
+  await expect(workspace.getByRole('region', { name: 'Execution graph', exact: true })).toBeVisible();
   await expect(workspace.getByRole('button', { name: 'New session', exact: true })).toBeVisible();
-  await expect(workspace.getByText('Start once to prepare the managed workspace', { exact: true })).toBeVisible();
   await expect(workspace.getByRole('textbox', { name: 'Conversation message', exact: true })).toBeVisible();
-  const board = workspace.getByRole('region', { name: 'Research task board', exact: true });
-  await board.getByRole('button', { name: 'New plan', exact: true }).first().click();
-  await board.getByLabel('Plan title', { exact: true }).fill('Copper structure study');
-  await board.getByLabel('Research goal').fill('Build a 2 × 2 × 2 copper supercell and verify 32 atoms.');
-  await board.getByRole('button', { name: 'Create plan', exact: true }).click();
-  await board.getByRole('button', { name: 'Add task', exact: true }).click();
-  await board.getByLabel('Task title', { exact: true }).fill('Generate the copper structure');
-  await board.getByLabel('Task details').fill('Read Materials Core and inspect the Sandbox environment.');
-  await board.getByLabel('Acceptance criteria').fill('Verify exactly 32 copper atoms and publish the structure.');
-  await board.getByRole('button', { name: 'Save task', exact: true }).click();
-  await board.getByRole('button', { name: '‹ Tasks', exact: true }).click();
-  await expect(board.getByRole('button', { name: /Generate the copper structure/ })).toBeVisible();
-  let doc = await (await request.get(`/api/nodes/${instance.node_ids.tasks}/document`)).json();
-  const plan = doc.value.plans[0];
-  expect((await request.post(`/api/nodes/${instance.node_ids.tasks}/actions/update_task`, { data: {
-    expected_revision: doc.revision,
-    arguments: { plan_id: plan.id, task_id: plan.tasks[0].id, status: 'review', result: 'Executor reports 32 atoms; verify the file.' },
-  } })).ok()).toBe(true);
-  await expect(board.getByRole('region', { name: 'Awaiting review', exact: true })).toBeVisible();
-  await board.getByRole('button', { name: 'Generate the copper structure', exact: true }).click();
-  await expect(board.getByText('Executor finished. Verify the outputs and record evidence before marking this task done.')).toBeVisible();
-  await expect(board.getByText('Verify exactly 32 copper atoms and publish the structure.')).toBeVisible();
-  await page.screenshot({ path: 'test-results/matcreator-task-review.png' });
-  await board.getByRole('button', { name: '‹ Tasks', exact: true }).click();
-  doc = await (await request.get(`/api/nodes/${instance.node_ids.tasks}/document`)).json();
-  const updated = await request.post(`/api/nodes/${instance.node_ids.tasks}/actions/update_task`, { data: {
-    expected_revision: doc.revision,
-    arguments: { plan_id: plan.id, task_id: plan.tasks[0].id, status: 'done', result: 'Fixture result: validated 32 atoms', outputs: ['copper/structure.xyz'] },
-  } });
-  expect(updated.ok()).toBe(true);
-  await expect(board.getByRole('region', { name: 'Done', exact: true }).getByRole('button', { name: /Generate the copper structure/ })).toBeVisible();
-  await board.getByRole('region', { name: 'Done', exact: true }).getByRole('button', { name: /Generate the copper structure/ }).click();
-  await expect(board.getByText('copper/structure.xyz', { exact: true })).toBeVisible();
-  await board.getByRole('button', { name: '‹ Tasks', exact: true }).click();
-  await page.screenshot({ path: 'test-results/matcreator-workspace-light.png' });
   const stage = workspace.locator('.legion-layout-stage');
   const fit = await stage.evaluate(element => ({ width: element.clientWidth, scrollWidth: element.scrollWidth, height: element.clientHeight, scrollHeight: element.scrollHeight }));
   expect(fit.scrollWidth).toBeLessThanOrEqual(fit.width + 1);
   expect(fit.scrollHeight).toBeLessThanOrEqual(fit.height + 1);
-  await expect(workspace.getByRole('region', { name: 'Sandbox terminal', exact: true })).toBeVisible();
-  await expect(workspace.getByRole('button', { name: 'Start', exact: true })).toBeVisible();
-  // Exercise the preset's real Conversation grant and renderer in its lower-right tab.
+  await page.screenshot({ path: 'test-results/matcreator-workspace-light.png' });
+  // Exercise the preset's real Conversation grant and automatic central-tab handoff.
   const conversation = await (await request.get(`/api/conversations/${instance.node_ids.conversation}`)).json();
   const sessionBase = `/api/conversations/${instance.node_ids.conversation}/sessions/${conversation.sessions[0].id}`;
   const uploaded = await request.post(`${sessionBase}/attachments?filename=helium.xyz`, {
@@ -119,7 +81,7 @@ test('MatCreator preset opens sessions, files, conversation and a persistent res
     attachments: [{ version_id: attachment.version_id, path: attachment.path }],
   } })).status()).toBe(202);
   await workspace.getByRole('button', { name: 'Open helium.xyz', exact: true }).click();
-  await workspace.getByRole('tab', { name: 'Structure viewer', exact: true }).click();
+  await expect(workspace.getByRole('tab', { name: 'Structure viewer', exact: true })).toHaveAttribute('aria-selected', 'true');
   const viewer = workspace.locator('.structure-viewer--workspace');
   await expect(viewer).toBeVisible();
   await expect(viewer.locator('.structure-canvas')).toHaveAttribute('data-atom-count', '1', { timeout: 30_000 });
@@ -136,19 +98,13 @@ test('MatCreator preset opens sessions, files, conversation and a persistent res
   await workspace.getByRole('tab', { name: 'Research files & compute', exact: true }).click();
   await expect(workspace.getByRole('button', { name: 'Start', exact: true })).toBeVisible();
   await workspace.getByRole('tab', { name: /Research files & compute · File preview/ }).click();
-  await workspace.getByRole('tab', { name: 'Research knowledge', exact: true }).click();
+  await workspace.getByRole('tab', { name: 'Skills & knowledge', exact: true }).click();
   await expect(workspace.getByRole('region', { name: 'Know-Do Graph workspace', exact: true })).toBeVisible();
-  await workspace.getByRole('tab', { name: 'Research tasks', exact: true }).click();
-  await page.reload();
-  await open();
-  await expect(board.getByRole('heading', { name: 'Copper structure study', exact: true })).toBeVisible();
-  await board.getByRole('button', { name: 'Generate the copper structure', exact: true }).click();
-  await expect(board.getByText('Fixture result: validated 32 atoms', { exact: true })).toBeVisible();
-  await board.getByRole('button', { name: '‹ Tasks', exact: true }).click();
+  await workspace.getByRole('tab', { name: /Research conversation · Conversation/ }).click();
   await workspace.getByRole('button', { name: 'Use dark theme' }).click();
   await page.screenshot({ path: 'test-results/matcreator-workspace-dark.png' });
-  await page.setViewportSize({ width: 960, height: 720 });
-  await expect(board.getByRole('button', { name: 'Add task', exact: true })).toBeVisible();
+  await page.setViewportSize({ width: 1100, height: 760 });
+  await expect(workspace.getByRole('textbox', { name: 'Conversation message', exact: true })).toBeVisible();
   await page.screenshot({ path: 'test-results/matcreator-workspace-small.png' });
   expect(errors).toEqual([]);
 });

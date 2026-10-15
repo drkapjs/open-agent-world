@@ -345,11 +345,13 @@ class NodeDelegationMixin:
         else:
             # Work on one board may use several Barracks. Join actual Run events once.
             manager = self.services.run_manager
-            pending = [e for e in attempts if e.get("run_id") and manager.get_run(e["run_id"]).status not in TERMINAL_RUN_STATUSES]
+            pending = [e for e in attempts if e.get("run_id")
+                       and (manager.get_run(e["run_id"]).status not in TERMINAL_RUN_STATUSES
+                            or manager.execution_in_progress(e["run_id"]))]
             waiters = []
             try:
                 if pending and request.timeout_seconds and not (request.wait_mode == "any" and len(pending) < len(attempts)):
-                    waiters = [asyncio.create_task(manager.wait_terminal(e["run_id"])) for e in pending]
+                    waiters = [asyncio.create_task(manager.wait_settled(e["run_id"])) for e in pending]
                     await asyncio.wait(waiters, timeout=request.timeout_seconds,
                         return_when=asyncio.FIRST_COMPLETED if request.wait_mode == "any" else asyncio.ALL_COMPLETED)
             finally:

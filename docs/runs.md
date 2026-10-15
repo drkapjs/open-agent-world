@@ -185,13 +185,69 @@ characters. `PATCH /api/conversations/{id}/sessions/{session_id}` accepts a
 manual `title` (up to 200 characters). Renaming does not change group identity
 or the default session's deletion protection.
 
-Provider-visible text and tool start/completion records in Conversation runs
-are committed to `conversation_messages` before notification. Tool argument and
-response details are retained; provider-private reasoning is not projected.
+Provider-visible text in Conversation runs is committed to
+`conversation_messages` before notification. Successive snapshots with the same
+`provider_message_id` update that message in place. Distinct messages remain in
+the timeline, including text emitted before a follow-up from the user. Tool
+start/completion details remain in the Run trace; provider-private reasoning is
+not projected.
+Conversation uses one chronological projection for live and restored activity.
+Consecutive content from one recorded Agent shares a single speaker header.
+Each message or public progress entry retains its own chat bubble; execution
+groups and Run controls sit between or after those bubbles. A different speaker
+starts a new turn; display names alone never establish shared identity.
+Adjacent tool calls in the
+same Run form an execution group; messages and other Runs separate groups.
+Results update the original tool row. A running group has a bounded scrolling
+viewport that follows activity until the reader scrolls away. The latest group
+stays open while the Agent narrates or awaits its next model response. Groups
+collapse by default when a newer execution group begins or the Run terminates,
+and can be reopened. Unfinished calls remain visible across user interruptions. Run termination
+never relocates activity underneath the final reply.
+
+Successful Runs expose `final_message_id` in the timeline summary, recorded when
+the final response is persisted. `is_final` only seals an individual streamed
+message; it does not identify the final response. Once that response is visible,
+the preceding process is collapsed as a single work log before the response.
+User messages, speaker changes, and other Runs remain chronological boundaries.
+Failed, incomplete, paged-out, or legacy Runs without this explicit relation
+retain their visible process instead of guessing a final reply.
+
+Tool activity retains separate start and completion timestamps when merging
+events, including completion-before-start repair from REST. Each tool displays
+its own elapsed time; a group displays its wall-clock span (parallel calls are
+not added together). Missing timestamp pairs do not invent durations. Automatic
+live previews stay compact and scroll, while manually opened groups, archived
+groups, and open tool details use the full transcript height for reading.
+
+All tool rows display only the resolved tool name, status and elapsed time.
+Wrapper names, capability IDs and argument previews are omitted from the UI.
+Available input, output and errors use continuous hierarchy tables. Parent fields
+span their descendant rows, each nesting level gets a column, and values share
+the final column. Arrays use numbered rows in the same table. There are no inner
+disclosures or collection-type groups. Narrow panes show each full field path
+above its value to avoid squeezing deep hierarchies into tiny columns.
+Empty sections are omitted; calls without details have no disclosure.
+There is no raw JSON view or placeholder for unrecorded data.
+The dependency-free `open_agent_world.tool_activity` projection
+bounds and masks tool evidence in isolated workers and again before host
+publication. MatCreator resource tools include their results; internal executor
+reports retain only an outcome summary, and private reasoning is excluded.
+System notices have a separate label and body. Background monitoring handoff
+notices record request keys, providers, external IDs and OAW job IDs so users can
+locate the work in Jobs; these identities describe the handoff, not live status.
+
+The bounded Run checkpoint (`tool_trace`, retained for API compatibility) stores
+the latest 50 tool/public-progress events, including `status`, `plan`, and
+`reasoning_summary`. `tool_trace_truncated` explicitly marks omitted earlier
+events. The display cache retains up to 200 merged rows. These are activity
+previews, not an unlimited execution archive; older checkpoints cannot restore
+events that were never persisted. Grouping does not create runtime phases or
+infer dependencies. Historical message windows retain their associated Run
+summaries and restrict activity to the visible time range.
 Each record has an immutable ID and a per-session increasing `sequence`.
-Final replies reference the originating text record through the Run's
-`output_message_id`; finalization marks that record instead of duplicating or
-matching its content. Live graph and session participation checks also apply
+Final replies reuse the Run's `output_message_id` when it already contains that
+reply; a separate completion reply gets its own row. Live graph and session participation checks also apply
 to intermediate records, including delegated runs.
 
 `GET /api/conversations/{id}/sessions/{session_id}/timeline` returns `items`,
@@ -224,3 +280,18 @@ retry protocol. Unconfirmed sends remain visible with their text; responses do
 not clear a subsequent draft. Title updates do not gate rendering. Timeline
 invalidations arriving during a fetch are coalesced and drained after that fetch
 instead of being dropped until the next polling interval.
+
+Addressed follow-ups are durable immediately. During an active Run in the same
+session, ADK consumes them just before its next model call, after available tool
+results. Codex uses `turn/steer`; MatCreator's native planner and executors receive
+updates in their model callbacks. These paths continue the current Run. A new
+Run in the same session is not admitted just because the Agent has spare capacity.
+Inputs arriving after the last model boundary, or targeting a provider without
+live-input support, remain queued for a subsequent Run.
+
+Runtime adapters read `pending_conversation_input(agent_id, run_id)` from their
+`AgentCapabilityProvider` and call `acknowledge_conversation_input(...)` with
+message IDs only after including or accepting the input. Reads and acknowledgements
+check the current Run, session membership and graph connection again. Inputs for
+other sessions or Agents are never returned. Optional `RuntimeProvider.notify_input`
+wakes event-driven adapters; it is not a delivery acknowledgement.

@@ -22,7 +22,7 @@ export function StudyCardContent({item,save}:{item:Annotation;save:(item:Annotat
   const rgb=color.slice(1).match(/../g)?.map(v=>parseInt(v,16))??[54,66,59];
   const ink=rgb[0]*.299+rgb[1]*.587+rgb[2]*.114>150?"#17211c":"#ffffff";
   return <>
-    <header className="library-study-card-heading" style={{background:color,color:ink}}>
+    <header className="library-study-card-heading" style={item.title_color ? {background:color,color:ink} : undefined}>
       <button aria-label={item.collapsed?t("展开摘录正文"):t("折叠摘录正文")} aria-expanded={!item.collapsed} disabled={busy} onClick={()=>void update({collapsed:!item.collapsed})}>{item.collapsed?"▸":"▾"}</button>
       <input aria-label={t("摘录标题")} title={t("点击编辑标题，Enter 保存")} placeholder={t("摘录")} maxLength={300} value={title} disabled={busy} onChange={e=>setTitle(e.target.value)} onBlur={()=>{if(title!==(item.title??""))void update({title:title.trim()});}} onKeyDown={e=>{if(e.key==="Enter"&&!e.nativeEvent.isComposing)e.currentTarget.blur();}}/>
       <button className="library-title-color-trigger" aria-label={t("标题栏颜色")} title={t("标题栏颜色")} aria-expanded={paletteOpen} disabled={busy} onClick={()=>setPaletteOpen(v=>!v)}>◉</button>
@@ -30,8 +30,8 @@ export function StudyCardContent({item,save}:{item:Annotation;save:(item:Annotat
     {paletteOpen&&<div className="library-title-palette" role="group" aria-label={t("标题栏预设颜色")}>
       {TITLE_COLORS.map(([name,value])=><button key={value} title={t(name)} aria-label={t(name)} aria-pressed={color===value} disabled={busy} style={{background:value}} onClick={()=>{void update({title_color:value});setPaletteOpen(false);}}/>)}
     </div>}
-    {!item.collapsed&&(item.image?<img src={item.image} draggable={false}/>:<blockquote>{item.text}</blockquote>)}
-    <p>{item.comment}</p>
+    {!item.collapsed&&(item.image?<img src={item.image} alt={t("截图批注")} draggable={false}/>:<blockquote>{item.text}</blockquote>)}
+    {item.comment && <p>{item.comment}</p>}
     {error&&<small role="alert">{t("保存失败：")}{error}</small>}
   </>;
 }

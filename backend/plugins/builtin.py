@@ -17,6 +17,7 @@ from backend.plugins.registry import (
     CapabilityDefinition,
     NodeTypeDefinition,
     NodePresentation,
+    WorkspaceLayoutMetadata,
     PackDefinition, PluginDescriptor,
     PluginRegistration,
     PluginRegistry,
@@ -891,7 +892,7 @@ def _register_builtin(registry: PluginRegistration) -> None:
         message_schema['properties'].pop(key, None)
     registry.register_capability(CapabilityDefinition(
         kind='conversation.send_message', tool_name='send_conversation_message', target_parameter='conversation',
-        description='Send text and/or published file attachments to the current session. Publish Sandbox files to this conversation first; attach version_id and path. Images are clickable previews.',
+        description='Send published file attachments or a separate interim update to the current session. Ordinary response text is delivered automatically: do not call this tool for the same answer or repeat sent content in the final response. Publish Sandbox files first; attach version_id and path. Images are clickable previews.',
         input_schema=message_schema), _send_conversation_message)
     registry.register_capability(CapabilityDefinition(
         kind='agent.communicate', tool_name='send_message', target_parameter='target',
@@ -1017,7 +1018,8 @@ def _register_builtin(registry: PluginRegistration) -> None:
         statuses=frozenset({"available"}), config_model=ConversationConfig,
         tutorials=CONVERSATION_TUTORIALS,
         traits=frozenset({"core.field", "core.conversation", "core.file-source"}),
-        presentation=NodePresentation(states=("node", "preview", "workspace"), initial="workspace", open="workspace"),
+        presentation=NodePresentation(states=("node", "preview", "workspace"), initial="workspace", open="workspace",
+            workspace_layout=WorkspaceLayoutMetadata(min_width=280, min_height=240, ideal_width=760, ideal_height=560)),
         lifecycle=ConversationNodeBehavior(),
         template_handler=ConversationNodeTemplateHandler(), templateable=True,
     ))
@@ -1050,7 +1052,8 @@ def _register_builtin(registry: PluginRegistration) -> None:
         config_model=SandboxConfig, traits=frozenset({"core.sandbox", "core.file-source"}),
         tutorials=SANDBOX_TUTORIALS,
         document=NodeDocumentDefinition(model=EnvironmentProfile),
-        presentation=NodePresentation(states=("node", "preview", "workspace"), initial="workspace", open="workspace"),
+        presentation=NodePresentation(states=("node", "preview", "workspace"), initial="workspace", open="workspace",
+            workspace_layout=WorkspaceLayoutMetadata(min_width=280, min_height=240, ideal_width=720, ideal_height=480)),
         lifecycle=SandboxNodeBehavior(),
         templateable=True, template_status="stopped",
         template_handler=SandboxNodeTemplateHandler(),
@@ -1144,11 +1147,17 @@ class CorePlugin:
     )
 
     def register(self, registration: PluginRegistration) -> None:
+        from backend.sandbox.background_jobs import definition as operation_jobs
+        registration.register_background_job_provider("core.sandbox-operation", operation_jobs)
         from backend.plugins.shadow_collection import register_shadow_collection
         register_shadow_collection(registration)
         _register_builtin(registration)
         from backend.file_preview import register_file_preview
         register_file_preview(registration)
+        from backend.execution_graph import register as register_execution_graph
+        register_execution_graph(registration)
+        from backend.job_board import register as register_job_board
+        register_job_board(registration)
         registration.register_pack(PackDefinition(id='open-agent-world.core.default', name='Core essentials',
             description='Agents, resources and workspaces for your world.', cards=tuple(registration.nodes), packaging='collector'))
 

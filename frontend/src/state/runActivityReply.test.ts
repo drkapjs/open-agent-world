@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { withoutFinalReply, type RunActivityState } from "./runActivity";
 
+it('leaves identity-bearing messages for transcript reconciliation instead of matching content', () => {
+  const source: RunActivityState = { seen: [], truncated: false, items: [
+    { id: 'event', type: 'agent_message', conversation_message_id: 'commentary', text: 'Done' },
+  ] };
+  expect(withoutFinalReply(source, 'Done')).toBe(source);
+});
+
 const state = (items: RunActivityState["items"]): RunActivityState => ({ items, seen: ["event-1"], truncated: false });
 const reply = (id: string, text: string): RunActivityState["items"][number] => ({ id, type: "agent_message", text });
 

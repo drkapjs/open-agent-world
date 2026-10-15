@@ -1,3 +1,5 @@
+import { ExecutionGraphCard } from './ExecutionGraph';
+import { JobsCard } from './Jobs';
 import { isMissingCard, MissingPlugin } from "./MissingPlugin";
 import { CardLODView } from './CardLODView';
 import { useCardRenderLOD } from '../canvas/useCardRendering';
@@ -43,6 +45,7 @@ import { CardFinishLayer } from "./CardFinishLayer";
 import { useCardFinish } from "./useCardFinish";
 import { finishLabel, normalizeCardFinish } from "./cardFinish";
 import { WorldCardPrint } from './WorldCardPrint';
+import { ContentSurfaceControls, hasContentSurface } from './ContentSurfaceControls';
 
 const DRAG_THRESHOLD_PX = 5;
 const NON_DRAG_SELECTOR = "button, input, textarea, select, label, a, summary, [role='button'], [role='separator'], [contenteditable]:not([contenteditable='false']), .nodrag, .react-flow__handle";
@@ -50,6 +53,8 @@ const NON_DRAG_SELECTOR = "button, input, textarea, select, label, a, summary, [
 interface BodyProps { card: WorldCard; level: NodeSurfaceLevel }
 
 const BODIES: Partial<Record<CardType, ComponentType<BodyProps>>> = {
+  'core.execution-graph': ExecutionGraphCard,
+  'core.jobs': JobsCard,
   agent: AgentCardBody,
   conversation: ConversationCardBody,
   text: TextCardBody,
@@ -140,6 +145,8 @@ const WorldCardNodeComponent = memo(function WorldCardNodeComponent({ data, sele
   const support = nodeSurfaceSupport(card.type, catalog);
   const presentation = cardPresentation(card, catalog);
   const customFace = Boolean(cardStudio(card, catalog)) && !isMissingCard(card, catalog);
+  const contentSurface = !customFace && !isMissingCard(card, catalog) && hasContentSurface(definition)
+    && (visualLevel === 'inspector' || visualLevel === 'workspace');
   const base = useNodeSurfaceStore(state => state.baseLevels[card.id]);
   const canCollapseInspector = collapsedSurface(presentation, "inspector", base) !== "inspector";
 
@@ -176,6 +183,7 @@ const WorldCardNodeComponent = memo(function WorldCardNodeComponent({ data, sele
       data-card-print={!customFace && (visualLevel === 'node' || visualLevel === 'preview') ? 'collectible' : undefined}
       data-card-expanded={visualLevel === "inspector" || visualLevel === "workspace" ? "true" : "false"}
       data-surface-level={level}
+      data-content-surface={contentSurface || undefined}
       data-render-lod="full"
       data-activity={activity.phase}
       data-equipment-detail={data.equipmentDetail || undefined}
@@ -229,7 +237,7 @@ const WorldCardNodeComponent = memo(function WorldCardNodeComponent({ data, sele
 
       {visualLevel !== "inspector" && <EquipmentToggle card={card} />}
       {customFace ? <DesignedCard card={card} level={level} /> : visualLevel === "workspace" ? <WorkspaceSurface card={card} /> : <>
-        <header className={`card-header node-surface-header node-drag-region ${visualLevel === "inspector" ? "card-finish-surface" : ""}`}>
+        {contentSurface ? <ContentSurfaceControls card={card} level="inspector" /> : <header className={`card-header node-surface-header node-drag-region ${visualLevel === "inspector" ? "card-finish-surface" : ""}`}>
           <div className="card-kind-icon" data-material-layer="top-print" aria-hidden="true"><CatalogIcon definition={definition} size={18} /></div>
           <div className="card-title-group" data-material-layer="top-print">
             <span className="card-eyebrow">{isMissingCard(card, catalog) ? `MISSING · ${card.type}` : label}</span>
@@ -254,18 +262,18 @@ const WorldCardNodeComponent = memo(function WorldCardNodeComponent({ data, sele
           {visualLevel === 'inspector' && canCollapseInspector && <IconButton icon={X} size="sm" quiet className="node-surface-close"
             onClick={() => closeInspector(card.id)} label={t("Close {v0} inspector", { v0: String(card.name) })} />}
           {visualLevel === 'inspector' && <CardFinishLayer finish={card.finish} quality="thumbnail" surface="chrome" />}
-        </header>
+        </header>}
 
-        <div className="node-preview-content" aria-hidden={visualLevel !== "preview"}>
+        {!contentSurface && <div className="node-preview-content" aria-hidden={visualLevel !== "preview"}>
           {visualLevel === 'preview' && <div className="node-preview-body"><NodePreview card={card} /></div>}
           {presentation.open !== "preview" && <span className="node-preview-hint" data-material-layer="top-print">{t(presentation.open === "workspace" ? "Open workspace" : "Click for details")}</span>}
-        </div>
+        </div>}
 
         <div className="card-body node-inspector-content nodrag nopan" aria-hidden={visualLevel !== "inspector"}>
           {(visualLevel === 'inspector' || (inspectorVisited && retainedInspector)) && <CardContent card={card} level={level} />}
         </div>
 
-        {visualLevel === 'inspector' && <footer className="card-footer node-inspector-footer nodrag nopan">
+        {visualLevel === 'inspector' && !contentSurface && <footer className="card-footer node-inspector-footer nodrag nopan">
           {definition?.traits.includes("core.agent") && !card.ephemeral ? <EquipmentToggle card={card} />
             : <span className="card-id">{card.ephemeral ? "synthetic" : card.id.slice(0, 8)}</span>}
           {!card.ephemeral && <small className="card-finish-metadata">{t("Finish")}: {t(finishLabel(card.finish))}</small>}

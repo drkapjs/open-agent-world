@@ -6,6 +6,7 @@ import { apiErrorMessage, worldApi } from "../api/client";
 import { useWorldStore } from "../state/worldStore";
 import { PublishedReferences, type ArtifactReference } from "./Artifacts";
 import { useWorkspaceAccess } from '../workspace/WorkspaceAccess';
+import { WorkspaceEmptyState } from '../workspace/WorkspacePrimitives';
 
 export interface ExecutionSnapshot {
   status: string;
@@ -86,9 +87,10 @@ export function WorkSourceWorkspace({ nodeId }: { nodeId: string }) {
   const execution = useNodeExecution(nodeId, reload);
   useEffect(() => { void reload(); }, [reload, execution.state]);
   return <div className="work-source-workspace">
-    <p>{t("The plugin defines readiness and result acceptance. Connect an executor using this plugin's execution relationship.")}</p>
     {error && <p role="alert">{error}</p>}
     <NodeExecutionControls execution={execution} revision={revision} readyCount={execution.state?.items.filter((item) => item.ready).length ?? 0} titleForItem={(id) => id} />
+    {!execution.state?.items.length && <WorkspaceEmptyState title={t("No work items yet")}
+      description={t("The plugin defines readiness and result acceptance. Connect an executor using this plugin's execution relationship.")} />}
     <ul>{execution.state?.items.map((item) => <li key={item.id}><strong>{item.id}</strong> · {item.ready ? t("Ready") : item.retryable ? t("Retry available") : t("Waiting or complete")}
       {(item.ready || item.retryable) && <button className="secondary-button" disabled={execution.busy || execution.state?.active || revision === undefined} onClick={() => void execution.run(revision!, item.id)}>{item.retryable ? t("Retry") : t("Run")}</button>}
     </li>)}</ul>

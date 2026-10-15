@@ -131,19 +131,19 @@ export function MatchControls({config,schema,save,disabled,advanced,onInvalid}:{
   const numeric=(field:string,label:string,unit?:string)=><Numeric {...{field,label,unit,config,schema,save,onInvalid}}/>;
   const matched=(e:typeof ELEMENTS[number])=>!query||`${e.number} ${e.symbol} ${e.name}`.toLowerCase().includes(query.toLowerCase());
   return <fieldset className="xrd-parameter-grid" disabled={disabled} aria-label="参数配置">
-    <section className="xrd-zone xrd-zone-strategy"><h3><span>01</span>检索策略</h3><div className="xrd-zone-body">
+    <section className="xrd-zone xrd-zone-strategy"><h3>检索策略</h3><div className="xrd-zone-body">
       <label className="xrd-engine-field"><span>检索方式</span><button className="xrd-engine-trigger" type="button" role="combobox" aria-label="谱库检索方式" aria-expanded={popup?.kind==='engine'} aria-haspopup="dialog" onClick={e=>open('engine',e.currentTarget)}>{mode?.label??String(config.library_engine)}<Glyph name="down"/></button></label>
       {numeric('library_top_n','候选数')}
 
     </div></section>
-    <section className="xrd-zone xrd-zone-elements"><h3><span>02</span>元素约束</h3><div className="xrd-zone-body"><small>仅允许所选元素；留空则不限制。</small>
+    <section className="xrd-zone xrd-zone-elements"><h3>元素约束</h3><div className="xrd-zone-body"><small>仅允许所选元素；留空则不限制。</small>
       <div className="xrd-selected-elements">{selected.map(symbol=><button key={symbol} className="xrd-element-chip" type="button" aria-label={`移除元素 ${symbol}`} onClick={()=>toggle(symbol)}><small>{ELEMENTS.find(e=>e.symbol===symbol)?.number??'?'}</small><strong>{symbol}</strong><Glyph name="close"/></button>)}<button className="xrd-element-trigger" type="button" onClick={e=>open('elements',e.currentTarget)} aria-expanded={popup?.kind==='elements'}><Glyph name="elements"/>选择元素</button></div>
       <div className="xrd-element-summary"><small>已选择 {selected.length} 个元素</small>{selected.length>0&&<button type="button" onClick={()=>update([])}>清空</button>}</div>
     </div></section>
-    <section className="xrd-zone xrd-zone-peaks"><h3><span>03</span>峰匹配</h3><div className="xrd-zone-body xrd-peaks-grid">
+    <section className="xrd-zone xrd-zone-peaks"><h3>峰匹配</h3><div className="xrd-zone-body xrd-peaks-grid">
       {numeric('wavelength','匹配波长 / Å')}{numeric('tolerance_deg','峰位容差 ± / °')}{numeric('prominence_fraction','峰突出度 / 最强峰')}{numeric('reference_min_intensity','标准峰最低相对强度')}
     </div></section>
-    <section className="xrd-zone xrd-zone-advanced"><h3><span>04</span>高级设置</h3><div className="xrd-zone-body">
+    <section className="xrd-zone xrd-zone-advanced"><h3>高级设置</h3><div className="xrd-zone-body">
       <details><summary>检峰设置 <Glyph name="down"/></summary><div className="xrd-advanced-fields">{numeric('smoothing_deg','平滑宽度 / °','°')}{numeric('min_peak_distance','最小峰间距 / °','°')}<small>以约 1° 局部低值背景扣除后检峰。</small></div></details>{advanced}
     </div></section>
     {popup&&<FocusLayer anchor={popup.anchor} kind={popup.kind} onClose={()=>setPopup(undefined)}>{dismiss=><>

@@ -14,10 +14,13 @@ from backend.plugins.documents import NodeDocumentAction, NodeDocumentDefinition
 from backend.plugins.documents import NodeDocumentTransformation
 from backend.plugins.deployment import DeploymentSurface, NodeDeploymentDefinition
 from backend.plugins.resources import NodeResourceAction, NodeResourceContext
+from backend.plugins.data_sources import DataQuery, NodeDataConsumer, NodeDataSource
+from backend.plugins.execution_graph import ExecutionEdge, ExecutionNode, ExecutionSnapshot, NodeExecutionSource
 from backend.plugins.state import PluginStateSpec, ScopedStateSpec, StatelessStateSpec, CardStateStore
 from backend.plugins.containers import NodeContainerDefinition
 from backend.plugins.execution import ExecutionPolicy, NodeExecutionDefinition, WorkItem, WorkOutcome
 from backend.plugins.execution import DelegationRequest, DelegationWait, DelegationStop
+from backend.plugins.background_jobs import BackgroundJobProvider, BackgroundJobContext, JobObservation, SubmissionUncertainError
 
 from backend.agents import (
     AgentCapabilityProvider,
@@ -36,6 +39,7 @@ from backend.agents import (
     RuntimeModelConnection,
     ScopedToolDefinition,
     ToolParameter,
+    RuntimeModelConnection,
 )
 from backend.capabilities import Capability
 from backend.errors import (
@@ -74,6 +78,7 @@ from backend.plugins import (
     NodeTypeDefinition,
     CardFaceSpec,
     NodePresentation,
+    WorkspaceLayoutMetadata,
     Plugin,
     PluginDescriptor,
     PluginDefinition,
@@ -88,6 +93,10 @@ from backend.runs import InvocationContext, RuntimeInput
 from backend.world.models import Card, CardCreate, CardPatch, Edge
 
 __all__ = [
+    "BackgroundJobProvider", "BackgroundJobContext", "JobObservation", "SubmissionUncertainError",
+    "RuntimeModelConnection",
+    "DataQuery", "NodeDataConsumer", "NodeDataSource",
+    "ExecutionEdge", "ExecutionNode", "ExecutionSnapshot", "NodeExecutionSource",
     "TutorialDefinition", "TutorialStep",
     "PluginStateSpec", "ScopedStateSpec", "StatelessStateSpec", "CardStateStore",
     "DelegationRequest", "DelegationWait", "DelegationStop",
@@ -97,6 +106,7 @@ __all__ = [
     "ToolImage", "VisualToolResult", "codex_tool_content",
     "PackDefinition",
     "NodePresentation",
+    "WorkspaceLayoutMetadata",
     "NodeDocumentTransformation",
     "ArtifactPublish",
     "ArtifactMaterialize",

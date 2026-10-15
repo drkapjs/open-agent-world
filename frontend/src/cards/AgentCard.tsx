@@ -102,17 +102,15 @@ export function AgentCardBody({ card, level }: { card: WorldCard; level: NodeSur
 
       </>}
       </PluginSurface>
-      {level === "workspace" && !xrdMatch && <section className="card-section">
-        <div className="section-heading">
-          <span>{t("Effective capabilities")}</span>
-        </div>
+      {level === "workspace" && !xrdMatch && <details className="agent-settings-details">
+        <summary>{t("Effective capabilities")} · {capabilities.length}</summary>
         <div className="capability-chips">
           {capabilities.length > 0 ? capabilities.map((capability) => (
             <span key={capability.id} title={capability.description}>{capability.target_name} · {capability.kind}</span>
           )) : <em>{t("Equip a resource or connect a shared resource to grant a scoped tool.")}</em>}
           {capabilityError && <p role="alert">{capabilityError}</p>}
         </div>
-      </section>}
+      </details>}
 
       {!directRun && <label className="field-label prompt-field">
         <span>{t("Prompt")}</span>
@@ -157,10 +155,10 @@ export function AgentCardBody({ card, level }: { card: WorldCard; level: NodeSur
           <CircleStop size={14} /> {!xrdMatch && t("Stop")} </button>}
       </div>}
 
-      {level === "workspace" && !xrdMatch && <section className="card-section output-section">
-        <div className="section-heading"><span>{t("Runtime activity")}</span><small>{t("operational log")}</small></div>
+      {level === "workspace" && !xrdMatch && <details className="agent-settings-details">
+        <summary>{t("Runtime activity")}</summary>
         <InstrumentOutput lines={output} empty="Run output and tool activity will appear here." />
-      </section>}
+      </details>}
     </div>
   );
 }

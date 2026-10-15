@@ -31,7 +31,7 @@ class NodeContinuationMixin:
         self.signal_continuations()
 
     def signal_continuations(self):
-        if self.continuation_closed or not self.continuation_keys:
+        if self.continuation_closed or not (self.continuation_keys or self.services.background_jobs.has_pending()):
             return
         self.continuation_event.set()
         if self.continuation_task is None or self.continuation_task.done():
@@ -40,9 +40,13 @@ class NodeContinuationMixin:
                 self._continue_work(), context=contextvars.Context(), name="work-continuations")
 
     async def _continue_work(self):
-        while self.continuation_keys and not self.continuation_closed:
+        while (self.continuation_keys or self.services.background_jobs.has_pending()) and not self.continuation_closed:
             self.continuation_event.clear()
             self.continuation_delay = 30
+            try:
+                await self.services.background_jobs.tick()
+            except Exception:
+                logger.exception("Could not observe background work; durable records retained")
             for node_id, namespace in tuple(self.continuation_keys):
                 version = self.continuation_versions[(node_id, namespace)]
                 try:
@@ -57,11 +61,58 @@ class NodeContinuationMixin:
                     # Retain the durable intent on transient failure. No re-dispatch
                     # occurs if its reserved Run already exists.
                     logger.exception("Could not deliver work notification for %s", node_id)
-            if self.continuation_keys:
+            if self.continuation_keys or self.services.background_jobs.has_pending():
                 try:
                     await asyncio.wait_for(self.continuation_event.wait(), timeout=self.continuation_delay)
                 except TimeoutError:
                     pass
+
+    async def admit_continuation(self, parent, prompt, *, reserve, release, lifecycle=None, caller_id=None):
+        """Shared durable admission for work-source and background-job notices.
+
+        The caller holds the host mutation lock and reauthorizes its source.
+        Reserve before admission; only an unadmitted claim can be released.
+        An interrupted admitted turn is observable and never blindly replayed.
+        """
+        manager = self.services.run_manager
+        conversation, session_id = manager._conversation_scope(parent)
+        session = None
+        if conversation:
+            session = self.services.conversations.get_session(conversation, session_id)
+            self.services._require_session_participant(session, parent.agent_id)
+            self.services._require_conversation_connection(parent.agent_id, conversation)
+        runs = manager.list_runs(agent_id=parent.agent_id)
+        if any(r.status not in TERMINAL_RUN_STATUSES or r.lifecycle.get("execution") in {"running", "closing"} for r in runs):
+            return None
+        if conversation and self.services.deliveries.next_batch(parent.agent_id) is not None:
+            return None
+        if sum(r.root_run_id == parent.root_run_id and bool(r.lifecycle.get("work_continuation")) for r in runs) >= MAX_CONTINUATION_TURNS:
+            raise PermissionDeniedError("Automatic continuation limit reached; collect results and continue explicitly")
+        try:
+            manager.assert_can_start(parent.agent_id)
+        except RuntimeUnavailableError:
+            return None
+        if session:
+            prompt = self.services._conversation_prompt(conversation, session, parent.agent_id, prompt)
+        run_id = str(uuid4())
+        reserve(run_id)
+        try:
+            run = await manager.start_run(parent.agent_id, prompt, caller_kind="delegation", caller_id=caller_id,
+                parent_run_id=parent.run_id, context_id=parent.context_id, task_id=parent.task_id, run_id=run_id,
+                resume_external_work=bool((lifecycle or {}).get("background_job_notification")),
+                initial_lifecycle={"work_continuation": True, **(lifecycle or {})})
+        except BaseException:
+            try:
+                manager.get_run(run_id)
+            except NotFoundError:
+                release()
+            raise
+        if session:
+            task = asyncio.create_task(self.services._persist_conversation_run(parent.agent_id, run_id, conversation, session_id))
+            self.continuation_outputs.add(task)
+            task.add_done_callback(self.continuation_outputs.discard)
+            task.add_done_callback(self.services._consume_background_task)
+        return run
 
     def _continuation_parent(self, run_id):
         manager = self.services.run_manager
@@ -123,22 +174,6 @@ class NodeContinuationMixin:
                 for entry in entries:
                     if entry.get("library_id"):
                         self.summoning_capability(parent.agent_id, entry["library_id"])
-                conversation, session_id = manager._conversation_scope(parent)
-                session = None
-                if conversation:
-                    session = self.services.conversations.get_session(conversation, session_id)
-                    self.services._require_session_participant(session, parent.agent_id)
-                    self.services._require_conversation_connection(parent.agent_id, conversation)
-                runs = manager.list_runs(agent_id=parent.agent_id)
-                # Yield to user messages and existing provider tails, even if the
-                # Agent happens to allow multiple concurrent Runs.
-                if any(r.status not in TERMINAL_RUN_STATUSES or r.lifecycle.get("execution") == "running" for r in runs):
-                    continue
-                if conversation and self.services.deliveries.next_batch(parent.agent_id) is not None:
-                    continue
-                if sum(r.root_run_id == parent.root_run_id and bool(r.lifecycle.get("work_continuation")) for r in runs) >= MAX_CONTINUATION_TURNS:
-                    raise PermissionDeniedError("Automatic continuation limit reached; collect results and continue explicitly")
-                manager.assert_can_start(parent.agent_id)
                 notices = [self._work_notice(e) for e in entries]
                 prompt = ("OAW work notification for board " + node_id + ".\n"
                     "Continue the existing task in this session. Collect current state; inspect reports and actual outputs, "
@@ -146,32 +181,18 @@ class NodeContinuationMixin:
                     "For a scheduled check, inspect the real external job; elapsed time never proves completion. "
                     "Use defer again only while the external job is still pending. Do not resubmit existing jobs.\n"
                     + json.dumps(notices, ensure_ascii=False))
-                if session:
-                    prompt = self.services._conversation_prompt(conversation, session, parent.agent_id, prompt)
-                run_id = str(uuid4())
-                for entry in entries:
-                    entry["notification_run_id"] = run_id
-                    entry.pop("notification_error", None)
-                self.save(node_id, state)
-                try:
-                    run = await manager.start_run(parent.agent_id, prompt, caller_kind="delegation", caller_id=node_id,
-                        parent_run_id=parent.run_id, context_id=parent.context_id, task_id=parent.task_id, run_id=run_id,
-                        initial_lifecycle={"work_continuation": True})
-                except Exception:
-                    # Do not replay an admitted Run, including an interrupted one.
-                    try:
-                        manager.get_run(run_id)
-                    except NotFoundError:
-                        for entry in entries:
-                            entry.pop("notification_run_id", None)
-                        self.save(node_id, state)
-                    raise
-                if session:
-                    task = asyncio.create_task(self.services._persist_conversation_run(
-                        parent.agent_id, run.run_id, conversation, session_id))
-                    self.continuation_outputs.add(task)
-                    task.add_done_callback(self.continuation_outputs.discard)
-                    task.add_done_callback(self.services._consume_background_task)
+                def reserve(run_id):
+                    for entry in entries:
+                        entry["notification_run_id"] = run_id
+                        entry.pop("notification_error", None)
+                    self.save(node_id, state)
+
+                def release():
+                    for entry in entries:
+                        entry.pop("notification_run_id", None)
+                    self.save(node_id, state)
+
+                await self.admit_continuation(parent, prompt, reserve=reserve, release=release, caller_id=node_id)
             except RuntimeUnavailableError:
                 continue  # Capacity, cleanup or paused Legion; preserve pending work.
             except DomainError as error:

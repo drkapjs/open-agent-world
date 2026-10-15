@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
-import {render,screen,fireEvent,cleanup,act} from '@testing-library/react';
+import {render,screen,fireEvent,cleanup} from '@testing-library/react';
 import {it,expect,vi,afterEach} from 'vitest';
-import {ScoreBars,ActivityLine,wavePath} from '../../../plugins/xrd/frontend/WorkflowVisuals';
+import {ScoreBars,ActivityStatus} from '../../../plugins/xrd/frontend/WorkflowVisuals';
 afterEach(()=>{cleanup();vi.unstubAllGlobals();});
 const f=(quality?:number)=>({candidate_id:'c',label:'C',state:'initial',quality});
 it('keeps fixed heights for equal scores, zero and missing, independently of selection',()=>{
@@ -16,15 +16,16 @@ it('keeps fixed heights for equal scores, zero and missing, independently of sel
  rerender(<ScoreBars frames={[]} index={0} onSelect={select}/>);expect(screen.getByText('尚无帧')).toBeTruthy();
  rerender(<ScoreBars frames={[f(.3)]} index={0} onSelect={select}/>);expect(screen.getAllByRole('button')).toHaveLength(1);
 });
-it('animates only the SVG path, settles on failure/cancellation, cleans RAF and respects reduced motion',()=>{
- let reduced=false;const handlers=new Map<number,FrameRequestCallback>();let id=0;
- vi.stubGlobal('matchMedia',()=>({get matches(){return reduced;},addEventListener(){},removeEventListener(){}}));
- vi.stubGlobal('requestAnimationFrame',(fn:FrameRequestCallback)=>{handlers.set(++id,fn);return id;});vi.stubGlobal('cancelAnimationFrame',(key:number)=>handlers.delete(key));
- const tick=(time:number)=>act(()=>{const pending=[...handlers.values()];handlers.clear();pending.forEach(fn=>fn(time));});
- const {container,rerender,unmount}=render(<ActivityLine active status="running" label="预优化"/>);
- tick(0);tick(400);const a=container.querySelector('path')!.getAttribute('d');tick(800);expect(container.querySelector('path')!.getAttribute('d')).not.toBe(a);
- for(const status of ['failed','cancelled']){rerender(<ActivityLine active={false} status={status} label="预优化"/>);tick(900);tick(1300);expect(container.querySelector('path')!.getAttribute('d')).toBe(wavePath(0,0));expect(handlers.size).toBe(0);}
- reduced=true;rerender(<ActivityLine active status="running" label="预优化"/>);expect(handlers.size).toBe(0);unmount();expect(handlers.size).toBe(0);
+it('announces workflow status and keeps failure and cancellation visible',()=>{
+ const {rerender}=render(<ActivityStatus active status="running" label="预优化"/>);
+ expect(screen.getByRole('status',{name:'预优化：运行中（任务活动指示）'}).textContent).toBe('运行中');
+ for(const [status,text] of [['failed','失败'],['cancelled','已取消'],['completed','已完成']]){
+   rerender(<ActivityStatus active={false} status={status} label="预优化"/>);
+   const indicator=screen.getByRole('status',{name:`预优化：${text}（任务活动指示）`});
+   expect(indicator.getAttribute('data-state')).toBe(status);expect(indicator.textContent).toBe(text);
+ }
+ rerender(<ActivityStatus active={false} status="idle" label="预优化"/>);
+ expect(screen.getByRole('status',{name:'预优化：待运行（任务活动指示）'})).toBeTruthy();
 });
 it('scrolls a long frame list to the selected item without resizing or reordering bars',()=>{
  const frames=Array.from({length:50},(_,i)=>f(i/50));const select=vi.fn();

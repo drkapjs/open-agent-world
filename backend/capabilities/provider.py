@@ -411,8 +411,128 @@ class _CapabilityContext:
 class WorldAgentCapabilityProvider:
     """ADK-neutral adapter from scoped tools to live broker operations."""
 
+    def resolve_model(self, model):
+        from backend.agents.models import RuntimeModelConnection, AgentConfigurationError
+        from backend.security.model_connections import ModelConnectionStore, MODEL_REF_PREFIX
+        store = ModelConnectionStore(self.services.llm_settings)
+        if model == "oaw:default":
+            model = store.read().default_model
+        if not model:
+            raise AgentConfigurationError("Choose a default model in Settings / Models.")
+        if model.startswith(MODEL_REF_PREFIX):
+            adapter, model_id, base_url, api_key = store.resolve(model)
+            window, output = store.context_limits(model)
+            return RuntimeModelConnection(model_id, adapter, base_url or "", api_key or "",
+                                          context_window=window, max_output_tokens=output)
+        options = store.legacy_options() or {}
+        return RuntimeModelConnection(model, base_url=options.get("api_base", ""), api_key=options.get("api_key", ""))
+
+    def runtime_state_directory(self, agent_id):
+        import hashlib
+        self.services.world.get_card(agent_id)
+        return self.services.settings.data_root / "runtime-state" / hashlib.sha256(agent_id.encode()).hexdigest()
+
     def __init__(self, services: ApplicationServices) -> None:
         self.services = services
+
+    def _conversation_input_scope(self, agent_id, run_id):
+        from backend.runs.models import TERMINAL_RUN_STATUSES
+        manager = self.services._require_run_manager()
+        context = manager.current_context
+        if context is None or (context.agent_id, context.run_id) != (agent_id, run_id):
+            raise ResourceValidationError('Conversation input requires the current agent run')
+        run = manager.get_run(run_id)
+        if run.status in TERMINAL_RUN_STATUSES:
+            return None
+        conversation_id, session_id = manager._conversation_scope(run)
+        if not conversation_id or not session_id:
+            return None
+        session = self.services.conversations.get_session(conversation_id, session_id)
+        self.services._require_session_participant(session, agent_id)
+        self.services._require_conversation_connection(agent_id, conversation_id)
+        return conversation_id, session_id
+
+    async def pending_conversation_input(self, agent_id, run_id):
+        scope = self._conversation_input_scope(agent_id, run_id)
+        if scope is None:
+            return []
+        result = []
+        for message_id in self.services.deliveries.pending_messages(agent_id, *scope):
+            message = self.services.conversations.get_message(message_id)
+            text = f"{message.sender_name}: {message.content}"
+            for attachment in message.attachments:
+                text += (f"\n[Attachment: {attachment.name}; version_id={attachment.version_id}; "
+                         f"path={attachment.path}; {attachment.size_bytes} bytes]")
+            result.append({"id": message.id, "text": text, "sequence": message.sequence})
+        return result
+
+    async def acknowledge_conversation_input(self, agent_id, run_id, message_ids):
+        scope = self._conversation_input_scope(agent_id, run_id)
+        if scope is None:
+            return
+        claimed = self.services.deliveries.claim_batch(*scope, agent_id, run_id, message_ids)
+        if claimed:
+            manager = self.services._require_run_manager()
+            lifecycle = manager.get_run(run_id).lifecycle
+            manager.store.update_lifecycle(run_id,
+                delivery_message_ids=list(dict.fromkeys([*lifecycle.get('delivery_message_ids', []), *claimed])),
+                conversation_max_sequence=max(self.services.conversations.get_message(mid).sequence for mid in claimed))
+            # Refresh delivery badges without manufacturing another chat message.
+            await self.services._publish_conversation_message(self.services.conversations.get_message(claimed[-1]))
+
+    async def publish_execution(self, agent_id, run_id, snapshot):
+        from backend.plugins.execution_graph import ExecutionSnapshot, MAX_EXECUTION_BYTES
+        manager = self.services._require_run_manager()
+        context = manager.current_context
+        if context is None or context.agent_id != agent_id or context.run_id != run_id:
+            raise ResourceValidationError('Execution projection requires the current agent run')
+        value = ExecutionSnapshot.model_validate({**snapshot, 'run_id': run_id}).model_dump(mode='json')
+        if value['mode'] != 'full' or value['next_cursor'] is not None:
+            raise ResourceValidationError('Execution publications must be complete snapshots')
+        conversation_id, session_id = manager._conversation_scope(manager.get_run(run_id))
+        value['history_id'] = value['history_id'] or f'{agent_id}:{session_id or "default"}'
+        value['total_nodes'] = len(value['nodes'])
+        import json
+        async with self.services._node_mutation(read_only=True):
+            previous = manager.get_run(run_id).lifecycle.get('execution_graph') or {}
+            if previous.get('history_id') == value['history_id']:
+                previous_revision = previous.get('revision', 0)
+                # Delayed workers must not roll persisted state back. Legacy
+                # providers omit revision; the host sequences their full writes.
+                if value['revision'] and value['revision'] <= previous_revision:
+                    return
+            else:
+                previous_revision = 0
+            value['revision'] = value['revision'] or previous_revision + 1
+            if value['retention'] == 'history':
+                # Only explicit history providers opt in. Keep the durable
+                # activity identities even when a worker publishes a partial
+                # view of earlier work, including across turns in this scope.
+                prior = previous
+                if prior.get('history_id') != value['history_id']:
+                    prior = next((run.lifecycle['execution_graph'] for run in reversed(manager.list_runs(agent_id=agent_id))
+                        if run.run_id != run_id
+                        and run.runtime_provider_id == manager.get_run(run_id).runtime_provider_id
+                        and manager._conversation_scope(run) == (conversation_id, session_id)
+                        and run.lifecycle.get('execution_graph', {}).get('history_id') == value['history_id']
+                        and run.lifecycle['execution_graph'].get('retention') == 'history'), {})
+                for field in ('nodes', 'edges'):
+                    records = {item['id']: item for item in prior.get(field, [])}
+                    records.update({item['id']: item for item in value[field]})
+                    value[field] = list(records.values())
+                value['total_nodes'] = len(value['nodes'])
+                # Revalidate limits after the union, never silently discard old
+                # history to make room for a new publication.
+                value = ExecutionSnapshot.model_validate(value).model_dump(mode='json')
+            if len(json.dumps(value, ensure_ascii=False).encode()) > MAX_EXECUTION_BYTES:
+                raise ResourceValidationError('Execution projection exceeds 8 MiB')
+            manager.store.update_lifecycle(run_id, execution_graph=value)
+        # Invalidate only: reads still recheck the live connection and session.
+        from backend.events.models import EventType
+        await self.services.events.publish(EventType.EXECUTION_UPDATED,
+            node_id=agent_id, agent_id=agent_id, run_id=run_id,
+            conversation_id=conversation_id, session_id=session_id,
+            payload={'history_id': value['history_id'], 'revision': value['revision']})
 
     async def read_own_document(self, agent_id: str) -> dict[str, Any]:
         context = self.services._require_run_manager().current_context
@@ -464,6 +584,7 @@ class WorldAgentCapabilityProvider:
                     prop.get("description", "Report field"), name in schema.get("required", []))
                     for name, prop in sorted(schema["properties"].items(), key=lambda item: item[0] not in schema.get("required", []))),
                 input_schema=schema))
+        definitions.extend(self.services.background_jobs.definitions(agent_id))
         return definitions
 
     async def invoke_tool(
@@ -472,6 +593,9 @@ class WorldAgentCapabilityProvider:
         capability_id: str,
         arguments: Mapping[str, Any],
     ) -> Any:
+        from backend.background_jobs import TOOLS as JOB_TOOLS
+        if capability_id.startswith("host:") and capability_id[5:] in JOB_TOOLS:
+            return await self.services.background_jobs.invoke(agent_id, capability_id[5:], dict(arguments))
         if capability_id == "host:report_delegated_task":
             from backend.plugins.execution import ExecutionReport
             report = _validate_tool_request(ExecutionReport, dict(arguments))

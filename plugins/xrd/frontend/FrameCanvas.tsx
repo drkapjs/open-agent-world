@@ -2,7 +2,7 @@ import { NewWorkflowDialog } from './NewWorkflowDialog';
 import { createPortal } from 'react-dom';
 import {ScoreBars,ActionIcon} from './WorkflowVisuals';
 import { useEffect, useId, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
-import type { PluginViewProps } from '@oaw/plugin-api';
+import { WorkspaceEmptyState, type PluginViewProps } from '@oaw/plugin-api';
 import { StructureCanvas } from './CandidateStructure';
 import { resolveMultiphaseSelection, selectMultiphasePhase, updateMultiphaseMatchRun, useMultiphaseCanvas, useMultiphaseCanvasPolling, type MultiphaseDisplay } from './MultiphaseCanvasState';
 import './frames.css';
@@ -66,40 +66,56 @@ export function SpectrumCanvas({observed,frame}:{observed:number[][];frame?:Scie
   const hasExpanded=useRef(false);
   useEffect(()=>{if(expanded){hasExpanded.current=true;dialogRef.current?.showModal();}else if(hasExpanded.current)expandButton.current?.focus();},[expanded]);
   const svgRef=useRef<SVGSVGElement>(null);const [saveError,setSaveError]=useState('');const [saved,setSaved]=useState(false);
+  const [viewport,setViewport]=useState({width:800,height:320});
+  const hasData=observed.length>1;
+  useEffect(()=>{
+    const svg=svgRef.current;if(!svg||typeof ResizeObserver==='undefined')return;
+    // Measure local CSS pixels: the world camera transform must not shrink labels.
+    const observer=new ResizeObserver(([entry])=>{
+      const width=Math.round(entry.contentRect.width),height=Math.round(entry.contentRect.height);
+      if(width>90&&height>95)setViewport(previous=>previous.width===width&&previous.height===height?previous:{width,height});
+    });
+    observer.observe(svg);return()=>observer.disconnect();
+  },[expanded,hasData]);
   const saveImage=async()=>{setSaveError('');let url='';try{
     const svg=svgRef.current;if(!svg)return;const copy=svg.cloneNode(true) as SVGSVGElement;
-    copy.setAttribute('xmlns','http://www.w3.org/2000/svg');copy.setAttribute('width','1600');copy.setAttribute('height','640');copy.style.color=getComputedStyle(svg).color;
+    const scale=Math.min(1600/viewport.width,4096/viewport.height);
+    const exportWidth=Math.max(1,Math.round(viewport.width*scale)),exportHeight=Math.max(1,Math.round(viewport.height*scale));
+    const background=getComputedStyle(svg.closest('.xrd-unified-spectrum')!).backgroundColor;
+    copy.setAttribute('xmlns','http://www.w3.org/2000/svg');copy.setAttribute('width',String(exportWidth));copy.setAttribute('height',String(exportHeight));copy.style.color=getComputedStyle(svg).color;
     const originals=svg.querySelectorAll('*');copy.querySelectorAll('*').forEach((element,i)=>{const style=getComputedStyle(originals[i]);for(const key of ['stroke','fill','color'])element.setAttribute(key,style.getPropertyValue(key));});
     url=URL.createObjectURL(new Blob([new XMLSerializer().serializeToString(copy)],{type:'image/svg+xml;charset=utf-8'}));
     const image=new Image();image.src=url;await image.decode();
-    const canvas=document.createElement('canvas');canvas.width=1600;canvas.height=640;const ctx=canvas.getContext('2d');if(!ctx)throw Error('无法生成图像');
-    ctx.fillStyle=getComputedStyle(svg.closest('.xrd-unified-spectrum')!).backgroundColor;ctx.fillRect(0,0,1600,640);ctx.drawImage(image,0,0,1600,640);
+    const canvas=document.createElement('canvas');canvas.width=exportWidth;canvas.height=exportHeight;const ctx=canvas.getContext('2d');if(!ctx)throw Error('无法生成图像');
+    ctx.fillStyle=background;ctx.fillRect(0,0,exportWidth,exportHeight);ctx.drawImage(image,0,0,exportWidth,exportHeight);
     const blob=await new Promise<Blob>((resolve,reject)=>canvas.toBlob(b=>b?resolve(b):reject(Error('图像导出失败')),'image/png'));
     const download=URL.createObjectURL(blob);const link=document.createElement('a');link.href=download;link.download='XRD-spectrum.png';document.body.appendChild(link);link.click();link.remove();setSaved(true);setTimeout(()=>URL.revokeObjectURL(download),1000);
   }catch(e){setSaveError(String(e));}finally{if(url)URL.revokeObjectURL(url);}};
-  if(observed.length<2)return <p>尚无实验谱</p>;
+  if(observed.length<2)return <WorkspaceEmptyState className="xrd-spectrum-empty" title="尚无实验谱" description="导入实验谱后，可在此查看谱线并对比计算结果。"/>;
   const full:[number,number]=[observed[0][0],observed[observed.length-1][0]];
   const [lo,hi]=range??full;const max=(frame?.calculated??[]).reduce((m,p)=>Math.max(m,p[1]),observed.reduce((m,p)=>Math.max(m,p[1]),1));
-  const x=(v:number)=>45+(v-lo)/(hi-lo)*710;const y=(v:number)=>270-v/max*225;
+  const plotWidth=viewport.width-90,baseline=viewport.height-50,plotHeight=viewport.height-95;
+  const tickCount=Math.max(2,Math.min(6,Math.floor(plotWidth/60)+1));
+  const x=(v:number)=>45+(v-lo)/(hi-lo)*plotWidth;const y=(v:number)=>baseline-v/max*plotHeight;
   const line=(points:number[][])=>points.filter(p=>p[0]>=lo&&p[0]<=hi).map(p=>`${x(p[0])},${y(p[1])}`).join(' ');
   const peaks=frame?.peaks??[];const peakMax=Math.max(1,...peaks.map(p=>p.intensity));
   const colors=['#95b39a','#c2a1d1','#dbba79','#89b8c8','#d69ca4','#a4b47d'];
   const near=hover==null?undefined:observed.reduce((a,b)=>Math.abs(a[0]-hover)<Math.abs(b[0]-hover)?a:b);
   const series=[{id:'observed',label:'实验谱',color:'var(--xrd-observed, #b9d8dd)'},...(frame?[{id:'calculated',label:frame.calculated?'联合计算谱':'参考峰',color:'var(--xrd-calculated, #e99b71)'}]:[]),...(frame?.contributions??[]).map((p,i)=>({id:p.candidate_id,label:p.label,color:p.color??colors[i%colors.length]}))];
-  const content = <div className={`xrd-unified-spectrum nodrag nopan nowheel ${expanded?'is-expanded':''}`}><div className="xrd-spectrum-tools"><button type="button" onClick={()=>setRange(undefined)}>复位范围</button><span className="xrd-spectrum-tool-actions"><button type="button" aria-label="保存当前谱图" title={saved?'已生成 PNG · 再次保存当前谱图':'另存为当前谱图（PNG）'} onClick={()=>void saveImage()}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="M4 3h13l4 4v14H3V3Z M7 3v7h10V3 M7 21v-7h10v7"/></svg></button><button ref={expandButton} type="button" aria-label={expanded?'关闭放大谱图':'放大谱图'} title={expanded?'关闭放大谱图':'放大谱图'} onClick={()=>setExpanded(!expanded)}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d={expanded?'M6 6l12 12M6 18L18 6':'M8 3H3v5M16 3h5v5M3 16v5h5M21 16v5h-5'}/></svg></button></span></div>{saveError&&<p role="alert">{saveError}</p>}<div className="xrd-spectrum-layout"><aside className="xrd-spectrum-switches" aria-label="谱线显示">{series.map(item=><label key={item.id}><i style={{background:item.color}}/><span>{item.label}</span><input type="checkbox" role="switch" aria-label={item.label} checked={!hidden[item.id]} onChange={event=>setHidden({...hidden,[item.id]:!event.target.checked})}/></label>)}</aside><svg style={{cursor:panning?'grabbing':'grab'}} ref={svgRef} viewBox="0 0 800 320" role="img" aria-label="同步 XRD 谱画布" onDoubleClick={()=>setRange(undefined)}
-    onWheel={e=>{e.stopPropagation();const width=Math.min(full[1]-full[0],Math.max(.2,(hi-lo)*(e.deltaY>0?1.2:.8)));const rect=e.currentTarget.getBoundingClientRect();const fraction=Math.max(0,Math.min(1,(e.clientX-rect.left)/rect.width));const center=lo+(hi-lo)*fraction;const left=Math.max(full[0],Math.min(full[1]-width,center-width*fraction));setRange([left,left+width]);}}
-    onPointerDown={e=>{if(e.button!==0)return;e.preventDefault();e.stopPropagation();const rect=e.currentTarget.getBoundingClientRect();drag.current={id:e.pointerId,x:e.clientX,lo,hi,scale:800/(rect.width*710)};e.currentTarget.setPointerCapture(e.pointerId);setPanning(true);}}
+  const content = <div className={`xrd-unified-spectrum nodrag nopan nowheel ${expanded?'is-expanded':''}`}><div className="xrd-spectrum-tools"><button type="button" onClick={()=>setRange(undefined)}>复位范围</button><span className="xrd-spectrum-tool-actions"><button type="button" aria-label="保存当前谱图" title={saved?'已生成 PNG · 再次保存当前谱图':'另存为当前谱图（PNG）'} onClick={()=>void saveImage()}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="M4 3h13l4 4v14H3V3Z M7 3v7h10V3 M7 21v-7h10v7"/></svg></button><button ref={expandButton} type="button" aria-label={expanded?'关闭放大谱图':'放大谱图'} title={expanded?'关闭放大谱图':'放大谱图'} onClick={()=>setExpanded(!expanded)}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d={expanded?'M6 6l12 12M6 18L18 6':'M8 3H3v5M16 3h5v5M3 16v5h5M21 16v5h-5'}/></svg></button></span></div>{saveError&&<p role="alert">{saveError}</p>}<div className="xrd-spectrum-layout"><aside className="xrd-spectrum-switches" aria-label="谱线显示">{series.map(item=><label key={item.id}><i style={{background:item.color}}/><span>{item.label}</span><input type="checkbox" role="switch" aria-label={item.label} checked={!hidden[item.id]} onChange={event=>setHidden({...hidden,[item.id]:!event.target.checked})}/></label>)}</aside><svg style={{cursor:panning?'grabbing':'grab'}} ref={svgRef} viewBox={`0 0 ${viewport.width} ${viewport.height}`} role="img" aria-label="同步 XRD 谱画布" onDoubleClick={()=>setRange(undefined)}
+    onWheel={e=>{e.stopPropagation();const width=Math.min(full[1]-full[0],Math.max(.2,(hi-lo)*(e.deltaY>0?1.2:.8)));const rect=e.currentTarget.getBoundingClientRect();const fraction=Math.max(0,Math.min(1,((e.clientX-rect.left)/rect.width*viewport.width-45)/plotWidth));const center=lo+(hi-lo)*fraction;const left=Math.max(full[0],Math.min(full[1]-width,center-width*fraction));setRange([left,left+width]);}}
+    onPointerDown={e=>{if(e.button!==0)return;e.preventDefault();e.stopPropagation();const rect=e.currentTarget.getBoundingClientRect();drag.current={id:e.pointerId,x:e.clientX,lo,hi,scale:viewport.width/(rect.width*plotWidth)};e.currentTarget.setPointerCapture(e.pointerId);setPanning(true);}}
     onPointerUp={e=>{if(drag.current?.id!==e.pointerId)return;drag.current=undefined;setPanning(false);if(e.currentTarget.hasPointerCapture(e.pointerId))e.currentTarget.releasePointerCapture(e.pointerId);}}
     onPointerCancel={()=>{drag.current=undefined;setPanning(false);}}
     onLostPointerCapture={()=>{drag.current=undefined;setPanning(false);}}
-    onPointerMove={e=>{const d=drag.current;if(d&&d.id===e.pointerId){const shift=(e.clientX-d.x)*d.scale*(d.hi-d.lo);setRange([d.lo-shift,d.hi-shift]);setHover(undefined);return;}const rect=e.currentTarget.getBoundingClientRect();setHover(lo+((e.clientX-rect.left)/rect.width*800-45)/710*(hi-lo));}} onPointerLeave={()=>setHover(undefined)}>
+    onPointerMove={e=>{const d=drag.current;if(d&&d.id===e.pointerId){const shift=(e.clientX-d.x)*d.scale*(d.hi-d.lo);setRange([d.lo-shift,d.hi-shift]);setHover(undefined);return;}const rect=e.currentTarget.getBoundingClientRect();setHover(lo+((e.clientX-rect.left)/rect.width*viewport.width-45)/plotWidth*(hi-lo));}} onPointerLeave={()=>setHover(undefined)}>
 
     {!hidden.observed&&<polyline points={line(observed)} fill="none" stroke="var(--xrd-observed, #b9d8dd)" strokeWidth="1.4"/>}
     {!hidden.calculated&&frame?.calculated&&<polyline points={line(frame.calculated)} fill="none" stroke="var(--xrd-calculated, #e99b71)" strokeWidth="1.3"/>}
     {frame?.contributions?.map((phase,i)=>!hidden[phase.candidate_id]&&<polyline key={phase.candidate_id} points={line(phase.points)} fill="none" stroke={phase.color??colors[i%colors.length]} strokeWidth="1.1" opacity=".9" data-phase-id={phase.candidate_id}><title>{phase.label} · 物相贡献</title></polyline>)}
-    {!hidden.calculated&&peaks.filter(p=>p.two_theta>=lo&&p.two_theta<=hi).map((p,i)=><line key={i} x1={x(p.two_theta)} x2={x(p.two_theta)} y1={270} y2={270-p.intensity/peakMax*200} stroke="var(--xrd-calculated, #e99b71)"><title>{p.two_theta.toFixed(4)}° · {p.intensity}</title></line>)}
-    {Array.from({length:6},(_,i)=>lo+(hi-lo)*i/5).map(v=><text key={v} x={x(v)} y="298" fill="currentColor" textAnchor="middle" fontSize="12">{v.toFixed(2)}</text>)}
-    {near&&<><line x1={x(near[0])} x2={x(near[0])} y1="25" y2="270" stroke="#acb6b8" strokeDasharray="3 4"/><text x="50" y="20" fill="currentColor" fontSize="13">2θ {near[0].toFixed(4)}° · I {near[1].toFixed(2)}</text></>}
+    {!hidden.calculated&&peaks.filter(p=>p.two_theta>=lo&&p.two_theta<=hi).map((p,i)=><line key={i} x1={x(p.two_theta)} x2={x(p.two_theta)} y1={baseline} y2={baseline-p.intensity/peakMax*plotHeight} stroke="var(--xrd-calculated, #e99b71)"><title>{p.two_theta.toFixed(4)}° · {p.intensity}</title></line>)}
+    {Array.from({length:tickCount},(_,i)=>lo+(hi-lo)*i/(tickCount-1)).map(v=><text key={v} x={x(v)} y={baseline+28} fill="currentColor" textAnchor="middle" fontSize="12">{v.toFixed(2)}</text>)}
+    {near&&<><line x1={x(near[0])} x2={x(near[0])} y1="25" y2={baseline} stroke="var(--ink-soft)" strokeDasharray="3 4"/><text x="20" y="20" fill="currentColor" fontSize="13">2θ {near[0].toFixed(4)}° · I {near[1].toFixed(2)}</text></>}
   </svg></div>{Boolean(frame?.contributions?.length)&&<div className="xrd-canvas-phase-legend">{frame!.contributions!.map((phase,i)=><span key={phase.candidate_id}><i style={{background:phase.color??colors[i%colors.length]}}/>{phase.label}</span>)}</div>}</div>;
   return expanded?createPortal(<dialog ref={dialogRef} className="xrd-spectrum-dialog nodrag nopan nowheel" aria-label="放大 XRD 谱图" onCancel={()=>setExpanded(false)} onClose={()=>setExpanded(false)} onClick={event=>{if(event.target===event.currentTarget)setExpanded(false);}}>{content}</dialog>,document.body):content;
 }

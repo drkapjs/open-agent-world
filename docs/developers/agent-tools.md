@@ -41,6 +41,13 @@ The user-created connection grants access to a specific Greeter. Multiple connec
 
 The handler returns a result such as `{"text": "Welcome, Ada!", "greeter_id": "..."}`. Invalid input raises `ResourceValidationError`, allowing the Agent to correct its request.
 
+The scoped tool boundary returns execution failures as tool feedback and does
+not retry operations. The ADK adapter also returns errors for unknown function
+names before a scoped tool can be entered. A failed call does not terminate
+unrelated calls in its batch; the model receives matching tool responses and
+can correct its next request. Run cancellation remains control flow. A timeout
+or failed operation can have side effects, so inspect its state before retrying.
+
 ## Verify it without a model
 
 Run the integration test from the repository root:

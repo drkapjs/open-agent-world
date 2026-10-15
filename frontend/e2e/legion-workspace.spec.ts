@@ -78,9 +78,14 @@ async function setup(request: APIRequestContext) {
 }
 
 async function openWorkspace(page: Page, id: string) {
+  const workspace = page.getByRole('dialog', { name: 'Project studio workspace mode' });
+  await expect(page.locator(`[data-card-id="${id}"]`)).toBeAttached();
+  // Reload resumes the saved active workspace. Its modal correctly blocks
+  // pointer input to the canvas, so reuse that restored window.
+  if (await workspace.isVisible()) return workspace;
   await page.getByRole('button', { name: 'Fit view', exact: true }).click();
   await page.locator(`[data-card-id="${id}"]`).getByRole('button', { name: 'Workspace mode', exact: true }).click();
-  return page.getByRole('dialog', { name: 'Project studio workspace mode' });
+  return workspace;
 }
 
 test.afterEach(async ({ request }) => {
@@ -315,7 +320,7 @@ test('drag, tile, resize, preview live cards and preserve a reusable window layo
   await pane(notes.id).getByRole('button', { name: 'Save text', exact: true }).click();
   await expect(pane(notes.id).getByRole('button', { name: 'Save text', exact: true })).toBeDisabled();
   await expect(pane(conversation.id).getByRole('button', { name: 'Send message', exact: true })).toBeVisible();
-  await expect(pane(sandbox.id).getByRole('tab', { name: 'Workspace', exact: true })).toBeVisible();
+  await expect(pane(sandbox.id).getByRole('button', { name: 'Settings', exact: true })).toBeVisible();
   await expect(window.getByText('Layout saved', { exact: true })).toBeVisible();
   const saved = (await (await request.get(`/api/nodes/${group.id}`)).json()).config.workspace_layout;
   await page.screenshot({ path: 'test-results/legion-workspace-preview-light.png' });
@@ -337,12 +342,27 @@ test('drag, tile, resize, preview live cards and preserve a reusable window layo
   const captured = page.waitForResponse(response => response.url().endsWith('/api/legions') && response.request().method() === 'POST');
   await page.locator(`[data-card-id="${group.id}"]`).getByRole('button', { name: 'Save to library', exact: true }).click();
   const template = await (await captured).json();
+  // Collection and active decks are independent: explicitly equip the captured
+  // blueprint before looking for its placement action in the Legions deck.
+  const library = await (await request.get('/api/card-library')).json();
+  expect((await request.post('/api/card-library/actions', { data: {
+    expected_revision: library.revision, action: 'update_deck', id: 'saved-legions',
+    entries: [{ kind: 'legion', id: template.id }],
+  } })).ok()).toBe(true);
   // Deploy independently after deleting the source; only the saved blueprint
   // should supply the layout and document, with no original IDs remaining.
   expect((await request.post('/api/nodes/batch-delete', { data: { node_ids: [group.id, ...cards.map(card => card.id)] } })).ok()).toBe(true);
   await expect(page.locator(`[data-card-id="${group.id}"]`)).toHaveCount(0);
+  // Refresh the client snapshot after the fixture's direct Library mutation;
+  // subsequent deck actions must carry its current optimistic revision.
+  await page.reload();
   const deployed = page.waitForResponse(response => response.url().includes(`/api/legions/${template.id}/instances`) && response.request().method() === 'POST');
   await page.getByRole('tab', { name: /Legions/ }).click();
+  page.once('dialog', async dialog => {
+    expect(dialog.type()).toBe('confirm');
+    expect(dialog.message()).toContain('Open these owned packs and continue?');
+    await dialog.accept();
+  });
   await page.getByRole('button', { name: 'Place Project studio', exact: true }).click();
   const instanceResponse = await deployed;
   expect(instanceResponse.status()).toBe(201);
@@ -368,8 +388,10 @@ test('compact live workspace resizes and saves ratios without allowing rearrange
   const box = await window.boundingBox();
   expect(box!.width).toBeGreaterThanOrEqual(1390);
   expect(box!.height).toBeGreaterThanOrEqual(890);
-  expect((await window.locator('.legion-window-titlebar').boundingBox())!.height).toBeLessThanOrEqual(40);
-  expect((await window.locator('.legion-pane-titlebar').first().boundingBox())!.height).toBeLessThanOrEqual(28);
+  // Readable controls keep the application chrome compact without squeezing
+  // the shared typography back into the old 26px / 28px strips.
+  expect((await window.locator('.legion-window-titlebar').boundingBox())!.height).toBeLessThanOrEqual(46);
+  expect((await window.locator('.legion-pane-titlebar').first().boundingBox())!.height).toBeLessThanOrEqual(34);
   await expect(window.getByText('LEGION WORKSPACE', { exact: true })).toHaveCount(0);
   await expect(window.getByRole('button', { name: 'Save layout', exact: true })).toHaveCount(0);
   await expect(window.locator('.legion-pane-titlebar[draggable="true"]')).toHaveCount(0);

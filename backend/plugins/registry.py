@@ -12,6 +12,8 @@ from backend.plugins.state import PluginStateSpec, LEGACY_STATE
 from backend.errors import GraphValidationError, PluginCompatibilityError, PluginUnavailableError
 from backend.plugins.lifecycle import NodeLifecycleHandler
 from backend.plugins.resources import NodeResourceAction
+from backend.plugins.data_sources import NodeDataConsumer, NodeDataSource
+from backend.plugins.execution_graph import NodeExecutionSource
 from backend.plugins.template import NodeTemplateHandler
 from backend.plugins.presets import LegionPresetDefinition
 from backend.plugins.tutorials import Tutorials, validate_tutorials
@@ -30,7 +32,7 @@ from backend.plugins.deployment import NodeDeploymentDefinition
 from backend.plugins.containers import NodeContainerDefinition
 from backend.plugins.execution import NodeExecutionDefinition
 
-PLUGIN_API_VERSION = "1.26"
+PLUGIN_API_VERSION = "1.33"
 _IDENTIFIER = re.compile(r"^[a-z][a-z0-9]*(?:[._:/-][a-z0-9]+)*$")
 _API_VERSION = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 
@@ -105,6 +107,23 @@ class PluginDefinition:
 SurfaceLevel = Literal["node", "preview", "inspector", "workspace"]
 
 
+class WorkspaceLayoutMetadata(BaseModel):
+    """Optional content sizing; never assigns a role or changes saved layouts."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
+    min_width: float | None = Field(default=None, ge=96, le=8192)
+    min_height: float | None = Field(default=None, ge=96, le=8192)
+    ideal_width: float | None = Field(default=None, ge=96, le=8192)
+    ideal_height: float | None = Field(default=None, ge=96, le=8192)
+
+    @model_validator(mode="after")
+    def validate_sizes(self) -> Self:
+        for minimum, ideal in ((self.min_width, self.ideal_width), (self.min_height, self.ideal_height)):
+            if minimum is not None and ideal is not None and ideal < minimum:
+                raise ValueError("workspace ideal size must not be smaller than its minimum")
+        return self
+
+
 class NodePresentation(BaseModel):
     """Supported canvas surfaces, first appearance, and compact-card open target."""
 
@@ -112,6 +131,8 @@ class NodePresentation(BaseModel):
     states: tuple[SurfaceLevel, ...] = Field(min_length=1)
     initial: SurfaceLevel
     open: SurfaceLevel
+    sizes: dict[SurfaceLevel, dict[str, float]] = Field(default_factory=dict)
+    workspace_layout: WorkspaceLayoutMetadata | None = None
 
     @classmethod
     def from_legacy_surfaces(cls, surfaces: dict[str, bool]) -> Self:
@@ -129,6 +150,11 @@ class NodePresentation(BaseModel):
             raise ValueError("presentation states must be unique")
         if self.initial not in self.states or self.open not in self.states:
             raise ValueError("presentation initial and open must belong to states")
+        for level, size in self.sizes.items():
+            if level not in self.states or set(size) != {"width", "height"}:
+                raise ValueError("presentation sizes must specify width and height for supported states")
+            if not all(96 <= value <= 4096 for value in size.values()):
+                raise ValueError("presentation sizes must be between 96 and 4096")
         return self
 
 
@@ -171,6 +197,7 @@ class NodeTypeCatalogItem(BaseModel):
     default_size: dict[str, float]
     default_status: str
     traits: list[str]
+    data_consumer: NodeDataConsumer | None = None
     surfaces: dict[str, bool]
     presentation: NodePresentation
     state: PluginStateSpec = LEGACY_STATE
@@ -203,6 +230,7 @@ class RelationshipCatalogItem(BaseModel):
     directions: list[str]
     templateable: bool
     generated: bool = False
+    data_read: bool = False
 
 
 class PluginCatalog(BaseModel):
@@ -305,6 +333,9 @@ class NodeTypeDefinition:
     template_remap_config: Callable[[dict[str, Any], Mapping[str, str]], dict[str, Any]] | None = None
     document: NodeDocumentDefinition | None = None
     resource_actions: Mapping[str, NodeResourceAction] = field(default_factory=dict)
+    data_source: NodeDataSource | None = None
+    execution_source: NodeExecutionSource | None = None
+    data_consumer: NodeDataConsumer | None = None
     # Native state with no browser snapshot must never masquerade as undoable.
     deletion_warning: str | None = None
     execution: NodeExecutionDefinition | None = None
@@ -349,6 +380,7 @@ class NodeTypeDefinition:
             },
             default_status=self.default_status,
             traits=sorted(self.traits),
+            data_consumer=self.data_consumer,
             surfaces={
                 level: level in presentation.states for level in ("preview", "inspector", "workspace")
             },
@@ -386,6 +418,8 @@ class RelationshipDefinition:
     generated: bool = False
     # Ordinary connections are autonomous; sensitive grants explicitly require review.
     canvas_requires_confirmation: bool = False
+    # Read-only dataset access from source (consumer) to target (provider).
+    data_read: bool = False
 
     def catalog_item(self, plugin_id: str) -> RelationshipCatalogItem:
         return RelationshipCatalogItem(
@@ -401,6 +435,7 @@ class RelationshipDefinition:
             directions=sorted(self.directions),
             templateable=self.templateable,
             generated=self.generated,
+            data_read=self.data_read,
         )
 
 
@@ -422,6 +457,7 @@ class PluginRegistration:
         self.runtime_provider_factories: dict[str, RuntimeProviderFactory] = {}
         self.runtime_provider_model_resolvers: set[str] = set()
         self.runtime_provider_context_stores: set[str] = set()
+        self.background_job_providers: dict[str, Any] = {}
         self.state_schemas: dict[str, StateSchema] = {}
         self.assets: dict[str, PluginAsset] = {}
         self.packs: dict[str, PackDefinition] = {}
@@ -446,6 +482,8 @@ class PluginRegistration:
         self._add(self.assets, asset.id, asset, "asset")
 
     def register_node_type(self, definition: NodeTypeDefinition) -> None:
+        if 'core.agent' in definition.traits or definition.summoning or definition.execution_source:
+            definition = replace(definition, traits=definition.traits | frozenset({'core.execution-source'}))
         self._add(self.nodes, definition.id, definition, "node type")
 
     def register_relationship(self, definition: RelationshipDefinition) -> None:
@@ -479,6 +517,17 @@ class PluginRegistration:
     def register_state_schema(self, schema: StateSchema) -> None:
         self._add(self.state_schemas, schema.id, schema, "state schema")
 
+    def register_background_job_provider(self, provider_id, definition) -> None:
+        from .background_jobs import BackgroundJobProvider
+        import math
+        if not isinstance(definition, BackgroundJobProvider) or not math.isfinite(definition.poll_interval_seconds) or definition.poll_interval_seconds < 1:
+            raise ValueError("Background job providers require a positive polling interval")
+        if (not isinstance(definition.specification, type) or not issubclass(definition.specification, BaseModel)
+                or not callable(definition.inspect)
+                or any(value is not None and not callable(value) for value in (definition.prepare, definition.submit, definition.cancel))):
+            raise ValueError("Background job providers require a Pydantic specification and callable callbacks")
+        self._add(self.background_job_providers, provider_id, definition, "background job provider")
+
     @staticmethod
     def _add(target: dict[str, Any], identifier: str, value: Any, label: str) -> None:
         PluginRegistry.validate_identifier(identifier, label)
@@ -502,6 +551,7 @@ class PluginRegistry:
         self._runtime_provider_factories: dict[str, RuntimeProviderFactory] = {}
         self._runtime_provider_model_resolvers: set[str] = set()
         self._runtime_provider_context_stores: set[str] = set()
+        self._background_job_providers: dict[str, Any] = {}
         self._state_schemas: dict[str, StateSchema] = {}
         self._owners: dict[tuple[str, str], str] = {}
         self._assets: dict[tuple[str, str], PluginAsset] = {}
@@ -585,6 +635,8 @@ class PluginRegistry:
         self._commit_owned(
             "state_schema", descriptor.id, self._state_schemas, staged.state_schemas
         )
+        self._commit_owned("background_job_provider", descriptor.id,
+            self._background_job_providers, staged.background_job_providers)
 
     def _normalize_capabilities(self, staged: PluginRegistration) -> None:
         # Legacy input is normalized once. Projection uses the same registry.
@@ -612,6 +664,7 @@ class PluginRegistry:
                 raise ValueError("unsupported public asset media type")
 
         contribution_sets = (
+            ("background_job_provider", "background job provider", self._background_job_providers, staged.background_job_providers),
             ("legion_preset", "Legion preset", self._legion_presets, staged.legion_presets),
             ("pack", "pack", self._packs, staged.packs),
             ("capability", "capability", self._capabilities, staged.capabilities),
@@ -799,12 +852,17 @@ class PluginRegistry:
                 if execution.control_capability_kind and execution.control_capability_kind not in staged.capability_handlers:
                     raise ValueError("execution control capability must be owned by the same plugin")
             try:
-                definition.config_model()
+                default_config = definition.config_model().model_dump(mode="json")
             except ValidationError as exc:
                 raise ValueError(
                     f"node type {definition.id!r} config model must provide defaults "
                     "for palette creation"
                 ) from exc
+            if definition.data_consumer is not None:
+                consumer = definition.data_consumer
+                if any(not isinstance(default_config.get(name), str)
+                       for name in (consumer.source_field, consumer.schema_field)):
+                    raise ValueError("data consumer fields must name string config fields with defaults")
 
         operations: dict[str, CapabilityDefinition] = {}
         for definition in (*self._capabilities.values(), *staged.capabilities.values()):
@@ -978,6 +1036,17 @@ class PluginRegistry:
 
     def has_runtime_provider(self, provider_id: str) -> bool:
         return provider_id in self._runtime_provider_factories and self.is_enabled(self.runtime_provider_owner_id(provider_id))
+
+    def background_job_provider(self, provider_id):
+        self._assert_enabled("background_job_provider", provider_id)
+        try:
+            return self._background_job_providers[provider_id]
+        except KeyError as exc:
+            raise PluginUnavailableError(f"Background job provider {provider_id!r} is not installed") from exc
+
+    def background_job_providers(self):
+        return {key: value for key, value in self._background_job_providers.items()
+                if self.is_enabled(self.owner_id("background_job_provider", key))}
 
     def node_type(self, type_id: str) -> NodeTypeDefinition:
         self._assert_enabled("node_type", type_id)

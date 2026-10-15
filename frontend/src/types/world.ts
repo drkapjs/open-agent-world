@@ -8,6 +8,9 @@ export interface NodePresentation {
   states: readonly NodeSurfaceLevel[];
   initial: NodeSurfaceLevel;
   open: NodeSurfaceLevel;
+  sizes?: Partial<Record<NodeSurfaceLevel, { width: number; height: number }>>;
+  /** Optional content sizing hints for one-shot workspace composition. */
+  workspace_layout?: import('../workspace/workspaceLayoutMetadata').WorkspaceLayoutMetadata;
 }
 
 export type AgentStatus = "idle" | "running" | "waiting" | "error";
@@ -166,6 +169,7 @@ export interface WorldSnapshot {
 }
 
 export interface NodeTypeCatalogItem {
+  data_consumer?: import('../plugins/dataSources').DataConsumer | null;
   tutorials?: import('../tutorials/types').TutorialDefinition[];
   /** Layout and colour are independent of the owned card's material finish. */
   card_face?: import('../components/cardFaceDesign').CardFaceDesign | null;
@@ -210,6 +214,7 @@ export interface NodeTypeCatalogItem {
 }
 
 export interface RelationshipCatalogItem {
+  data_read?: boolean;
   generated?: boolean;
   id: Relationship;
   plugin_id: string;
@@ -331,6 +336,7 @@ export interface ToastMessage {
 }
 
 export interface ConversationSession {
+  restart_before_message_id?: string | null;
   group_id?: string;
   group_title?: string;
   auto_title?: boolean;
@@ -408,7 +414,17 @@ export interface ContainerDefinition {
 
 export interface ConversationToolTrace {
   type: string;
-  name: string;
+    name?: string;
+    id?: string;
+    timestamp?: string;
+    text?: string;
+    kind?: string;
+    provider_message_id?: string;
+    arguments?: unknown;
+    response?: unknown;
+    error?: unknown;
+    success?: boolean;
+    truncated?: boolean;
   call_id?: string;
 }
 
@@ -418,6 +434,7 @@ export interface ConversationRunSummary {
   status: string;
   started_at?: string | null;
   finished_at?: string | null;
+  final_message_id?: string | null;
   awaiting?: string | null;
   progress?: string | null;
   recovery_kind?: string | null;
@@ -427,6 +444,7 @@ export interface ConversationRunSummary {
   confirmed_tool_count?: number | null;
   tool_count: number;
   tool_trace: ConversationToolTrace[];
+    tool_trace_truncated?: boolean;
   live_text?: string;
 }
 

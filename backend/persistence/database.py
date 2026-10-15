@@ -8,6 +8,15 @@ from typing import Iterator
 
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS background_jobs (
+    id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL,
+    context_id TEXT NOT NULL,
+    request_key TEXT NOT NULL,
+    record_json TEXT NOT NULL,
+    UNIQUE(agent_id, context_id, request_key)
+);
+
 CREATE TABLE IF NOT EXISTS summoned_instances (
     id TEXT PRIMARY KEY,
     record_json TEXT NOT NULL
@@ -418,6 +427,9 @@ class Database:
 
     def _migrate_conversations(self) -> None:
         # Additive migration preserves existing session IDs, messages and run scopes.
+        self._connection.execute('''CREATE TABLE IF NOT EXISTS conversation_attachment_grants (
+            session_id TEXT NOT NULL REFERENCES conversation_sessions(id) ON DELETE CASCADE,
+            version_id TEXT NOT NULL, PRIMARY KEY (session_id, version_id))''')
         self._connection.execute("""CREATE TABLE IF NOT EXISTS conversation_groups (
             id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
             title TEXT NOT NULL)""")
@@ -426,6 +438,7 @@ class Database:
             'group_id': 'TEXT REFERENCES conversation_groups(id)',
             'auto_title': 'INTEGER NOT NULL DEFAULT 0',
             'is_default': 'INTEGER NOT NULL DEFAULT 0',
+            'restart_before_message_id': 'TEXT',
         }.items():
             if name not in columns:
                 self._connection.execute(f'ALTER TABLE conversation_sessions ADD COLUMN {name} {definition}')

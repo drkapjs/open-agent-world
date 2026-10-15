@@ -77,8 +77,10 @@ class RunStore:
             values.append(task_id)
         where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
         with self.database.locked() as connection:
+            # Creation timestamps can tie; UUID ordering must never reverse
+            # sends or select an older Run as the latest execution.
             rows = connection.execute(
-                f"SELECT * FROM runs{where} ORDER BY created_at, run_id", values
+                f"SELECT * FROM runs{where} ORDER BY created_at, rowid", values
             ).fetchall()
         return [self._record(row) for row in rows]
 
@@ -87,7 +89,7 @@ class RunStore:
             rows = connection.execute(
                 """
                 SELECT * FROM runs WHERE parent_run_id = ?
-                ORDER BY created_at, run_id
+                ORDER BY created_at, rowid
                 """,
                 (parent_run_id,),
             ).fetchall()

@@ -1,8 +1,9 @@
 import { Atom, Bot, Boxes, Crown, FileText, HardDrive, Image, MessagesSquare, Puzzle, Scan, Sparkles, Workflow, Wrench, Package, Palette, Printer, Settings, Calculator, Layers, BookOpen } from "lucide-react";
 import type { NodeTypeCatalogItem } from "../types/world";
+import { Server } from 'lucide-react';
 
 const icons = { "hard-drive": HardDrive, atom: Atom, bot: Bot, boxes: Boxes, crown: Crown, "file-text": FileText, image: Image, "messages-square": MessagesSquare, scan: Scan, sparkles: Sparkles, workflow: Workflow, wrench: Wrench,
-  package: Package, palette: Palette, printer: Printer, settings: Settings, calculator: Calculator, layers: Layers, 'book-open': BookOpen };
+  server: Server, package: Package, palette: Palette, printer: Printer, settings: Settings, calculator: Calculator, layers: Layers, 'book-open': BookOpen };
 
 export function CatalogIcon({ definition, size = 18 }: {
   definition?: Pick<NodeTypeCatalogItem, "icon" | "icon_url"> & { id?: string }; size?: number;

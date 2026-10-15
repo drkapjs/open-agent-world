@@ -239,8 +239,7 @@ export function ExecutionConfigurationBody({ card }: { card: WorldCard }) {
     finally { setBusy(false); }
   }
 
-  return <div className="expanded-stack execution-config">
-    <section className="card-section">
+  return <section className="expanded-stack execution-config" aria-label={environment ? t("Environment variables") : t("Destination configuration")}>
       <div className="section-heading execution-config-heading">
         <span>{environment ? t("Environment variables") : t("Destination configuration")}</span>
         <button type="button" className="secondary-button compact-button" disabled={busy} onClick={() => importInput.current?.click()}><Upload size={13} /> {t("Import JSON")}</button>
@@ -275,6 +274,5 @@ export function ExecutionConfigurationBody({ card }: { card: WorldCard }) {
       </div>
       {notice && <p className="execution-config-notice" role="status">{notice}</p>}
       {error && <p role="alert">{error}</p>}
-    </section>
-  </div>;
+  </section>;
 }

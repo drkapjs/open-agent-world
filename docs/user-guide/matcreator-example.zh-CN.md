@@ -1,192 +1,91 @@
-# MatCreator 预设 Legion：从零开始
+# MatCreator：原生 Agent 研究工作区
 
 [English documentation](../../plugins/matcreator/README.md) | **简体中文**
 
-本示例从一个空白世界开始，使用 MatCreator 的 **MatCreator research** 预设创建一个材料研究工作区。你会依次完成：
+MatCreator 卡包提供专属 **MatCreator Agent** 和 **MatCreator native research** Legion。
+规划器、执行协调器和递归子 Agent 的源码由本项目的 MatCreator Pack 独立维护；计算、知识、产物和展示通过 OAW 卡片连接。
+原来的拼装式 Legion、专用研究任务板和示例创建脚本已移除，卡包不再依赖 Barracks。
 
-1. 从 MatCreator 卡包收集卡牌。
-2. 把卡牌加入自己的牌组。
-3. 把 **MatCreator research** Legion 预设加入牌组。
-4. 从牌组把预设拖到画布。
-5. 打开 Legion 的 **Workspace mode（工作区模式）**。
-6. 使用会话、任务板、文件、Sandbox 和 Research knowledge 完成一次研究流程。
+## 安装与部署
 
-下面的截图由当前源码版本在 2026-09-23 的本地 mock runtime 中重新录制，分别对应卡包获取、预设入口、画布和工作区状态。
+正常 OAW 安装、开发启动和桌面打包会自动准备 MatCreator 运行环境，无需单独运行安装脚本，
+也无需填写卡片的 Python 路径。首次安装需要联网下载依赖，后续复用已验证的环境。
+运行环境由卡包管理并与 OAW 的 Python 依赖隔离；主程序 Python 低于 3.12 时会自动准备所需解释器。
 
-> [!IMPORTANT]
-> MatCreator 预设属于插件注册的 **Legions** 项目，不是普通卡包中的单张卡牌。普通卡包提供可单独放置的 Agent、Sandbox 等卡牌；预设会一次性部署一组已经连接好的研究卡牌。两者可以同时放入同一个牌组。
+安装时只准备第三方依赖和 LiteLLM 的公开分词缓存，不再下载或安装外部 MatCreator。
+执行内核位于 `plugins/matcreator/oaw_matcreator_engine/`，随 Pack 一起分发，修改后在下一个 worker 生效。
+原始来源和适配范围见 [Pack 内核说明](../../plugins/matcreator/oaw_matcreator_engine/UPSTREAM.md)。
 
-## 0. 准备环境
+1. 重启后端并重建或重新加载前端。
+2. 在 Library 打开 MatCreator 卡包，将 **MatCreator native research** 加入牌组并放到画布。
+3. 打开 Legion 的 **Workspace mode**。
+4. 在 **Settings → Models** 设置默认模型，并配置连接的 Sandbox。
 
-### 安装并启动 OAW
+外部 Python 和 MatCreator checkout 覆盖项已移除；加载旧卡片时会忽略这两个字段。
+安装和启动必须使用同一个 Python 环境。Windows 的 `scripts/dev.ps1` 已统一使用
+`backend/.venv/Scripts/python.exe`，不会再通过 `uv run --with-editable` 创建临时后端环境。
+若提示卡包安装不完整，错误中会列出后端 Python 和查找目录；先核对启动环境，避免反复安装到另一个环境。
 
-安装 MatCreator 插件后重启 OAW。插件还依赖 `science.structure-viewer`，正常的本地插件发现会一起加载它。开发环境可以在仓库根目录运行：
+模型密钥由 OAW 管理，不写入卡片或 Legion 模板。材料软件、环境变量与远程计算凭据配置在 Sandbox 中。
+原生网页服务的远程任务监控不随卡片启动；Agent 应通过已连接工具检查远程任务，并保留任务 ID。
 
-```powershell
-./scripts/dev.ps1
-```
+## 工作区布局
 
-打开启动器输出的本地地址。首次体验可以使用 mock Agent runtime，不需要模型凭据：
+新版预设为 revision 2：
 
-```powershell
-./scripts/dev.ps1 -AgentRuntime mock
-```
+| 区域 | 内容 |
+| --- | --- |
+| 左侧 | **Agent graph**：主 Agent、规划器、执行器和子 Agent 的关系与状态 |
+| 中间 | **Conversation**、**Skills & knowledge**、**Structure viewer**、**File preview**、**Research artifacts**、**Research files & compute** 标签 |
+| 右侧上方 | **Sessions**，选择或创建会话 |
+| 右侧下方 | **Files**，浏览 Sandbox 文件 |
 
-mock runtime 只用于验证界面和流程，不会生成真实的模型回答。要进行真实研究，请先在 **Settings > Models** 配置默认模型。
+执行图默认按历史纵向阅读，最多使用三条时间轨道；轨道表示记录中的时间重叠，不代表依赖。
+较早完成的执行组会自动折叠，运行中、失败和等待处理的记录保持可见。展开 Execution 可查看内部 Step。
 
-### 从空白世界开始
+点击节点查看真实上游、下游和输出，点击来源引用可跳转到对应 Step，并可返回原节点。
+**Dependency lens** 在同一面板显示局部依赖图，支持逐跳展开；**Step graph** 查看本次 Execution 的内部图。
+复杂依赖可聚焦后返回历史。跨 Execution 引用默认只显示来源，不画贯穿整个历史的长线。
+切换会话会切换图和原生执行状态；图的折叠、选择与布局不改变任务调度。
 
-如果页面显示首次启动选项，选择 **Start Empty（空白开始）**。如果已经进入其他世界，可以使用应用的重置/新建工作区功能，或继续使用当前世界；下面的收集和牌组操作不会自动删除已有卡牌。
+**Agent graph** 是 Core essentials 中的通用独立卡片。通过 **Observe execution**
+将图卡连接到普通 Agent、Agent Barracks、Summoning 或其他执行来源，再在图卡中选择来源。
+局部图中，实线表示控制依赖，虚线表示结果交付或产物读取，点线表示重试或重新规划；父子关系仅表示包含。
+其他卡片或运行时可以使用[公共执行图接口](../developers/execution-graph.md)提供自己的数据。
 
-## 1. 打开 MatCreator 卡包
+默认 **normal** 模式先在会话中给出计划，确认后执行；**flash** 模式直接委派。
+例如：“规划一个铜超胞研究，先检查科学计算环境，生成结构后核验原子数并发布产物。”
+执行成功不等于科学结果已通过验收，仍需核查输出、单位与计算假设。
 
-1. 打开世界控制区的 **Pack & Card Library（卡包与卡牌库）**，也可以点击底部牌组托盘中的 **Library**。
-2. 切换到 **Packs** 标签，找到 MatCreator 卡包。
-3. 点击密封卡包。打开卡包会把其中的卡牌收集到你的 Card Library；它不会自动把卡牌放进当前牌组。
-4. 切换到 **Cards** 标签，搜索 `MatCreator`，逐张查看可用卡牌。
+## 历史与溯源边界
 
-卡包的职责是“收集卡牌”，牌组的职责是“选择当前底部托盘显示哪些卡牌”。收集动作只做一次；之后可以把同一张已收集卡牌加入或移出不同的牌组。
+Pack 0.7 需要公共插件接口 1.31。每次 Step 尝试使用独立 ID，重试不覆盖失败记录；计划和执行历史持久化后可恢复。
+新 Run 尚未发布执行图时保留上一份详细记录并标明等待；Conversation 回合完成不会自动把未完成的 Step 标为成功。
 
-## 2. 创建牌组并加入卡牌
+数据依赖只来自显式交付的历史 Step 结果或成功读取的指定产物版本，不会根据编号、执行先后或自由文本猜测。
+产物读取表示已交付给 Agent，不证明模型在推理中实际使用了它。跨会话来源和旧记录中未保存的溯源信息不会被补造。
 
-1. 在 **Decks** 标签创建一个牌组，例如命名为 `MatCreator demo`。
-2. 回到 **Cards**，选中需要直接放置或单独配置的卡牌，点击 **Add to deck**，选择 `MatCreator demo`。
-3. 至少可以加入一个 Agent、一个 Conversation 和一个 Sandbox。若只想体验预设工作区，也可以先跳过这些卡牌；预设部署时会创建自己的成员。
-4. 点击牌组标签激活 `MatCreator demo`。
+历史按需渲染，局部图最多显示 160 个相关节点，达到限制时会提示并允许继续选择节点探索。
+单份宿主投影上限为 10,000 节点、50,000 条边和 8 MiB；达到限制会明确提示，Pack 磁盘历史仍保留。
 
-现在底部托盘显示的是这个牌组的内容。加入牌组不会在画布上创建实例，只有从托盘点击或拖拽卡牌时才会创建世界卡牌。
+## 文件与标签联动
 
-![当前版本的 Pack & Card Library 卡包页面](../assets/demos/matcreator-current-library.png)
+在右侧点击文件，会打开中间的 **File preview**。
+如果已连接的 Structure viewer 成功读取并解析该结构，会自动切到 **Structure viewer**；
+从会话附件打开结构时，临时文件预览弹窗也会随之关闭。
+普通文本、无效结构和不受支持的文件继续使用普通预览。
 
-## 3. 把 MatCreator 预设加入牌组
+结构视图固定为 **Pinned**、重新加载、后台刷新或重新连接时，不会自动切换标签。
+切换标签保留会话草稿、文件选择和卡片内部状态。
 
-MatCreator 预设位于牌组托盘的 **Legions** 标签。它与普通卡包采用不同的来源，但加入牌组后的使用方式相同：
+联动通过本体公共 API `host.workspace.activate()` 实现，仅影响当前浏览器中打开的工作区。
+它不会自动保存或重排布局，不会恢复用户隐藏的 section，也不会在编辑布局时抢走标签。
+插件接入方式见[工作区设计文档](../developers/workspace-design.md#activate-content-after-an-operation)。
 
-1. 点击底部托盘的 **Legions** 标签。
-2. 找到 **MatCreator research**。
-3. 将它拖到 `MatCreator demo` 牌组的标签上，或打开预设详情后选择 **Add to deck**。
-4. 切回 `MatCreator demo`，确认牌组中出现 `MatCreator research`。
+## 升级与验证范围
 
-将预设放进牌组只保存一个可部署的 Legion 项目，不会马上在画布上创建它。预设包含一组固定的初始成员和连接：Conversation、Sessions、Files、Research tasks、File preview、Research knowledge、Sandbox、Structure viewer 以及 MatCreator Agent。
+新部署使用新版布局。现有保存布局由用户管理，不会被预设更新覆盖；可以重新部署，或用 **Edit layout** 调整。
+移除旧功能不会删除已有世界记录，也不会把旧的 OAW Agent 会话自动转换为 MatCreator 会话。
 
-![当前版本的 Legions 牌组与 MatCreator research 预设](../assets/demos/matcreator-current-legions.png)
-
-## 4. 从牌组拖到画布
-
-1. 保持 `MatCreator demo` 为当前激活牌组。
-2. 在底部托盘找到 **MatCreator research**。
-3. 将它拖到画布的空白区域并释放。也可以点击该项目，让 OAW 使用默认位置放置。
-4. 等待 Legion 和成员卡牌完成创建，然后点击 **Fit view** 查看完整布局。
-
-预设部署的是一个新的 Legion 实例。牌组里的预设仍然可以再次使用；每次放置都会创建独立的实例。画布上的 Legion 卡牌与牌组中的预设不是同一个对象，删除画布实例不会删除牌组内容。
-
-首次部署后，检查 Legion 内是否能看到研究相关成员。如果插件刚安装或刚更新，重启后端和前端，再重新打开页面；旧的已部署 Legion 不会被静默替换成新版本。
-
-![当前版本部署后的纯画布视图](../assets/demos/matcreator-current-canvas.png)
-
-## 5. 打开 Workspace mode
-
-1. 在画布上找到 **MatCreator research** Legion 的标题栏。
-2. 点击 **Workspace mode（工作区模式）**。
-3. 工作区会以一个模块化窗口打开。点击标签可以在不同页面之间切换；这些页面仍然属于同一组 Legion 成员。
-
-预设默认布局大致如下：
-
-- 左侧：Sessions、Files。
-- 中间：Conversation。
-- 右侧标签：Research tasks、File preview、Research knowledge、Participants。
-- 下方或右下方标签：Sandbox 控制、设置、Terminal、Structure viewer。
-
-![当前版本的 MatCreator Legion 工作区](../assets/demos/matcreator-current-workspace.png)
-
-需要调整布局时：
-
-1. 点击 **Edit layout**。
-2. 把成员或已有标签拖到面板的左、右、上、下边缘进行分栏；拖到标题栏可以加入同一组标签。
-3. 完成后点击 **Save layout** 或 **Done editing**。
-4. 不需要的成员仍可留在 Legion 中，不必全部放进工作区；它们会继续保留在底部栏。
-
-工作区只是 Legion 成员的另一种展示方式。它不会改变画布位置、连接、模型设置或 Sandbox 的运行状态。
-
-## 6. 第一次使用：建立研究计划
-
-### 6.1 配置会话和 Agent
-
-1. 在 **Sessions** 中创建或选择一个会话。
-2. 在 **Conversation** 中输入研究目标，例如：
-
-   > Plan a copper supercell study. Inspect the available scientific environment, record the steps in the task board, generate the structure when ready, verify its atom count and publish the output paths.
-
-3. 在 Agent 的设置中确认默认模型。没有模型凭据时，可以先观察界面和任务板，不要期待真实模型回复。
-4. 如果要执行计算，在 Sandbox 中配置运行时、环境和工作目录，然后再点击 **Start**。预设不会自动绑定主机目录、凭据、Python 包或自动启动 Sandbox。
-
-### 6.2 在 Research tasks 中创建任务
-
-1. 打开 **Research tasks**。
-2. 点击 **New plan**，填写计划标题和研究目标。
-3. 使用 **Add task** 添加任务，例如：
-   - Inspect the scientific environment
-   - Generate a 2 × 2 × 2 copper supercell
-   - Verify the atom count
-   - Publish the output files
-4. 为任务填写依赖关系、验收标准和结果记录。
-5. 按照 **To do → In progress → Awaiting review → Done** 推进状态。
-
-任务板按当前 Conversation session 隔离。切换会话会看到该会话自己的计划；回到原会话时，计划和执行记录会恢复。将任务标记为 **Done** 前，应检查实际文件并记录证据；状态变更本身不会自动启动或取消 Run。
-
-### 6.3 使用文件、知识和结构预览
-
-- 在 **Files** 查看 Sandbox 工作目录中的输入和输出。
-- 在 **File preview** 打开结构文件或其他资源。
-- 在 **Structure viewer** 检查已打开结构的原子数和几何形状。
-- 在 **Research knowledge** 搜索 MatCreator 的科学技能和参考知识。
-- 通过 Conversation 继续澄清目标、修订计划并记录结果。
-
-预设中的科学技能存放在 Research knowledge；它们不会因为打开工作区就自动执行。真实计算仍需要正确配置的 Sandbox 环境和可用模型。
-
-### 6.4 委派、自动接续与长作业
-
-更新后重启后端、重新构建并刷新前端，部署 **MatCreator research revision 7**，即可使用新的协调者指令、产物连接和执行器权限。现有 Legion 的配置与知识快照会保留；不会自动覆盖，也不会追溯启动历史任务。
-
-协调者先准备共享 Sandbox，再委派任务。子任务结束时，即使协调者已结束当前回合，平台也会在原会话唤醒它，由它检查文件和验收证据，再派发已满足依赖的下一步任务。运行状态 `succeeded` 仅表示该次 Agent 运行成功结束；任务仍需验收后才能标记 **Done**。
-
-执行器通过结构化报告区分完成、部分完成、受阻与等待外部作业。尚未结束的远程作业可以安排持久化检查，协调者也可以通过 `task_board_execute` 的 `defer` 安排下一次检查。任务板显示 **Scheduled checks（计划检查）**，支持取消。已经结束的回合所安排的检查会跨后端重启保留；检查时必须查询真实作业状态，不能仅凭等待时间判断成功或重复提交作业。
-
-停止任务、任务板或协调者会阻止相应接续；权限撤销后也不会继续调用。每条根任务链最多自动接续 64 回合，达到上限需要明确继续。单次 `wait` 仍限制在 60 秒，长作业依靠持久化检查继续推进。
-
-新预设包含 **Research artifacts**，执行器可发布文件，由协调者在主会话中交接。执行器不能启动或停止共享 Sandbox。每次委派分配单独的输出目录，但共享目录并非文件系统隔离；跨命令文件应保存在工作目录或 HOME，不能保存在每次命令都会重建的 `/tmp`。
-
-委派工具默认返回摘要，未变化的结果可用游标省略；完整单次报告按需读取。`inspect_sandbox` 默认只显示当前 Agent 的近期命令元数据，完整输出和共享 Python 安装日志需显式请求。资源环境变量会分别报告是否配置、主机路径是否可用及错误原因；实际运行时路径仍需在 Sandbox 内检查。
-
-## 7. 保存与再次使用
-
-- 当前 Legion 的工作区布局会自动保存；编辑布局时可以使用 **Cancel layout changes** 放弃本次修改。
-- 要把修改后的布局保存成新的可复用版本，在 Legion 操作中选择 **Save to library**。
-- 已保存的版本会出现在 **Legions** 标签，可加入牌组并再次部署。
-- 保存到库的是布局和可复用的任务结构；运行结果、会话引用和输出路径不会被复制成新项目的实时结果。
-- 删除画布上的 Legion 实例不会影响已收集卡牌、牌组或库中的预设。
-
-## 常见问题
-
-### 找不到 MatCreator 卡包或预设
-
-确认插件已经安装并重启后端。卡包需要在 **Packs** 中点击打开；预设则应在 **Legions** 标签中查找，而不是在普通 **Cards** 列表中搜索。前端资源更新后也需要重新构建或刷新页面。
-
-### 牌组里有预设，但拖不出完整工作区
-
-先确认拖的是 `MatCreator research` Legion 项目，而不是单独的 Agent 或 Toolset。放置后点击 **Fit view**，再从 Legion 标题栏打开 **Workspace mode**。
-
-### 工作区里看不到 Structure viewer
-
-该功能依赖 `science.structure-viewer` 插件，并且只有在 Conversation 或 Sandbox 中打开结构文件后才会显示有内容的预览。先检查插件加载状态，再通过 **File preview** 打开 `.xyz` 或 `.cif` 文件。
-
-### Agent 没有回复或 Sandbox 无法运行
-
-检查默认模型、Agent 的模型设置、Sandbox runtime/environment 和工作目录。mock runtime 只验证本地交互，不提供真实模型能力；安装 OAW 也不会自动安装 ASE、NumPy 等科学依赖。
-
-## 相关文档
-
-- [MatCreator 插件说明（英文）](../../plugins/matcreator/README.md)
-- [Legion、团队空间与工作区（英文）](../legions.md)
-- [卡包、卡牌库与牌组（英文）](../card-library.md)
-- [Sandbox 工作区（英文）](../sandbox-workspace.md)
+本地测试覆盖原生编排与模拟模型、会话隔离、权限撤销、产物核验、执行图、工作区标签联动和真实结构渲染。
+这些测试不代替真实模型、Bohrium 或科学计算验收。

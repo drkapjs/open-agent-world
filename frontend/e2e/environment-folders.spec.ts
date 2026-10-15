@@ -40,7 +40,7 @@ for (const kind of ['folder', 'file'] as const) test(`global and Sandbox ${kind}
     nodeId = (await response.json()).id;
     await page.reload();
     const card = page.locator(`[data-card-id="${nodeId}"]`);
-    await card.getByRole('tab', { name: 'Settings', exact: true }).click();
+    await card.getByRole('button', { name: 'Settings', exact: true }).click();
     await card.getByText('Environment variables', { exact: true }).click();
     await card.getByRole('button', { name: 'Add variable', exact: true }).click();
     await card.getByLabel('Environment variable 1 name', { exact: true }).fill('MODELS');

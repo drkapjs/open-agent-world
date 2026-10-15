@@ -1,0 +1,5 @@
+# Third-party orchestration libraries owned by this Pack; engine source ships in its wheel.
+# Scientific executables belong to Sandbox cards, not this worker.
+google-adk==2.8.0
+litellm==1.98.0
+json-repair==0.64.0

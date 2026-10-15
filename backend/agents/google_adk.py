@@ -26,6 +26,7 @@ from .models import (
     AgentStatus,
 )
 from .tools import build_scoped_tool_callables
+from .adk_tool_errors import on_tool_error
 from backend.runs.models import InvocationContext, RunStatus, RuntimeInput
 
 
@@ -244,13 +245,23 @@ class GoogleAdkAgentRuntime(RuntimeProvider):
                 selected_model = model
                 managed = ManagedContext(self.context_store, agent_id, context.context_id or "",
                                          run_id, model, prompt.strip(),
-                                         budget=self._context_budget(record.config.model, model.model))
+                                         budget=self._context_budget(record.config.model, model.model),
+                                         input_provider=self._provider if hasattr(self._provider, "pending_conversation_input") else None)
+            injected = []
             async def before_model(callback_context: Any, llm_request: Any) -> None:
                 if managed is not None:
                     trace.begin("agent", llm_request, phase="context")
                     await managed.before_model(callback_context, llm_request)
                     trace.model_ready("agent", llm_request)
                 else:
+                    if hasattr(self._provider, "pending_conversation_input"):
+                        pending = await self._provider.pending_conversation_input(agent_id, run_id)
+                        injected.extend(self._adk.types.Content(role="user", parts=[
+                            self._adk.types.Part.from_text(text=message["text"])]) for message in pending)
+                        llm_request.contents.extend(injected)
+                        if pending:
+                            await self._provider.acknowledge_conversation_input(
+                                agent_id, run_id, [message["id"] for message in pending])
                     await traced["before_model_callback"](callback_context, llm_request)
 
             async def after_model(callback_context: Any, llm_response: Any) -> None:
@@ -270,6 +281,7 @@ class GoogleAdkAgentRuntime(RuntimeProvider):
                 model=selected_model,
                 instruction=record.config.system_instruction,
                 tools=tools,
+                on_tool_error_callback=on_tool_error,
                 **context_options,
             )
             app = self._adk.App(name=self._app_name, root_agent=agent)
@@ -402,7 +414,7 @@ class GoogleAdkAgentRuntime(RuntimeProvider):
     ) -> AsyncIterator[AgentEvent]:
         content = getattr(event, "content", None)
         parts = getattr(content, "parts", None) or []
-        for part in parts:
+        for index, part in enumerate(parts):
             function_call = getattr(part, "function_call", None)
             if function_call is not None:
                 yield AgentEvent(
@@ -438,7 +450,8 @@ class GoogleAdkAgentRuntime(RuntimeProvider):
                     record.config.agent_id,
                     run_id,
                     AgentEventType.MESSAGE,
-                    {"text": text, "final": is_final},
+                    {"text": text, "final": is_final,
+                     **({'provider_message_id': f'{event.id}:{index}'} if getattr(event, 'id', None) else {})},
                 )
 
     async def stop(self, run_id: str) -> None:

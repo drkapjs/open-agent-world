@@ -1,3 +1,5 @@
+import { ExecutionGraphCard } from './ExecutionGraph';
+import { JobsCard } from './Jobs';
 import { isMissingCard, MissingPlugin } from "./MissingPlugin";
 import { useWorkspaceAccess } from '../workspace/WorkspaceAccess';
 import { t, useLocale } from "../i18n";
@@ -9,7 +11,6 @@ import {
   Bot,
   Clock3,
   MessageSquare,
-  PanelRight,
   Radio,
   Trash2,
   X,
@@ -34,6 +35,9 @@ import { PluginSurface } from "../plugins/PluginSurface";
 import { CatalogIcon } from "../components/CatalogIcon";
 import { CardFinishLayer } from "./CardFinishLayer";
 import { normalizeCardFinish } from "./cardFinish";
+import { WorkspaceEmptyState, WorkspaceToolbar } from '../workspace/WorkspacePrimitives';
+import './agentWorkspace.css';
+import { ContentSurfaceControls, hasContentSurface } from './ContentSurfaceControls';
 
 interface WorkspaceSurfaceProps {
   card: WorldCard;
@@ -100,42 +104,32 @@ function AgentWorkspace({ card }: { card: WorldCard }) {
   }, [card.id, events[0]?.id]);
 
   return (
-    <div className="agent-workspace-grid agent-activity-workspace">
-      <nav className="workspace-session-sidebar" aria-label={t("Agent conversation history")}>
-        <div className="workspace-nav-label"><MessageSquare size={11} /> {t("Conversation history")}</div>
-        <div className="conversation-sidebar-scroll">
-          {sessions.map((session) => (
-            <button
-              type="button"
-              className={`workspace-session agent-history-session nodrag nopan ${session.id === activeSessionId ? "is-active" : ""}`}
-              key={session.id}
-              onClick={() => {
-                setActiveSessionId(session.id);
-                useConversationView.getState().showSession(session.conversation_id, session.id);
-              }}
-              aria-label={t("Show runtime history for {v0}", { v0: String(session.title) })}
-            >
-              <MessageSquare size={13} />
-              <span><strong>{session.title}</strong><small>{session.group_title ?? session.conversation_name ?? cards.find((item) => item.id === session.conversation_id)?.name ?? t("Conversation")}</small></span>
-            </button>
-          ))}
-          {sessions.length === 0 ? <p>{historyError ?? t("No Conversation sessions yet.")}</p> : null}
+    <div className="agent-activity nodrag nopan nowheel">
+      <WorkspaceToolbar label={t("Agent conversation history")} className="agent-activity-toolbar">
+        <MessageSquare size={15} aria-hidden="true" />
+        <select aria-label={t("Conversation history")} value={activeSessionId ?? ''} disabled={!sessions.length}
+          onChange={event => {
+            const session = sessions.find(item => item.id === event.target.value);
+            if (!session) return;
+            setActiveSessionId(session.id);
+            useConversationView.getState().showSession(session.conversation_id, session.id);
+          }}>
+          {!sessions.length && <option value="">{t("No Conversation sessions yet.")}</option>}
+          {sessions.map(session => <option key={session.id} value={session.id}>{session.title} · {session.group_title ?? session.conversation_name ?? cards.find(item => item.id === session.conversation_id)?.name ?? t("Conversation")}</option>)}
+        </select>
+        <span className="agent-activity-status"><Radio size={12} /> {t(card.status)}</span>
+      </WorkspaceToolbar>
+      {historyError && <p role="alert">{historyError}</p>}
+      <details className="agent-context-disclosure">
+        <summary>{t("Agent context")} · {modelLabel(modelCatalog, card.config.model)} · {context.length} {t("Connections")}</summary>
+        <div className="agent-context-list">
+          {context.length ? context.map(item => <div key={item.id}><strong>{item.name}</strong><small>{catalog.node_types.find(definition => definition.id === item.type)?.label ?? item.type}</small></div>) : <p>{t("No connected context yet.")}</p>}
         </div>
-        <div className="workspace-agent-state">
-          <span data-status={card.status} />
-          <div><strong>{card.status}</strong><small>{modelLabel(modelCatalog, card.config.model)}</small></div>
-        </div>
-      </nav>
-
-      <main className="agent-run-history">
-        <header>
-          <div><strong>{t("Runtime history")}</strong><span>{activeSessionId ? t("Selected session: runs, tools, output, and errors") : t("Select a conversation session to inspect activity")}</span></div>
-          <span className="agent-runtime-badge"><Radio size={12} /> {card.status}</span>
-        </header>
-        <div className="agent-run-timeline">
-          <LifecycleStatus agentId={card.id} />
+      </details>
+      <main className="agent-activity-feed" aria-label={t("Runtime history")}>
+          <details className="agent-lifecycle-disclosure"><summary>{t("Execution and cleanup")}</summary><LifecycleStatus agentId={card.id} /></details>
           {events.length > 0 ? events.slice(0, 40).map((event) => (
-            <article key={event.id} className={`agent-run-event is-${event.type}`}>
+            <article key={event.id} className={`agent-activity-event is-${event.type}`}>
               <span><Clock3 size={12} /></span>
               <div>
                 <header><strong>{event.type.replaceAll("_", " ")}</strong><time>{new Date(event.timestamp).toLocaleTimeString(useLocale.getState().locale)}</time></header>
@@ -148,44 +142,20 @@ function AgentWorkspace({ card }: { card: WorldCard }) {
               </div>
             </article>
           )) : (
-            <div className="workspace-welcome">
-              <span><Bot size={22} /></span>
-              <strong>{t("No runtime activity for this session")}</strong>
-              <p>{activeSessionId ? t("This agent has not emitted a run, tool, or response event for the selected session.") : t("Select a session to inspect agent activity.")}</p>
-            </div>
+            <WorkspaceEmptyState icon={<Bot size={24} />} title={t("No runtime activity for this session")}
+              description={!sessions.length ? t("Connect this Agent to a Conversation, then send a message to start a session.") : activeSessionId ? t("This agent has not emitted a run, tool, or response event for the selected session.") : t("Select a session to inspect agent activity.")} />
           )}
-        </div>
       </main>
-
-      <aside className="workspace-context-panel">
-        <header><PanelRight size={13} /><strong>{t("Agent context")}</strong></header>
-        <section>
-          <span className="workspace-panel-label">{t("Connected objects")}</span>
-          {context.length > 0 ? context.map((item) => (
-            <div className="workspace-context-item" key={item.id}>
-              <span>{item.type.slice(0, 1).toUpperCase()}</span>
-              <div><strong>{item.name}</strong><small>{catalog.node_types.find((definition) => definition.id === item.type)?.label ?? item.type}</small></div>
-            </div>
-          )) : <p>{t("No connected context yet.")}</p>}
-        </section>
-        <section>
-          <span className="workspace-panel-label">{t("Agent state")}</span>
-          <dl>
-            <div><dt>{t("Model")}</dt><dd>{String(card.config.model ?? t("Default"))}</dd></div>
-            <div><dt>{t("Status")}</dt><dd>{card.status}</dd></div>
-            <div><dt>{t("Connections")}</dt><dd>{context.length}</dd></div>
-            <div><dt>{t("Sessions")}</dt><dd>{sessions.length}</dd></div>
-          </dl>
-        </section>
-      </aside>
     </div>
   );
 }
 
 export function WorkspaceSurface({ card }: WorkspaceSurfaceProps) {
   useLocale();
-  return <section data-missing={Boolean(card.missing_plugin) || undefined} className="node-workspace-window" role="dialog" aria-modal="false" aria-label={t("{v0} workspace", { v0: String(card.name) })} data-workspace-node-id={card.id}>
-    <WorkspaceTitlebar card={card} />
+  const catalog = useWorldStore(state => state.catalog);
+  const contentSurface = !isMissingCard(card, catalog) && hasContentSurface(catalog.node_types.find(item => item.id === card.type));
+  return <section data-missing={Boolean(card.missing_plugin) || undefined} data-content-surface={contentSurface || undefined} className="node-workspace-window" role="dialog" aria-modal="false" aria-label={t("{v0} workspace", { v0: String(card.name) })} data-workspace-node-id={card.id}>
+    {contentSurface ? <ContentSurfaceControls card={card} level="workspace" /> : <WorkspaceTitlebar card={card} />}
     <WorkspaceContent card={card} />
   </section>;
 }
@@ -212,6 +182,8 @@ export function WorkspaceContent({ card }: WorkspaceSurfaceProps) {
           : <AgentWorkspace card={card} />}</div>
         </>
         : catalog.node_types.find((definition) => definition.id === card.type)?.traits.includes("ui.agent-barracks.v1") ? <BarracksBody card={card} workspace />
+        : card.type === "core.execution-graph" ? <ExecutionGraphCard card={card} />
+        : card.type === 'core.jobs' ? <JobsCard card={card} />
         : card.type === "sandbox" ? <SandboxWorkspace card={card} />
         : card.type === "core.artifact-collection" ? <ArtifactCollection card={card} />
         : card.type === "conversation" ? <ConversationWorkspace card={card} />
@@ -219,10 +191,8 @@ export function WorkspaceContent({ card }: WorkspaceSurfaceProps) {
         : catalog.node_types.find((definition) => definition.id === card.type)?.traits.includes("ui.skill.v1") ? <SkillNodeBody card={card} workspace />
         : catalog.node_types.find((definition) => definition.id === card.type)?.traits.includes("ui.task-board.v1") ? <TaskBoardBody card={card} workspace />
         : catalog.node_types.find((definition) => definition.id === card.type)?.has_execution ? <WorkSourceWorkspace nodeId={card.id} /> : (
-          <div className="workspace-welcome">
-            <strong>{card.name}</strong>
-            <p>{t("This plugin node exposes a workspace surface. Its frontend module can replace this generic view.")}</p>
-          </div>
+          <WorkspaceEmptyState title={card.name}
+            description={t("This plugin node exposes a workspace surface. Its frontend module can replace this generic view.")} />
         )}
       </PluginSurface>
       </div>

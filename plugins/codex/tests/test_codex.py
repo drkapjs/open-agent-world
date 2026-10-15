@@ -108,6 +108,40 @@ async def test_stream_and_resume_across_provider_restart(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('reject', [False, True])
+async def test_followup_steers_the_active_turn_while_builtin_tool_is_running(tmp_path, reject):
+    class Inbox(Capabilities):
+        pending = []
+        acknowledged = []
+
+        async def pending_conversation_input(self, agent_id, run_id):
+            return self.pending
+
+        async def acknowledge_conversation_input(self, agent_id, run_id, ids):
+            self.acknowledged.extend(ids)
+            self.pending = []
+
+    inbox = Inbox()
+    provider, cfg = runtime(tmp_path, inbox), config(tmp_path)
+    await provider.create_agent(cfg)
+    events = []
+    async with asyncio.timeout(10):
+        async for event in provider.execute(cfg, context(), RuntimeInput('reject-steer' if reject else 'hang')):
+            events.append(event)
+            if event.type == AgentEventType.TOOL_STARTED:
+                inbox.pending = [{'id': 'followup-1', 'text': 'Skip c', 'sequence': 2}]
+                await provider.notify_input('run1')
+    assert inbox.acknowledged == ([] if reject else ['followup-1'])
+    assert bool(inbox.pending) is reject
+    assert events[-1].run_status == 'succeeded'
+    if not reject:
+        assert events[-1].payload['text'] == 'Skipped c after b'
+    log = [json.loads(line) for line in (tmp_path / 'protocol.jsonl').read_text().splitlines()]
+    assert len([item for item in log if item.get('method') == 'turn/start']) == 1
+    assert len([item for item in log if item.get('method') == 'turn/steer']) == 1
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('revoke', [False, True])
 async def test_graph_tool_invocation_rechecks_authorization(tmp_path, revoke):
     capabilities = Capabilities(revoke)

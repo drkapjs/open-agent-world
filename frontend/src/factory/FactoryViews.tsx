@@ -43,11 +43,10 @@ function useEditor<T extends object>({ card, host }: PluginViewProps) {
   return { draft, change, save, dirty };
 }
 
-function Frame({ title, step, children, task, level }: {
+function Frame({ title, children, task, level }: {
   title: string; step: string; children: ReactNode; task: ReturnType<typeof useTask>; level: string;
 }) {
-  return <section className="factory nodrag nowheel" data-level={level}>
-    <header className="factory-heading"><span>{step}</span><strong>{title}</strong><small>卡包工厂 / 01</small></header>
+  return <section className="factory nodrag nowheel" data-level={level} aria-label={title}>
     <fieldset disabled={task.busy}>{children}</fieldset>
     {task.error && <p className="factory-error" role="alert">{task.error}</p>}
     {task.message && <p className="factory-message" role="status">{task.message}</p>}

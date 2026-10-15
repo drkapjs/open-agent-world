@@ -26,7 +26,7 @@ test('saved MatCreator drop shows feedback before the response and preserves all
   let release!: () => void;
   const responseGate = new Promise<void>(resolve => { release = resolve; });
   try {
-    const seedResponse = await request.post('/api/legions/presets/matcreator.research/instances', { data: { position: { x: 100, y: 100 } } });
+    const seedResponse = await request.post('/api/legions/presets/matcreator.native-research/instances', { data: { position: { x: 100, y: 100 } } });
     expect(seedResponse.ok()).toBe(true);
     // Preset responses contain blueprint nodes; collection-generated Skills are
     // present in the world too and must be included in the round-trip check.

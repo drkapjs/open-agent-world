@@ -1,9 +1,9 @@
-import { t, useLocale } from "@oaw/plugin-api";
+import { WorkspaceEmptyState, t, useLocale } from "@oaw/plugin-api";
 import { useEffect, useRef, useState } from "react";
 import type { Annotation } from "./PdfReading";
 import { StudyCardContent } from "./StudyCardContent";
 
-export function StudyCanvas({items,move,open,locate,title,linked,layout,name,rename}:{items:Annotation[];move:(a:Annotation)=>Promise<void>;open:(a:Annotation)=>void;locate:(page:number)=>void;title:string;linked:boolean;layout:(positions:Record<string,{x:number;y:number}>)=>Promise<void>;name:string;rename:(name:string)=>Promise<void>}) {
+export function StudyCanvas({items,move,open,locate,title,linked,layout,name,rename,onBack}:{items:Annotation[];move:(a:Annotation)=>Promise<void>;open:(a:Annotation)=>void;locate:(page:number)=>void;title:string;linked:boolean;layout:(positions:Record<string,{x:number;y:number}>)=>Promise<void>;name:string;rename:(name:string)=>Promise<void>;onBack?:()=>void}) {
   useLocale();
   const [nameDraft,setNameDraft]=useState(name);
   const [renaming,setRenaming]=useState(false);
@@ -54,11 +54,14 @@ export function StudyCanvas({items,move,open,locate,title,linked,layout,name,ren
   onPointerUp={e=>{const d=drag.current;if(!d)return;cancelMotion();const position=dragPoint(e.clientX,e.clientY);if(d.id){const a=items.find(a=>a.id===d.id);if(a){const id=a.id;setPending(current=>({...current,[id]:position}));void move({...a,position}).catch(error=>setError(String(error))).finally(()=>setPending(current=>{if(current[id]!==position)return current;const next={...current};delete next[id];return next;}));}}else setView(v=>({...v,...position}));drag.current=undefined;setDraft(undefined);}}
   onPointerCancel={()=>{cancelMotion();drag.current=undefined;setDraft(undefined);}}>
     <div className="library-study-controls">
+      {onBack && <button type="button" onClick={onBack}>{t("返回文章")}</button>}
       <input className="library-study-name" aria-label={t("学习画布名称")} title={t("点击改名，Enter 保存")} maxLength={100} value={nameDraft} disabled={renaming} onChange={e=>setNameDraft(e.target.value)} onBlur={()=>void saveName()} onKeyDown={e=>{if(e.key==="Enter"&&!e.nativeEvent.isComposing)e.currentTarget.blur();}}/>
       <button aria-label={t("自动排版")} title={busy?t("排版中…"):t("自动排版")} disabled={busy||!items.length} onClick={()=>void arrange()}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><rect x="2" y="9" width="6" height="6" rx="1"/><rect x="16" y="3" width="6" height="6" rx="1"/><rect x="16" y="15" width="6" height="6" rx="1"/><path d="M8 12h4M12 6v12M12 6h4M12 18h4"/></svg></button>
       <button aria-label={t("复位")} title={t("复位")} onClick={()=>setView({x:40,y:40,k:1})}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="M3 10a9 9 0 1 1 2 8M3 4v6h6"/></svg></button>
       {error&&<span role="alert">{error}</span>}
     </div>
+    {!items.length && <WorkspaceEmptyState className="library-study-empty" title={t("No study cards yet")}
+      description={t("Select text or an image in the reader, then add it to study.")} />}
     <div style={{transform:`translate(${view.x}px,${view.y}px) scale(${view.k})`,transformOrigin:"0 0"}}>
       {linked&&items.length>0&&<>
         <svg className="library-study-edges">{branches.map(b=><g key={b.page}>

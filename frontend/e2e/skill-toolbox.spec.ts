@@ -1,217 +1,263 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+
+const cleanupNodeIds: string[] = [];
+const cleanupToolboxIds: string[] = [];
+
+function trackCard<T extends { id: string; type: string }>(card: T): T {
+  cleanupNodeIds.push(card.id);
+  if (card.type === "oaw.skills") cleanupToolboxIds.push(card.id);
+  return card;
+}
+
+async function openCanvas(page: Page, request: APIRequestContext) {
+  const profile = await (await request.get("/api/application")).json();
+  const viewport = page.viewportSize()!;
+  expect((await request.patch("/api/application/preferences", { data: {
+    profile_id: profile.profile_id, generation: profile.generation,
+    changes: {
+      "oaw.locale": "en", "oaw-theme": "light",
+      "oaw-onboarding-v1": JSON.stringify({ version: 1, state: { status: "skipped" } }),
+      "oaw-progressive-tutorials-v1": JSON.stringify({ version: 1, state: { enabled: false, progress: {} } }),
+      "oaw-canvas-viewport-v1": JSON.stringify({ version: 0, state: { viewport: { x: 0, y: 0, zoom: 1, ...viewport }, mapPins: [] } }),
+    },
+  } })).ok()).toBe(true);
+  await page.goto("/");
+}
+
+test.afterEach(async ({ playwright, baseURL }) => {
+  const ids = new Set(cleanupNodeIds.splice(0));
+  const toolboxes = cleanupToolboxIds.splice(0);
+  if (!ids.size) return;
+  // A timed-out test closes its request fixture before its finally block runs.
+  // Keep cleanup independent so that failed gestures do not pollute later tests.
+  const cleanup = await playwright.request.newContext({ baseURL, timeout: 10_000 });
+  try {
+    for (const id of toolboxes) {
+      const response = await cleanup.get(`/api/nodes/${id}/document`);
+      if (response.status() === 404) continue;
+      expect(response.ok()).toBe(true);
+      const document = await response.json();
+      for (const skill of document.value.skills) if (skill.node_id) ids.add(skill.node_id);
+    }
+    expect((await cleanup.post("/api/nodes/batch-delete", { data: { node_ids: [...ids] } })).ok()).toBe(true);
+  } finally {
+    await cleanup.dispose();
+  }
+});
 
 test("build a toolbox, import a skill, export a plugin and restore the local copy", async ({ page, request }, testInfo) => {
   await page.setViewportSize({ width: 1600, height: 1100 });
   const created = await request.post("/api/nodes", { data: { type: "oaw.skills", name: "Review toolbox", position: { x: 710, y: 430 } } });
   expect(created.status()).toBe(201);
-  const node = await created.json();
+  const node = trackCard(await created.json());
   const url = `/api/nodes/${node.id}`;
-  try {
-    await page.goto("/");
-    let card = page.locator(`[data-card-id="${node.id}"]`);
-    await card.getByRole("button", { name: "Edit toolbox", exact: true }).click();
-    const box = page.getByRole("dialog", { name: "Review toolbox workspace", exact: true });
-    await box.getByRole("button", { name: "Toolbox settings", exact: true }).click();
-    await box.getByLabel("Toolbox name", { exact: true }).fill("Review Bench");
-    await box.getByLabel("Shared instructions").fill("Read the diff, check the behavior, then report the outcome.");
-    await box.getByLabel("Author", { exact: true }).fill("Example");
-    await box.getByLabel("Package ID").fill("example.review");
-    await box.getByRole("button", { name: "Save toolbox", exact: true }).click();
-    await box.getByRole("button", { name: "Add skill", exact: true }).click();
-    await box.getByLabel("Skill name").fill("Review a patch");
-    await box.getByLabel("When to use").fill("Before handing over a code change.");
-    await box.getByLabel("Import SKILL.md").setInputFiles({ name: "SKILL.md", mimeType: "text/markdown", buffer: Buffer.from("# Review\nTrace the changed behavior and inspect the result.") });
-    await expect(box.getByRole("textbox", { name: "Instructions", exact: true })).toHaveValue(/Trace the changed behavior/);
-    await box.getByRole("button", { name: "Default settings", exact: true }).click();
-    const defaults = box.locator(".skill-defaults-editor").first();
-    await defaults.getByRole("button", { name: "Add setting", exact: true }).click();
-    await box.getByLabel("Setting 1 name", { exact: true }).fill("language");
-    await box.getByLabel("Setting 1 value", { exact: true }).fill("English");
-    await defaults.getByRole("button", { name: "Add setting", exact: true }).click();
-    await box.getByLabel("Setting 2 name", { exact: true }).fill("checks");
-    await box.getByLabel("Setting 2 type", { exact: true }).selectOption("group");
-    const group = defaults.locator(".skill-defaults-editor");
-    await group.getByRole("button", { name: "Add setting", exact: true }).click();
-    await box.getByLabel("Setting 2 1 name", { exact: true }).fill("limit");
-    await box.getByLabel("Setting 2 1 type", { exact: true }).selectOption("number");
-    await box.getByLabel("Setting 2 1 value", { exact: true }).fill("3");
-    await group.getByRole("button", { name: "Add setting", exact: true }).click();
-    await box.getByLabel("Setting 2 2 name", { exact: true }).fill("enabled");
-    await box.getByLabel("Setting 2 2 type", { exact: true }).selectOption("boolean");
-    await box.getByLabel("Setting 2 2 value", { exact: true }).check();
-    await defaults.getByRole("button", { name: "Add setting", exact: true }).last().click();
-    await box.getByLabel("Setting 3 name", { exact: true }).fill("formats");
-    await box.getByLabel("Setting 3 type", { exact: true }).selectOption("list");
-    await box.getByRole("button", { name: "Add item", exact: true }).click();
-    await box.getByLabel("Setting 3 1 value", { exact: true }).fill("md");
-    await box.getByRole("button", { name: "Files and folders", exact: true }).click();
-    await box.getByLabel("New file or folder name").fill("scripts");
-    await box.getByRole("button", { name: "Create folder", exact: true }).click();
-    await box.getByLabel("New file or folder name").fill("check.py");
-    await box.getByRole("button", { name: "Create text file", exact: true }).click();
-    await box.getByRole("textbox", { name: "File contents", exact: true }).fill("print('review')\n");
-    await box.getByLabel("Current folder").selectOption("");
-    const folder = testInfo.outputPath("skill-folder");
-    await mkdir(path.join(folder, "references"), { recursive: true });
-    await mkdir(path.join(folder, "custom/templates"), { recursive: true });
-    await writeFile(path.join(folder, "references/checklist.md"), "Check the public API.");
-    await writeFile(path.join(folder, "custom/templates/report.md"), "# Findings");
-    await box.getByLabel("Import skill folder").setInputFiles(folder);
-    await expect(box.getByLabel("Current folder")).toHaveValue(/references|custom/);
-    await box.getByLabel("Current folder").selectOption("");
-    await box.getByLabel("New file or folder name").fill("assets");
-    await box.getByRole("button", { name: "Create folder", exact: true }).click();
-    const logo = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a9l8AAAAASUVORK5CYII=";
-    await box.getByLabel("Import skill files").setInputFiles({ name: "logo.png", mimeType: "image/png", buffer: Buffer.from(logo, "base64") });
-    await expect(box.getByRole("img", { name: "logo.png" })).toBeVisible();
-    await box.getByLabel("File path", { exact: true }).fill("assets/brand/logo.png");
-    await box.getByRole("button", { name: "Move / rename", exact: true }).click();
-    await page.screenshot({ path: "../.open-agent-world/skill-toolbox-files.png" });
-    await box.getByRole("button", { name: "Save skill", exact: true }).click();
-    await expect(box.getByRole("button", { name: "Edit skill Review a patch", exact: true })).toBeEnabled();
-    await page.screenshot({ path: "../.open-agent-world/skill-toolbox-light.png" });
-    const downloadPromise = page.waitForEvent("download");
-    await box.getByRole("link", { name: "Export plugin" }).click();
-    const download = await downloadPromise;
-    expect(download.suggestedFilename()).toBe("oaw-toolbox-example-review-0.1.0.zip");
-    await download.saveAs("../.open-agent-world/skill-toolbox-export.zip");
-    await page.getByRole("button", { name: "Use dark theme" }).click();
-    await page.screenshot({ path: "../.open-agent-world/skill-toolbox-dark.png" });
-    await page.getByRole("button", { name: "Use light theme" }).click();
-    await page.reload();
-    await card.getByRole("button", { name: "Edit toolbox", exact: true }).click();
-    await expect(box.getByRole("button", { name: "Edit skill Review a patch", exact: true })).toBeVisible();
-    await box.getByRole("button", { name: "Edit skill Review a patch", exact: true }).click();
-    await box.getByRole("button", { name: "Default settings", exact: true }).click();
-    await expect(box.getByRole("group", { name: "limit", exact: true }).getByRole("spinbutton")).toHaveValue("3");
-    await expect(box.getByRole("group", { name: "enabled", exact: true }).getByRole("checkbox")).toBeChecked();
-    await expect(box.getByRole("group", { name: "formats", exact: true }).getByPlaceholder("Value", { exact: true })).toHaveValue("md");
-    await box.getByRole("group", { name: "language", exact: true }).getByPlaceholder("Value", { exact: true }).fill("Chinese");
-    await page.screenshot({ path: "../.open-agent-world/skill-toolbox-settings.png" });
-    await box.getByRole("button", { name: "Save skill", exact: true }).click();
-    await expect(box.getByRole("button", { name: "Edit skill Review a patch", exact: true })).toBeEnabled();
-    await box.getByRole("button", { name: "Close toolbox editor", exact: true }).click();
-    card = page.locator(`[data-card-id="${node.id}"]`);
-    await card.getByRole("button", { name: "Delete Review toolbox and skills", exact: true }).click();
-    await expect(card).toHaveCount(0);
-    await page.getByRole("button", { name: "Undo last canvas action", exact: true }).click();
-    await expect(card).toHaveCount(1);
-    const restored = await (await request.get(url + "/document")).json();
-    expect(restored.value.skills[0].files["references/checklist.md"]).toBe("Check the public API.");
-    expect(restored.value.skills[0].files["scripts/check.py"]).toBe("print('review')\n");
-    expect(restored.value.skills[0].files["custom/templates/report.md"]).toBe("# Findings");
-    expect(restored.value.skills[0].files["assets/brand/logo.png"].data_base64).toBe(logo);
-    expect(restored.value.skills[0].defaults).toEqual({ language: "Chinese", checks: { limit: 3, enabled: true }, formats: ["md"] });
-    expect(restored.value.instructions).toContain("Read the diff");
-  } finally {
-    const value = (await (await request.get(url + "/document")).json()).value;
-    await request.post("/api/nodes/batch-delete", { data: { node_ids: [node.id, ...value.skills.map((skill: { node_id: string }) => skill.node_id)] } });
-  }
+  await openCanvas(page, request);
+  let card = page.locator(`[data-card-id="${node.id}"]`);
+  await card.getByRole("button", { name: "Edit toolbox", exact: true }).click();
+  const box = page.getByRole("dialog", { name: "Review toolbox workspace", exact: true });
+  await box.getByRole("button", { name: "Toolbox settings", exact: true }).click();
+  await box.getByLabel("Toolbox name", { exact: true }).fill("Review Bench");
+  await box.getByLabel("Shared instructions").fill("Read the diff, check the behavior, then report the outcome.");
+  await box.getByLabel("Author", { exact: true }).fill("Example");
+  await box.getByLabel("Package ID").fill("example.review");
+  await box.getByRole("button", { name: "Save toolbox", exact: true }).click();
+  await box.getByRole("button", { name: "Add skill", exact: true }).click();
+  await box.getByLabel("Skill name").fill("Review a patch");
+  await box.getByLabel("When to use").fill("Before handing over a code change.");
+  await box.getByLabel("Import SKILL.md").setInputFiles({ name: "SKILL.md", mimeType: "text/markdown", buffer: Buffer.from("# Review\nTrace the changed behavior and inspect the result.") });
+  await expect(box.getByRole("textbox", { name: "Instructions", exact: true })).toHaveValue(/Trace the changed behavior/);
+  await box.getByRole("button", { name: "Default settings", exact: true }).click();
+  const defaults = box.locator(".skill-defaults-editor").first();
+  await defaults.getByRole("button", { name: "Add setting", exact: true }).click();
+  await box.getByLabel("Setting 1 name", { exact: true }).fill("language");
+  await box.getByLabel("Setting 1 value", { exact: true }).fill("English");
+  await defaults.getByRole("button", { name: "Add setting", exact: true }).click();
+  await box.getByLabel("Setting 2 name", { exact: true }).fill("checks");
+  await box.getByLabel("Setting 2 type", { exact: true }).selectOption("group");
+  const group = defaults.locator(".skill-defaults-editor");
+  await group.getByRole("button", { name: "Add setting", exact: true }).click();
+  await box.getByLabel("Setting 2 1 name", { exact: true }).fill("limit");
+  await box.getByLabel("Setting 2 1 type", { exact: true }).selectOption("number");
+  await box.getByLabel("Setting 2 1 value", { exact: true }).fill("3");
+  await group.getByRole("button", { name: "Add setting", exact: true }).click();
+  await box.getByLabel("Setting 2 2 name", { exact: true }).fill("enabled");
+  await box.getByLabel("Setting 2 2 type", { exact: true }).selectOption("boolean");
+  await box.getByLabel("Setting 2 2 value", { exact: true }).check();
+  await defaults.getByRole("button", { name: "Add setting", exact: true }).last().click();
+  await box.getByLabel("Setting 3 name", { exact: true }).fill("formats");
+  await box.getByLabel("Setting 3 type", { exact: true }).selectOption("list");
+  await box.getByRole("button", { name: "Add item", exact: true }).click();
+  await box.getByLabel("Setting 3 1 value", { exact: true }).fill("md");
+  await box.getByRole("button", { name: "Files and folders", exact: true }).click();
+  await box.getByLabel("New file or folder name").fill("scripts");
+  await box.getByRole("button", { name: "Create folder", exact: true }).click();
+  await box.getByLabel("New file or folder name").fill("check.py");
+  await box.getByRole("button", { name: "Create text file", exact: true }).click();
+  await box.getByRole("textbox", { name: "File contents", exact: true }).fill("print('review')\n");
+  await box.getByLabel("Current folder").selectOption("");
+  const folder = testInfo.outputPath("skill-folder");
+  await mkdir(path.join(folder, "references"), { recursive: true });
+  await mkdir(path.join(folder, "custom/templates"), { recursive: true });
+  await writeFile(path.join(folder, "references/checklist.md"), "Check the public API.");
+  await writeFile(path.join(folder, "custom/templates/report.md"), "# Findings");
+  await box.getByLabel("Import skill folder").setInputFiles(folder);
+  await expect(box.getByLabel("Current folder")).toHaveValue(/references|custom/);
+  await box.getByLabel("Current folder").selectOption("");
+  await box.getByLabel("New file or folder name").fill("assets");
+  await box.getByRole("button", { name: "Create folder", exact: true }).click();
+  const logo = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a9l8AAAAASUVORK5CYII=";
+  await box.getByLabel("Import skill files").setInputFiles({ name: "logo.png", mimeType: "image/png", buffer: Buffer.from(logo, "base64") });
+  await expect(box.getByRole("img", { name: "logo.png" })).toBeVisible();
+  await box.getByLabel("File path", { exact: true }).fill("assets/brand/logo.png");
+  await box.getByRole("button", { name: "Move / rename", exact: true }).click();
+  await page.screenshot({ path: "../.open-agent-world/skill-toolbox-files.png" });
+  await box.getByRole("button", { name: "Save skill", exact: true }).click();
+  await expect(box.getByRole("button", { name: "Edit skill Review a patch", exact: true })).toBeEnabled();
+  await page.screenshot({ path: "../.open-agent-world/skill-toolbox-light.png" });
+  const downloadPromise = page.waitForEvent("download");
+  await box.getByRole("link", { name: "Export plugin" }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toBe("oaw-toolbox-example-review-0.1.0.zip");
+  await download.saveAs("../.open-agent-world/skill-toolbox-export.zip");
+  await page.getByRole("button", { name: "Use dark theme" }).click();
+  await page.screenshot({ path: "../.open-agent-world/skill-toolbox-dark.png" });
+  await page.getByRole("button", { name: "Use light theme" }).click();
+  await page.reload();
+  await card.getByRole("button", { name: "Edit toolbox", exact: true }).click();
+  await expect(box.getByRole("button", { name: "Edit skill Review a patch", exact: true })).toBeVisible();
+  await box.getByRole("button", { name: "Edit skill Review a patch", exact: true }).click();
+  await box.getByRole("button", { name: "Default settings", exact: true }).click();
+  await expect(box.getByRole("group", { name: "limit", exact: true }).getByRole("spinbutton")).toHaveValue("3");
+  await expect(box.getByRole("group", { name: "enabled", exact: true }).getByRole("checkbox")).toBeChecked();
+  await expect(box.getByRole("group", { name: "formats", exact: true }).getByPlaceholder("Value", { exact: true })).toHaveValue("md");
+  await box.getByRole("group", { name: "language", exact: true }).getByPlaceholder("Value", { exact: true }).fill("Chinese");
+  await page.screenshot({ path: "../.open-agent-world/skill-toolbox-settings.png" });
+  await box.getByRole("button", { name: "Save skill", exact: true }).click();
+  await expect(box.getByRole("button", { name: "Edit skill Review a patch", exact: true })).toBeEnabled();
+  await box.getByRole("button", { name: "Close toolbox editor", exact: true }).click();
+  card = page.locator(`[data-card-id="${node.id}"]`);
+  await card.getByRole("button", { name: "Delete Review toolbox and skills", exact: true }).click();
+  await expect(card).toHaveCount(0);
+  await page.getByRole("button", { name: "Fit view", exact: true }).focus();
+  await page.keyboard.press("Control+z");
+  // Cards stream back before their documents finish restoring. Wait for the
+  // complete undo transaction before checking the restored skill resources.
+  await expect(page.getByText("Remove 2 cards undone", { exact: true })).toBeVisible();
+  await expect(card).toHaveCount(1);
+  const restored = await (await request.get(url + "/document")).json();
+  expect(restored.value.skills[0].files["references/checklist.md"]).toBe("Check the public API.");
+  expect(restored.value.skills[0].files["scripts/check.py"]).toBe("print('review')\n");
+  expect(restored.value.skills[0].files["custom/templates/report.md"]).toBe("# Findings");
+  expect(restored.value.skills[0].files["assets/brand/logo.png"].data_base64).toBe(logo);
+  expect(restored.value.skills[0].defaults).toEqual({ language: "Chinese", checks: { limit: 3, enabled: true }, formats: ["md"] });
+  expect(restored.value.instructions).toContain("Read the diff");
+
 });
 
 test("drag an independent skill into an open toolbox and back out", async ({ page, request }) => {
   await page.setViewportSize({ width: 1600, height: 1100 });
-  const create = async (type: string, name: string, x: number, y: number) => (await request.post("/api/nodes", { data: { type, name, position: { x, y } } })).json();
+  const create = async (type: string, name: string, x: number, y: number) => trackCard(await (await request.post("/api/nodes", { data: { type, name, position: { x, y } } })).json());
   const box = await create("oaw.skills", "Open toolbox", 450, 200);
   const skill = await create("oaw.skills.skill", "Independent skill", 80, 300);
   const agent = await create("agent", "Skill user", 80, 650);
-  try {
-    await page.goto("/");
-    const frame = page.locator(`[data-card-id="${box.id}"]`);
-    const card = page.locator(`[data-card-id="${skill.id}"]`);
-    await expect(card).toBeVisible();
-    const bounds = (await frame.boundingBox())!;
-    const drag = async (x: number, y: number) => {
-      const start = (await card.boundingBox())!;
-      await page.mouse.move(start.x + 30, start.y + 30);
-      await page.mouse.down();
-      await page.mouse.move(x, y, { steps: 20 });
-      const dropped = (await card.boundingBox())!;
-      await page.mouse.up();
-      const frames = await card.evaluate((element) => new Promise<Array<{ x: number; y: number }>>((resolve) => {
-        const samples: Array<{ x: number; y: number }> = [];
-        const started = performance.now();
-        const sample = () => {
-          const rect = element.getBoundingClientRect();
-          samples.push({ x: rect.x, y: rect.y });
-          if (performance.now() - started < 550) requestAnimationFrame(sample);
-          else resolve(samples);
-        };
-        sample();
-      }));
-      expect(Math.max(...frames.map((point) => Math.hypot(point.x - dropped.x, point.y - dropped.y))), "Reparenting should keep the card at its drop position throughout the animation").toBeLessThan(4);
-    };
-    await drag(bounds.x + 240, bounds.y + 200);
-    await expect.poll(async () => (await (await request.get(`/api/nodes/${skill.id}`)).json()).parent_id).toBe(box.id);
-    const agentCard = page.locator(`[data-card-id="${agent.id}"]`);
-    for (const target of [card, frame]) {
-      const start = (await agentCard.locator('[data-connection-side="right"]').boundingBox())!;
-      await page.mouse.move(start.x + start.width / 2, start.y + start.height / 2);
-      await page.mouse.down();
-      const end = (await target.locator('[data-connection-side="left"]').boundingBox())!;
-      await page.mouse.move(end.x + end.width / 2, end.y + end.height / 2, { steps: 15 });
-      await page.mouse.up();
-      await expect(page.getByRole("dialog", { name: "Choose a capability" })).toBeVisible();
-      await page.getByRole("dialog", { name: "Choose a capability" }).getByRole("button", { name: "Grant capability" }).click();
-    }
-    await card.locator(".card-kind-icon").click();
-    await expect(card.getByRole("button", { name: "Edit skill New skill", exact: true })).toBeVisible();
-    await page.screenshot({ path: "../.open-agent-world/skill-open-space.png" });
-    await drag(200, bounds.y + 200);
-    await expect.poll(async () => (await (await request.get(`/api/nodes/${skill.id}`)).json()).parent_id).toBeNull();
-    expect((await (await request.get(`/api/nodes/${box.id}/document`)).json()).value.skills).toEqual([]);
-    await page.getByRole("button", { name: "Undo last canvas action", exact: true }).click();
-    await expect.poll(async () => (await (await request.get(`/api/nodes/${skill.id}`)).json()).parent_id).toBe(box.id);
-    const world = await (await request.get("/api/world")).json();
-    expect(world.edges.filter((edge: { source: string }) => edge.source === agent.id)).toHaveLength(2);
-  } finally { await request.post("/api/nodes/batch-delete", { data: { node_ids: [box.id, skill.id, agent.id] } }); }
+  await openCanvas(page, request);
+  const frame = page.locator(`[data-card-id="${box.id}"]`);
+  const card = page.locator(`[data-card-id="${skill.id}"]`);
+  await expect(card).toBeVisible();
+  const bounds = (await frame.boundingBox())!;
+  const drag = async (x: number, y: number) => {
+    const start = (await card.boundingBox())!;
+    await page.mouse.move(start.x + 30, start.y + 30);
+    await page.mouse.down();
+    await page.mouse.move(x, y, { steps: 20 });
+    const dropped = (await card.boundingBox())!;
+    await page.mouse.up();
+    const frames = await card.evaluate((element) => new Promise<Array<{ x: number; y: number }>>((resolve) => {
+      const samples: Array<{ x: number; y: number }> = [];
+      const started = performance.now();
+      const sample = () => {
+        const rect = element.getBoundingClientRect();
+        samples.push({ x: rect.x, y: rect.y });
+        if (performance.now() - started < 550) requestAnimationFrame(sample);
+        else resolve(samples);
+      };
+      sample();
+    }));
+    expect(Math.max(...frames.map((point) => Math.hypot(point.x - dropped.x, point.y - dropped.y))), "Reparenting should keep the card at its drop position throughout the animation").toBeLessThan(4);
+  };
+  await drag(bounds.x + 240, bounds.y + 200);
+  await expect.poll(async () => (await (await request.get(`/api/nodes/${skill.id}`)).json()).parent_id).toBe(box.id);
+  const agentCard = page.locator(`[data-card-id="${agent.id}"]`);
+  for (const target of [card, frame]) {
+    const start = (await agentCard.locator('[data-connection-side="right"]').boundingBox())!;
+    await page.mouse.move(start.x + start.width / 2, start.y + start.height / 2);
+    await page.mouse.down();
+    const end = (await target.locator('[data-connection-side="left"]').boundingBox())!;
+    await page.mouse.move(end.x + end.width / 2, end.y + end.height / 2, { steps: 15 });
+    await page.mouse.up();
+    await expect(page.getByRole("dialog", { name: "Choose a capability" })).toBeVisible();
+    await page.getByRole("dialog", { name: "Choose a capability" }).getByRole("button", { name: "Grant capability" }).click();
+  }
+  await card.locator(".card-kind-icon").click();
+  await expect(card.getByRole("button", { name: "Edit skill New skill", exact: true })).toBeVisible();
+  await page.screenshot({ path: "../.open-agent-world/skill-open-space.png" });
+  await drag(200, bounds.y + 200);
+  await expect.poll(async () => (await (await request.get(`/api/nodes/${skill.id}`)).json()).parent_id).toBeNull();
+  expect((await (await request.get(`/api/nodes/${box.id}/document`)).json()).value.skills).toEqual([]);
+  await page.getByRole("button", { name: "Fit view", exact: true }).focus();
+  await page.keyboard.press("Control+z");
+  await expect.poll(async () => (await (await request.get(`/api/nodes/${skill.id}`)).json()).parent_id).toBe(box.id);
+  const world = await (await request.get("/api/world")).json();
+  expect(world.edges.filter((edge: { source: string }) => edge.source === agent.id)).toHaveLength(2);
+
 });
 
 test("nested containers share drag membership and move their descendants once", async ({ page, request }) => {
   await page.setViewportSize({ width: 2200, height: 1400 });
-  const create = async (type: string, name: string, x: number, y: number, parent_id?: string) => (await request.post("/api/nodes", { data: { type, name, position: { x, y }, parent_id } })).json();
+  const create = async (type: string, name: string, x: number, y: number, parent_id?: string) => trackCard(await (await request.post("/api/nodes", { data: { type, name, position: { x, y }, parent_id } })).json());
   const agent = await create("agent", "Nested team member", 900, 800);
   const formed = await (await request.post("/api/legion-groups", { data: { name: "Nested team", node_ids: [agent.id] } })).json();
+  formed.forEach(trackCard);
   const group = formed.find((node: { type: string }) => node.type === "legion");
   await request.patch(`/api/nodes/${group.id}`, { data: { position: { x: 100, y: 100 } } });
   const box = await create("oaw.skills", "Nested toolbox", 720, 270, group.id);
   const skill = await create("oaw.skills.skill", "Traveling skill", 190, 420);
   const position = async (id: string) => (await (await request.get(`/api/nodes/${id}`)).json()).position;
   const parent = async (id: string) => (await (await request.get(`/api/nodes/${id}`)).json()).parent_id;
-  try {
-    await page.goto("/");
-    const frame = page.locator(`[data-card-id="${box.id}"]`);
-    const team = page.locator(`[data-card-id="${group.id}"]`);
-    const card = page.locator(`[data-card-id="${skill.id}"]`);
-    const drag = async (node: typeof card, x: number, y: number) => {
-      const start = (await node.boundingBox())!;
-      await page.mouse.move(start.x + 30, start.y + 30);
-      await page.mouse.down();
-      await page.mouse.move(x, y, { steps: 20 });
-      await page.mouse.up();
-    };
-    const boxBounds = (await frame.boundingBox())!;
-    await drag(card, boxBounds.x + 260, boxBounds.y + 200);
-    await expect.poll(() => parent(skill.id)).toBe(box.id);
-    const before = await position(skill.id);
-    const groupBefore = await position(group.id);
-    const teamBounds = (await team.boundingBox())!;
-    await drag(team, teamBounds.x + 110, teamBounds.y + 80);
-    await expect.poll(async () => (await position(group.id)).x - groupBefore.x).toBeGreaterThan(50);
-    const groupAfter = await position(group.id);
-    expect((await position(skill.id)).x - before.x).toBeCloseTo(groupAfter.x - groupBefore.x, 0);
-    expect((await position(skill.id)).y - before.y).toBeCloseTo(groupAfter.y - groupBefore.y, 0);
-    const movedTeam = (await team.boundingBox())!;
-    await drag(card, movedTeam.x + 390, movedTeam.y + 540);
-    await expect.poll(() => parent(skill.id)).toBe(group.id);
-    expect((await (await request.get(`/api/nodes/${box.id}/document`)).json()).value.skills).toEqual([]);
-    await page.getByRole("button", { name: "Undo last canvas action", exact: true }).click();
-    await expect.poll(() => parent(skill.id)).toBe(box.id);
-    // A Legion uses the same open drag-out interaction as the toolbox.
-    await drag(page.locator(`[data-card-id="${agent.id}"]`), movedTeam.x - 50, movedTeam.y + 420);
-    await expect.poll(() => parent(agent.id)).toBeNull();
-    await page.screenshot({ path: "../.open-agent-world/nested-containers.png" });
-  } finally { await request.post("/api/nodes/batch-delete", { data: { node_ids: [group.id, box.id, skill.id, agent.id] } }); }
+  await openCanvas(page, request);
+  const frame = page.locator(`[data-card-id="${box.id}"]`);
+  const team = page.locator(`[data-card-id="${group.id}"]`);
+  const card = page.locator(`[data-card-id="${skill.id}"]`);
+  const drag = async (node: typeof card, x: number, y: number) => {
+    const start = (await node.boundingBox())!;
+    await page.mouse.move(start.x + 30, start.y + 30);
+    await page.mouse.down();
+    await page.mouse.move(x, y, { steps: 20 });
+    await page.mouse.up();
+  };
+  const boxBounds = (await frame.boundingBox())!;
+  await drag(card, boxBounds.x + 260, boxBounds.y + 200);
+  await expect.poll(() => parent(skill.id)).toBe(box.id);
+  const before = await position(skill.id);
+  const groupBefore = await position(group.id);
+  const teamBounds = (await team.boundingBox())!;
+  await drag(team, teamBounds.x + 110, teamBounds.y + 80);
+  await expect.poll(async () => (await position(group.id)).x - groupBefore.x).toBeGreaterThan(50);
+  const groupAfter = await position(group.id);
+  expect((await position(skill.id)).x - before.x).toBeCloseTo(groupAfter.x - groupBefore.x, 0);
+  expect((await position(skill.id)).y - before.y).toBeCloseTo(groupAfter.y - groupBefore.y, 0);
+  const movedTeam = (await team.boundingBox())!;
+  await drag(card, movedTeam.x + 390, movedTeam.y + 540);
+  await expect.poll(() => parent(skill.id)).toBe(group.id);
+  expect((await (await request.get(`/api/nodes/${box.id}/document`)).json()).value.skills).toEqual([]);
+  await page.getByRole("button", { name: "Fit view", exact: true }).focus();
+  await page.keyboard.press("Control+z");
+  await expect.poll(() => parent(skill.id)).toBe(box.id);
+  // A Legion uses the same open drag-out interaction as the toolbox.
+  await drag(page.locator(`[data-card-id="${agent.id}"]`), movedTeam.x - 50, movedTeam.y + 420);
+  await expect.poll(() => parent(agent.id)).toBeNull();
+  await page.screenshot({ path: "../.open-agent-world/nested-containers.png" });
+
 });

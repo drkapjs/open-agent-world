@@ -8,10 +8,18 @@ export interface RunActivityItem {
   role?: string;
   model_request?: number;
   model_attempt?: number;
+  started_at?: string;
+  finished_at?: string;
   text?: string;
   provider_message_id?: string;
+  conversation_message_id?: string;
   call_id?: string;
   name?: string;
+  tool_name?: string;
+  capability_id?: string;
+  author?: string;
+  subagent?: boolean;
+  response_visibility?: string;
   arguments?: unknown;
   response?: unknown;
   error?: unknown;
@@ -38,7 +46,7 @@ const object = (value: unknown): Record<string, unknown> =>
  * never infer phases, group by tool type, or classify the content with an LLM. */
 export function mergeRunActivity(
   previous: RunActivityState | undefined,
-  run: Pick<ConversationRunSummary, "run_id" | "tool_trace">,
+  run: Pick<ConversationRunSummary, "run_id" | "tool_trace" | "tool_trace_truncated">,
   events: readonly RuntimeEvent[],
 ): RunActivityState {
   const state = previous ?? empty;
@@ -83,7 +91,8 @@ export function mergeRunActivity(
         truncated: Boolean(payload.truncated) || content.length > 100_000,
         streaming: payload.streaming === true,
         interrupted: payload.interrupted === true,
-        completed_tool_count: typeof payload.completed_tool_count === "number" ? payload.completed_tool_count : undefined };
+        completed_tool_count: typeof payload.completed_tool_count === "number" ? payload.completed_tool_count : undefined,
+        conversation_message_id: text(payload.conversation_message_id) };
       if (index < 0) items.push(item);
       else items[index] = { ...item, id: items[index].id, timestamp: items[index].timestamp };
       continue;
@@ -100,31 +109,45 @@ export function mergeRunActivity(
     const existing = index >= 0 ? items[index] : undefined;
     const item: RunActivityItem = {
       ...existing, id: existing?.id ?? event.id,
-      timestamp: existing?.timestamp ?? event.timestamp,
+      timestamp: existing?.timestamp && event.timestamp
+        ? (existing.timestamp < event.timestamp ? existing.timestamp : event.timestamp)
+        : existing?.timestamp || event.timestamp,
       type: existing?.type === "tool_completed" ? "tool_completed" : type,
+      ...(type === 'tool_started' && event.timestamp ? { started_at: existing?.started_at ?? event.timestamp } : {}),
+      ...(type === 'tool_completed' && event.timestamp ? { finished_at: existing?.finished_at ?? event.timestamp } : {}),
       name, call_id: callId,
+      ...(typeof payload.tool_name === 'string' ? { tool_name: payload.tool_name } : {}),
+      ...(typeof payload.capability_id === 'string' ? { capability_id: payload.capability_id } : {}),
+      ...(typeof payload.author === 'string' ? { author: payload.author } : {}),
+      ...(typeof payload.subagent === 'boolean' ? { subagent: payload.subagent } : {}),
+      ...(typeof payload.response_visibility === 'string' ? { response_visibility: payload.response_visibility } : {}),
       ...(Object.hasOwn(payload, "arguments") ? { arguments: payload.arguments } : {}),
       ...(Object.hasOwn(payload, "response") ? { response: payload.response } : {}),
       ...(Object.hasOwn(payload, "error") ? { error: payload.error } : {}),
-      ...(typeof payload.success === "boolean" ? { success: payload.success } : {}),
+      ...(typeof payload.success === "boolean" ? { success: payload.success }
+        : typeof payload.ok === 'boolean' ? { success: payload.ok } : {}),
       truncated: Boolean(existing?.truncated || payload.truncated),
     };
     if (index < 0) items.push(item);
     else items[index] = item;
   }
-  if (!changed) return state;
+  if (!changed && (!run.tool_trace_truncated || state.truncated)) return state;
   // An older REST checkpoint can arrive after a live event. Keep each tool at
   // its original start position while its completion fills in the same row.
-  items.sort((a, b) => a.timestamp && b.timestamp ? a.timestamp.localeCompare(b.timestamp) : 0);
+  items = [...items].sort((a, b) => a.timestamp && b.timestamp ? a.timestamp.localeCompare(b.timestamp) : 0);
   return { items: items.slice(-MAX_ITEMS), seen: [...seen].slice(-MAX_SEEN),
-    truncated: state.truncated || items.length > MAX_ITEMS };
+    truncated: state.truncated || Boolean(run.tool_trace_truncated) || items.length > MAX_ITEMS };
 }
 
 export function toolFailed(item: RunActivityItem): boolean {
   const response = object(item.response);
-  const exitCode = response.exitCode ?? response.exit_code;
-  return item.success === false || Boolean(item.error) || Boolean(response.error) ||
-    (typeof exitCode === "number" && exitCode !== 0) || response.status === "failed";
+  const result = object(response.result);
+  const failed = (value: Record<string, unknown>) => {
+    const exitCode = value.exitCode ?? value.exit_code;
+    return value.ok === false || value.success === false || Boolean(value.error) ||
+      (typeof exitCode === 'number' && exitCode !== 0) || ['failed', 'error'].includes(String(value.status));
+  };
+  return item.success === false || Boolean(item.error) || failed(response) || failed(result);
 }
 
 /** The durable reply owns the final text; keep the live cache untouched.
@@ -138,6 +161,7 @@ export function withoutFinalReply(
   for (let index = activity.items.length - 1; index >= 0; index -= 1) {
     const item = activity.items[index];
     if (item.type !== "agent_message") continue;
+    if (item.conversation_message_id) return activity;
     if (item.text?.trim() !== finalText) return activity;
     return { ...activity, items: activity.items.filter((_, i) => i !== index) };
   }

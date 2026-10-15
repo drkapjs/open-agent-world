@@ -22,6 +22,6 @@ export function SkillContainerNode({ data, selected }: NodeProps<CanvasNode>) {
       <AddSelectedMembers card={card} /><ContainerActions card={card} deleteLabel={t("Delete {v0} and skills", { v0: String(card.name) })} />
     </>}>
     <p className="skill-container-hint">{t("Drag skills into this space. Connect its border to use the whole toolbox, or connect a skill to use only that skill.")}</p>
-    {editing && createPortal(<div className="skill-container-editor nodrag nopan nowheel" role="dialog" aria-label={t("{v0} workspace", { v0: String(card.name) })}><button className="skill-container-close" aria-label={t("Close toolbox editor")} onClick={() => setEditing(false)}><X size={16} /></button><SkillToolboxBody card={card} workspace /></div>, document.body)}
+    {editing && createPortal(<div className="skill-container-editor nodrag nopan nowheel" role="dialog" aria-label={t("{v0} workspace", { v0: String(card.name) })}><button className="skill-container-close" aria-label={t("Close toolbox editor")} onClick={() => setEditing(false)}><X size={16} /></button><SkillToolboxBody card={card} workspace showHeading /></div>, document.body)}
   </ContainerFrame>;
 }

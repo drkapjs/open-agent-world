@@ -1,0 +1,30 @@
+{
+  "repository": "https://github.com/AI4MS/MatCreator",
+  "revision": "0328c8b814499cbf3e49116323cee050145fa08f",
+  "source_root": "src/matcreator",
+  "original_sha256": {
+    "adk_compat.py": "e9660962717953bed54cca873dcc732715a11e289b24bd252f560146c391dd55",
+    "agent.py": "d7f71551d83bb96b0888948498f9c8888d330d6d7de908ad7f497676f2200e10",
+    "agents/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "agents/cancellation.py": "9a1cda50e24abc21bc589dadd2facdd0a5b0d37a6a19a4c697f4cd54f1e75c4e",
+    "agents/execution_graph_state.py": "565e3a63d3cd8be06edfe081e70726c76b8fe23da66e5af5d03dda82610bd57f",
+    "agents/graph_logger.py": "e8f0974a38b8074d0d7064e0aa3dd8b4dd235c2d7d67429bf9afeb4a1ff36060",
+    "agents/session_log.py": "de48f57a5927bc05f827206ca9e761b0346f6f8ddbb09be53757ecbd212fe0c5",
+    "agents/execution_agent/__init__.py": "23a09c915e387e458f23de80d2626af4307cf3807e30b807f93ff2f75b85721f",
+    "agents/execution_agent/agent.py": "f0c52504306d8ce5250fd9916e7bea7e7998569920afb8e9f96a2d5e5aef7651",
+    "agents/execution_agent/recovery.py": "b3b3a1a7dbddf9cfc4cd3683a19be47e767d82699cb0b7fb23906408009b6e1c",
+    "agents/execution_agent/step_executor.py": "57af63c1ca4146692336c5354b4177cf58ae94986d035c168a00e3193c117375",
+    "agents/execution_agent/step_executor_runner.py": "94ca728fa6a6b78c6fecbdb7403966616f6789b2f8d65d6fb2a6ce90892d82b7",
+    "agents/orchestrator/__init__.py": "338a8542d3a8e3cdf9f16189acab7c124042dac8b49316c42e875369a1de3d36",
+    "agents/orchestrator/agent.py": "f1d9c9ccda7c69ccb25638419ca5218dd857cf5c35954151dbc705b96360ff61",
+    "agents/thinking_agent/__init__.py": "98dc088156cff85fbc35c6cf83846fe74730d5f61988823f2bbec64025772fc9",
+    "agents/thinking_agent/agent.py": "26e13dfd3356caa89f5a3e09bcefa600fc68556ff91bdd1434fabdc6f35cb4d1",
+    "agents/thinking_agent/history_tools.py": "e9e23fd581a29a969f99ce5a980f667abc692bf5533b71b0fb43a46d868080fd",
+    "agents/thinking_agent/intent.py": "9c6e7a48102d579ef2eeb4e92775feb54ae9d5a4aa5dca95bf74b17531532d89",
+    "agents/thinking_agent/planning.py": "ef51121772ef134c89157b4a314d605108d33e17833613cc4b5f4605cb446aef",
+    "agents/thinking_agent/session_summary.py": "c4006ff5d65443d78bcafe080ac0bb353b77e77a4ab370ea50c4d26021a7fcc2",
+    "agents/thinking_agent/summarize.py": "3e0ec9c66e24b5dde48a13be8999b1ad64eb082faba5e67908b706fd4854c9bf",
+    "agents/thinking_agent/trajectory.py": "5b449bbb54f00c88543f01a5c6a5893f8506eb7f139a88557a57a6d18876ab08"
+  },
+  "note": "Adapted and maintained in this Pack. Source hashes describe the original import only."
+}

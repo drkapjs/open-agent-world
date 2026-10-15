@@ -2,8 +2,8 @@
 from copy import deepcopy
 import hashlib
 
-REVISION = 1
-RUNTIME_NOTES = """# OAW runtime compatibility (reviewed 2026-09-30)
+REVISION = 2
+RUNTIME_NOTES = """# OAW runtime compatibility (reviewed 2026-10-14)
 
 These notes adapt the imported examples; the scientific procedures are not
 certified for every model, calculator or CLI version. Read installed command
@@ -59,12 +59,27 @@ the assigned research/<board>/<task>/<attempt> directory or HOME. These are
 separate output directories in a shared workspace, not filesystem isolation.
 Only the coordinator manages the shared Sandbox lifecycle.
 
-Record project and external job/group IDs immediately after submission. Do not
-resubmit merely because a wait timed out. An Executor can report outcome=waiting
-with external_jobs, next_step and check_after_seconds through report_delegated_task.
-The coordinator can use task_board_execute defer for a later check. Both schedule
-inspection of the real job; neither treats elapsed time as completion. Report
-partial progress and blockers explicitly, and publish files instead of inlining them.
+Discover host tools with oaw_list_tools and invoke their returned capability IDs.
+For native MatCreator, use inspect_background_jobs to discover provider schemas,
+then submit_background_job with provider=matcreator.bohrium-batch and a stable
+request_key. Stage files in the authorized Sandbox first. Keep the host job ID
+and provider external_id distinct. Use attach_background_job for existing jobs.
+The host persists a submission reservation before calling the provider; unknown
+means reconciliation is required, never permission to submit a replacement.
+
+Call submit_step_result(status="waiting", job_ids=[host_job_id], ...) to hand off
+monitoring and end the worker. The host polls without model calls and resumes the
+same approved plan after a terminal observation. Backend shutdown pauses checking;
+external compute continues and checking resumes after restart. Local Sandbox
+processes do not survive restart. Stop/pause monitoring does not cancel cloud work.
+Use control_background_job(action="cancel") only when external cancellation is
+intended, and check its observed state. Download outputs to the Sandbox through
+the installed CLI, then publish files as artifacts; never inline binary outputs.
+
+Task-board report_delegated_task/defer and upstream remote-job command names are
+not native MatCreator tools. Only use tools present in the live OAW catalog.
+Missing submit_step_result is a missing result, not proof of a timeout or absence
+of cloud jobs. Scientific acceptance still requires inspecting real outputs.
 
 Tavily-dependent retrieval requires its configured API credential. Check the
 skill's credential requirement before starting; if unavailable, report that
@@ -91,18 +106,19 @@ def adapt_package(source):
                 .replace("bohr project list --json", "bohr project list -o json")
                 .replace("User specified `BOHRIUM_PROJECT_ID` > The first project ID in `bohr project list -o json`",
                          "Use the explicitly selected `BOHRIUM_PROJECT_ID`; never default to the first accessible project"))
-        skill["instructions"] = ("OAW compatibility: read references/oaw-runtime.md before remote execution, CLI installation, "
+        prefix = ("OAW compatibility: read references/oaw-runtime.md before remote execution, CLI installation, "
             "model conversion or credential-dependent retrieval. Installed tool help takes precedence over legacy examples.\n\n"
-            + update(skill["instructions"]))
+        )
+        skill["instructions"] = prefix + update(skill["instructions"].removeprefix(prefix))
         files = skill.setdefault("files", {})
         for name, content in list(files.items()):
             if isinstance(content, str) and name.endswith(".md"):
                 files[name] = update(content)
         files["references/oaw-runtime.md"] = RUNTIME_NOTES
-        defaults["compatibility"] = {"oaw_revision": REVISION, "reviewed_at": "2026-09-30",
+        defaults["compatibility"] = {"oaw_revision": REVISION, "reviewed_at": "2026-10-14",
             "verification_scope": "CLI documentation and OAW contracts; scientific execution remains unverified",
             "instruction_sha256": hashlib.sha256(skill["instructions"].encode()).hexdigest(),
             "runtime_notes_sha256": hashlib.sha256(RUNTIME_NOTES.encode()).hexdigest()}
     if changed:
-        package["version"] = "0.1.1"
+        package["version"] = "0.1.2"
     return package

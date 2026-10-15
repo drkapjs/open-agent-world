@@ -93,7 +93,6 @@ export function TextCardBody({ card, level }: { card: WorldCard; level: NodeSurf
     <div className="expanded-stack">
       <div className="resource-banner">
         <div>
-          <span>{t("Managed resource")}</span>
           <strong>{filename}</strong>
         </div>
         <div className={`save-state save-state--${saveState}`}>
@@ -138,13 +137,13 @@ export function TextCardBody({ card, level }: { card: WorldCard; level: NodeSurf
         </button>
       </div>
 
-      <section className="card-section">
-        <div className="section-heading"><span>{t("Relationships")}</span><small>{t("live permissions")}</small></div>
+      <details className="resource-details">
+        <summary>{t("Relationships")}</summary>
         <RelationshipList card={card} />
-      </section>
+      </details>
 
-      <section className="card-section history-section">
-        <div className="section-heading"><span>{t("Modification history")}</span><small>{history.length} {t("entries")}</small></div>
+      <details className="resource-details history-section">
+        <summary>{t("Modification history")} · {history.length}</summary>
         {history.length > 0 ? (
           <ul className="history-list">
             {history.slice(-3).reverse().map((entry, index) => (
@@ -156,7 +155,7 @@ export function TextCardBody({ card, level }: { card: WorldCard; level: NodeSurf
             ))}
           </ul>
         ) : <div className="mini-empty"><FileClock size={14} /><span>{t("History begins after the first save.")}</span></div>}
-      </section></>}
+      </details></>}
     </div>
   );
 }

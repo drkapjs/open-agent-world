@@ -12,7 +12,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path, PureWindowsPath, PurePosixPath
 from typing import TYPE_CHECKING, Any, TypeVar
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from backend.spatial import Rectangle
 
@@ -564,6 +564,7 @@ class ApplicationServices:
     card_state: object = None
     node_execution: NodeExecutionService | None = None
     sandbox_operations: Any = None
+    background_jobs: Any = None
     summoning: SummoningService | None = None
     sandbox_backend: SandboxBackend | None = None
     plugin_bootstrap: Any = None
@@ -693,12 +694,15 @@ class ApplicationServices:
                 or not session_id
             ):
                 continue
+            self.conversations.finalize_run_messages(run.run_id)
+            if await self._persist_background_wait_notice(run, conversation_id, session_id):
+                continue
             with self.database.locked() as db:
                 already_visible = db.execute(
                     """SELECT 1 FROM conversation_messages
                     WHERE run_id=? AND session_id=? AND is_final=1
-                    AND sender_kind IN ('agent','system') LIMIT 1""",
-                    (run.run_id, session_id),
+                    AND (kind='run_outcome' OR (?='succeeded' AND sender_kind='agent' AND content=?)) LIMIT 1""",
+                    (run.run_id, session_id, run.status, manager.final_text(run.run_id)),
                 ).fetchone()
             if already_visible is not None:
                 continue
@@ -745,6 +749,7 @@ class ApplicationServices:
         await self.summoning.recover()
         from backend.sandbox.history import recover as recover_commands
         await recover_commands(self)
+        await self.background_jobs.startup()
 
         self.node_execution.continuation_closed = False
         self.node_execution.signal_continuations()
@@ -759,6 +764,7 @@ class ApplicationServices:
         if self.plugin_bootstrap is not None:
             await self.plugin_bootstrap.shutdown()
         await self.node_execution.shutdown()
+        await self.background_jobs.shutdown()
         await self.sandbox_operations.shutdown()
         if isinstance(self.sandbox_backend, SandboxManager):
             await self.sandbox_backend.shutdown()
@@ -1106,6 +1112,7 @@ class ApplicationServices:
                 self.world.check_revision(card, (expected_revisions or {}).get(card.id))
             for card in cards:
                 self.resources.artifacts.assert_source_idle(card.id)
+                self.background_jobs.assert_idle(card_id=card.id)
             for card in cards:
                 self.node_execution.assert_editable(card.id, all_states=True)
                 if self.plugins.has_trait(card.type, "core.conversation"):
@@ -2355,6 +2362,7 @@ class ApplicationServices:
             payload={
                 "operation": "import",
                 "revision": record.revision,
+                "filename": record.filename,
                 "size_bytes": record.size_bytes,
                 "media_type": record.media_type,
                 "width": record.width,
@@ -2453,6 +2461,12 @@ class ApplicationServices:
 
         def authorize() -> None:
             self._require_card_type(conversation_id, CardType.CONVERSATION)
+            if request.restart_before_message_id:
+                source = self.conversations.get_message(request.restart_before_message_id)
+                if source.conversation_id != conversation_id:
+                    raise NotFoundError("restart message does not exist in this conversation")
+                if source.sender_kind != 'user':
+                    raise ConversationValidationError("restart must select a user message")
             for agent_id in participants:
                 self._require_conversation_connection(agent_id, conversation_id)
 
@@ -2462,6 +2476,9 @@ class ApplicationServices:
                 request.model_copy(update={"participant_ids": participants}),
             )
             self.state.ensure_scope("session", session.id, schema_id="core.session")
+            if request.restart_before_message_id:
+                self.conversations.copy_restart_prefix(conversation_id, session.id, request.restart_before_message_id)
+                session = self.conversations.get_session(conversation_id, session.id)
             return session.model_dump(mode="json")
 
         if idempotency_key is not None:
@@ -2614,6 +2631,7 @@ class ApplicationServices:
         await self._publish_conversation_message(message)
 
         for agent_id in mentions:
+            await self._require_run_manager().notify_conversation_input(agent_id, conversation_id, session_id)
             task = asyncio.create_task(self._drain_conversation_agent(agent_id))
             task.add_done_callback(self._consume_background_task)
         return ConversationPostResult(
@@ -2664,12 +2682,19 @@ class ApplicationServices:
             conversation_id, session_id, message_ids, max_sequence = batch
             manager = self._require_run_manager()
             try:
+                # Follow-ups belong to the current session's Run even if this
+                # Agent has spare slots for other sessions. Providers pull them
+                # at a model boundary; unsupported providers retain the queue.
+                if any((run.status not in TERMINAL_RUN_STATUSES or manager.execution_in_progress(run.run_id))
+                       and manager._conversation_scope(run) == (conversation_id, session_id)
+                       for run in manager.list_runs(agent_id=agent_id)):
+                    raise RuntimeUnavailableError('Conversation session is already running')
                 manager.assert_can_start(agent_id)
             except RuntimeUnavailableError:
                 runs = manager.list_runs(agent_id=agent_id)
                 active = [
                     run for run in runs
-                    if run.status not in TERMINAL_RUN_STATUSES
+                    if run.status not in TERMINAL_RUN_STATUSES or manager.execution_in_progress(run.run_id)
                 ]
                 cleanup_blockers = [
                     run for run in runs
@@ -2745,7 +2770,7 @@ class ApplicationServices:
     ) -> None:
         manager = self._require_run_manager()
         waiters = [
-            asyncio.create_task(manager.wait_terminal(run_id))
+            asyncio.create_task(manager.wait_settled(run_id))
             for run_id in run_ids
         ]
         try:
@@ -2951,6 +2976,14 @@ class ApplicationServices:
                 self.capabilities.capability_for_id(agent_id, f"sandbox.start:{sandbox_id}")
             return await self._start_sandbox_locked(sandbox_id)
 
+    async def ensure_sandbox_running(self, sandbox_id: str, *, agent_id: str | None = None) -> Any:
+        """Prepare execution on demand using the caller's live lifecycle grant."""
+        from backend.sandbox.models import SandboxState
+        info = await self.get_sandbox(sandbox_id)
+        if info.state is SandboxState.STOPPED:
+            return await self.start_sandbox(sandbox_id, agent_id=agent_id)
+        return info
+
     async def _start_sandbox_locked(self, sandbox_id: str) -> Any:
         from backend.sandbox.models import SandboxState
         self._require_card_type(sandbox_id, CardType.SANDBOX)
@@ -3011,8 +3044,8 @@ class ApplicationServices:
             raise SandboxValidationError("python_environment must be auto, managed, or none")
         if timeout_seconds is not None:
             import math
-            if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float)) or not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 3600:
-                raise SandboxValidationError("timeout_seconds must be finite and between 0 (exclusive) and 3600 seconds")
+            if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float)) or not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 36000:
+                raise SandboxValidationError("timeout_seconds must be finite and between 0 (exclusive) and 36000 seconds")
         async with self._portable_state_gate.execution():
             # Validate graph authority against a complete formation, but do
             # not hold the graph barrier while an arbitrary command runs.
@@ -3025,6 +3058,7 @@ class ApplicationServices:
                 raise SandboxValidationError("provide exactly one of command or argv")
             from backend.sandbox.commands import needs_managed_python, require_noninteractive
             require_noninteractive(argv if _skill_request is None else None, command)
+            await self.ensure_sandbox_running(sandbox_id, agent_id=agent_id)
             if command is not None:
                 info = await backend.get(sandbox_id)
                 if not info.shell:
@@ -3277,6 +3311,9 @@ class ApplicationServices:
         backend = self._require_sandbox_backend()
         if not isinstance(backend, SandboxManager):
             raise SandboxValidationError("Managed Python installation is unavailable on this backend")
+        await self.ensure_sandbox_running(sandbox_id, agent_id=agent_id)
+        if agent_id is not None:
+            self.capabilities.require_sandbox_execute(agent_id, sandbox_id)
         return await backend.install_python_packages(sandbox_id, requirements)
 
     async def publish_sandbox_event(self, event: SandboxEvent) -> None:
@@ -3368,6 +3405,8 @@ class ApplicationServices:
             if record.status not in TERMINAL_RUN_STATUSES:
                 # WAITING is live Run state, not durable chat history.
                 record = await manager.wait_terminal(run_id)
+            if await self._persist_background_wait_notice(record, conversation_id, session_id):
+                return
             final_text = manager.final_text(run_id)
             if record.status is RunStatus.SUCCEEDED and final_text:
                 if self._can_agent_post_to_conversation_session(
@@ -3413,6 +3452,7 @@ class ApplicationServices:
             except Exception:
                 terminal = False
             if terminal:
+                self.conversations.finalize_run_messages(run_id)
                 self.deliveries.mark_run_done(run_id)
                 try:
                     await self._drain_conversation_agent(agent_id)
@@ -3426,12 +3466,64 @@ class ApplicationServices:
         agent = self.world.maybe_get_card(agent_id)
         return agent.name if agent is not None else "The agent"
 
+    async def _persist_background_wait_notice(
+        self, record: RunRecord, conversation_id: str, session_id: str,
+    ) -> bool:
+        # A completed provider turn releases capacity while the durable Job
+        # monitor owns continuation. Its earlier narration is not a final reply.
+        # Use the host's registered wait, not provider-specific status text.
+        jobs = record.lifecycle.get("awaiting_jobs")
+        if record.status is not RunStatus.SUCCEEDED or not jobs:
+            return False
+        if record.lifecycle.get("final_message_id") is not None:
+            self._require_run_manager().store.update_lifecycle(record.run_id, final_message_id=None)
+        count = len(jobs)
+        notice = (
+            f"{self._conversation_agent_name(record.agent_id)} handed off {count} background "
+            f"{'job' if count == 1 else 'jobs'} for automatic monitoring. "
+            "The conversation resumes when results are available."
+        )
+        from backend.runs.trace import public_tool_payload
+        references = []
+        for job_id in jobs:
+            try:
+                job = self.background_jobs.get(job_id)
+                self.background_jobs.authorize(job)
+            except (NotFoundError, PermissionDeniedError, RuntimeUnavailableError, PluginUnavailableError):
+                references.append(f"Job ID: {job_id}")
+                continue
+            # Record the identity at handoff, not a misleading live status.
+            identity = public_tool_payload({"response": {key: job.get(key) for key in
+                ("request_key", "provider", "external_id", "id")}})["response"]
+            references.append(
+                f"{identity['request_key']} · {identity['provider']}\n"
+                f"External ID: {identity['external_id'] or 'Not assigned yet'}\n"
+                f"Job ID: {identity['id']}"
+            )
+        notice += "\n\n" + "\n\n".join(references) + "\n\nFind these jobs by name or ID in Jobs."
+        message_id = str(uuid5(NAMESPACE_URL,
+            f"{conversation_id}/{session_id}/{record.run_id}/background-wait"))
+        # Also repair historical Runs whose progress was promoted to a final
+        # reply. Repeated startup/finalization must not duplicate the notice.
+        with self.database.locked() as db:
+            visible = db.execute(
+                "SELECT 1 FROM conversation_messages WHERE id=?",
+                (message_id,),
+            ).fetchone()
+        if visible is None:
+            await self._persist_conversation_outcome_notice(
+                record.run_id, conversation_id, session_id, notice, message_id=message_id
+            )
+        return True
+
     async def _persist_conversation_outcome_notice(
         self,
         run_id: str,
         conversation_id: str,
         session_id: str,
         content: str,
+        *,
+        message_id: str | None = None,
     ) -> None:
         try:
             self.conversations.get_session(conversation_id, session_id)
@@ -3446,16 +3538,44 @@ class ApplicationServices:
             content=content,
             run_id=run_id,
             kind="run_outcome",
+            message_id=message_id,
         )
         await self._publish_conversation_message(message)
 
+    async def _persist_conversation_event(self, event, record) -> str | None:
+        if event.type.value != 'agent_message' or not str(event.payload.get('text') or '').strip():
+            return None
+        manager = self._require_run_manager()
+        conversation_id, session_id = manager._conversation_scope(record)
+        if not conversation_id or not session_id or not self._can_agent_post_to_conversation_session(
+                record.agent_id, conversation_id, session_id):
+            return None
+        provider_id = event.payload.get('provider_message_id') or str(uuid4())
+        message_id = str(uuid5(NAMESPACE_URL, f'{conversation_id}/{session_id}/{record.run_id}/{provider_id}'))
+        message = self.conversations.update_provider_message(conversation_id, session_id,
+            message_id=message_id, run_id=record.run_id, sender_id=record.agent_id,
+            sender_name=self.world.get_card(record.agent_id).name, content=event.payload['text'])
+        if event.payload.get('final'):
+            message = self.conversations.finalize_message(message.id, record.run_id, session_id)
+        scope = self.state.get_scope('run', record.run_id)
+        if self.state.get(scope, 'output_message_id') != message.id:
+            self.state.set(scope, 'output_message_id', message.id)
+        await self._publish_conversation_message(message)
+        return message.id
+
     def _conversation_final_message(self, conversation_id: str, session_id: str, *, run_id: str,
                                     sender_id: str, sender_name: str, content: str) -> ConversationMessage:
+        self.conversations.finalize_run_messages(run_id)
         message_id = self.state.get(self.state.get_scope("run", run_id), "output_message_id")
-        if message_id:
-            return self.conversations.finalize_message(str(message_id), run_id, session_id)
-        return self.conversations.add_message(conversation_id, session_id, sender_kind="agent",
-            sender_id=sender_id, sender_name=sender_name, content=content, run_id=run_id)
+        if message_id and self.conversations.get_message(str(message_id)).content == content.strip():
+            message = self.conversations.finalize_message(str(message_id), run_id, session_id)
+        else:
+            message = self.conversations.add_message(conversation_id, session_id, sender_kind="agent",
+                sender_id=sender_id, sender_name=sender_name, content=content, run_id=run_id)
+        # is_final seals each streamed message; this relation identifies the
+        # actual response to the Run, independently of chronology or content.
+        self._require_run_manager().store.update_lifecycle(run_id, final_message_id=message.id)
+        return message
 
     async def rename_conversation_session(self, conversation_id: str, session_id: str, title: str) -> ConversationSession:
         self._require_card_type(conversation_id, CardType.CONVERSATION)
@@ -3526,6 +3646,8 @@ class ApplicationServices:
         # older than 40 and peer turns. Plugin continuation remains provider-owned.
         transcript = [] if managed else self.conversations.list_messages(
             conversation_id, session.id, limit=40)
+        if not managed and session.restart_before_message_id:
+            transcript = self.conversations.context_messages(conversation_id, session.id, max_sequence)
         if max_sequence is not None:
             transcript = [
                 item for item in transcript
@@ -3545,6 +3667,10 @@ class ApplicationServices:
         )
         return (
             "You are speaking inside a shared Open Agent World conversation.\n"
+            "Your response text is automatically delivered to this session. For an ordinary answer, "
+            "respond directly; do not also call send_conversation_message. That tool is for file attachments "
+            "or a separate interim update. If you already sent information through it, do not repeat or "
+            "summarize the same information in your final response.\n"
             f"Conversation id: {conversation_id}\n"
             f"Session id: {session.id}\n"
             "Attachments are immutable artifacts in this conversation. Use inspect_artifacts to read text or metadata, "
@@ -3895,6 +4021,8 @@ def create_services(
     services.node_execution = NodeExecutionService(services)
     from backend.sandbox.operations import SandboxOperations
     services.sandbox_operations = SandboxOperations(services)
+    from backend.background_jobs import BackgroundJobs
+    services.background_jobs = BackgroundJobs(services)
     services.summoning = SummoningService(services)
     from backend.security.model_connections import ModelConnectionStore
     model_connections = ModelConnectionStore(services.llm_settings)
@@ -3907,6 +4035,7 @@ def create_services(
         state=state,
         cleanup_execution=services.sandbox_operations.cancel_run,
         execution_settled=services.node_execution.signal_continuations,
+        conversation_event=services._persist_conversation_event,
         default_runtime_provider_id=(
             default_runtime_provider_id
             if default_runtime_provider_id is not None

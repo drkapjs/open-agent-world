@@ -60,7 +60,7 @@ function Stop-RecordedProcessTree {
         return
     }
 
-    # uv launches Python/Uvicorn as a child. Stop the whole tree so Ctrl+C
+    # Python may launch child workers. Stop the whole tree so Ctrl+C
     # cannot leave the actual listener behind on the next run.
     & taskkill.exe /PID $process.Id /T /F 2>$null | Out-Null
 }
@@ -197,6 +197,23 @@ function Remove-OwnedBackendState {
     }
 }
 
+function Initialize-BackendEnvironment {
+    param([string]$Root, [string[]]$AdditionalPlugins = @())
+
+    # Installation hooks and the server must use the same persistent interpreter.
+    # uv run --with-editable creates a temporary overlay with a different prefix.
+    & uv sync --project (Join-Path $Root 'backend') --dev --extra adk --extra litellm --inexact | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw 'Backend dependency installation failed.' }
+    $python = Join-Path $Root 'backend/.venv/Scripts/python.exe'
+    if (-not (Test-Path -LiteralPath $python)) { throw "Backend Python is missing: $python" }
+    $plugins = @(Get-ChildItem -LiteralPath (Join-Path $Root 'plugins') -Directory |
+        Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'pyproject.toml') } |
+        ForEach-Object { $_.FullName })
+    & $python (Join-Path $Root 'scripts/install-plugins.py') @plugins @AdditionalPlugins | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw 'Plugin dependency installation failed.' }
+    return $python
+}
+
 $env:OPEN_AGENT_WORLD_AGENT_RUNTIME = $AgentRuntime
 $env:OPEN_AGENT_WORLD_MODE = "development"
 $backendOut = Join-Path $runtimeDirectory "backend.out.log"
@@ -207,6 +224,18 @@ $backendState = $null
 
 Push-Location $projectRoot
 try {
+    $resolvedPluginPaths = @(foreach ($candidate in $PluginPath) {
+        $candidatePath = if ([System.IO.Path]::IsPathRooted($candidate)) {
+            $candidate
+        } else {
+            Join-Path $projectRoot $candidate
+        }
+        $resolved = Resolve-Path -LiteralPath $candidatePath -ErrorAction Stop
+        if (-not (Test-Path -LiteralPath (Join-Path $resolved.Path 'pyproject.toml'))) {
+            throw "Plugin path must contain a pyproject.toml: $($resolved.Path)"
+        }
+        $resolved.Path
+    })
     # Recover a backend left by an earlier invocation. The recorded start time
     # prevents a recycled PID from causing an unrelated process to be killed.
     $previousState = Read-BackendState
@@ -219,6 +248,7 @@ try {
         }
         Remove-OwnedBackendState $previousState
     }
+    $backendPython = Initialize-BackendEnvironment -Root $projectRoot -AdditionalPlugins $resolvedPluginPaths
 
     $backendPort = Get-AvailableLocalPort -PreferredPort 8000
     $frontendPort = Get-AvailableLocalPort -PreferredPort 5173
@@ -226,25 +256,7 @@ try {
     $env:OAW_DEV_BACKEND_HTTP_URL = $backendHttpUrl
     $env:OAW_DEV_BACKEND_WS_URL = "ws://127.0.0.1:$backendPort"
     $backendArguments = @(
-        "run", "--project", "backend", "--extra", "adk", "--extra", "litellm"
-    )
-    $resolvedPluginPaths = foreach ($candidate in $PluginPath) {
-        $candidatePath = if ([System.IO.Path]::IsPathRooted($candidate)) {
-            $candidate
-        }
-        else {
-            Join-Path $projectRoot $candidate
-        }
-        $resolved = Resolve-Path -LiteralPath $candidatePath -ErrorAction Stop
-        if (-not (Test-Path -LiteralPath (Join-Path $resolved.Path "pyproject.toml"))) {
-            throw "Plugin path must contain a pyproject.toml: $($resolved.Path)"
-        }
-        # Start-Process joins ArgumentList items; retain quotes for paths with spaces.
-        $backendArguments += @("--with-editable", "`"$($resolved.Path)`"")
-        $resolved.Path
-    }
-    $backendArguments += @(
-        "python", "-m", "backend.launcher", "--mode", "development",
+        "-m", "backend.launcher", "--mode", "development",
         "--profile", $Profile, "--port", $backendPort, "--strict-port"
     )
 
@@ -254,7 +266,7 @@ try {
     }
 
     $backend = Start-Process `
-        -FilePath "uv" `
+        -FilePath $backendPython `
         -ArgumentList $backendArguments `
         -WorkingDirectory $projectRoot `
         -RedirectStandardOutput $backendOut `

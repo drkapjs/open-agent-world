@@ -4,7 +4,7 @@ from itertools import combinations
 import pytest
 from pydantic import ValidationError
 
-from open_agent_world.plugin_api import NodePresentation
+from open_agent_world.plugin_api import NodePresentation, WorkspaceLayoutMetadata
 from backend.plugins import create_builtin_registry
 
 
@@ -12,10 +12,12 @@ def test_builtin_catalog_presentation_and_legacy_flags_agree():
     catalog = create_builtin_registry().catalog()
     for kind in ("conversation", "sandbox"):
         item = next(item for item in catalog.node_types if item.id == kind)
-        assert item.presentation.model_dump(mode="json") == {
+        assert item.presentation.model_dump(mode="json", exclude={"workspace_layout"}) == {
             "states": ["node", "preview", "workspace"], "initial": "workspace", "open": "workspace",
+            "sizes": {},
         }
         assert item.surfaces == {"preview": True, "inspector": False, "workspace": True}
+        assert item.presentation.workspace_layout.min_width == 280
 
 
 @pytest.mark.parametrize("states,initial,target", [
@@ -46,3 +48,23 @@ def test_legacy_surfaces_are_adapted_and_explicit_presentation_takes_precedence(
     )
     declared = replace(legacy, presentation=NodePresentation(states=("inspector",), initial="inspector", open="inspector"))
     assert declared.catalog_item("test").surfaces == {"preview": False, "inspector": True, "workspace": False}
+
+
+@pytest.mark.parametrize("metadata", [
+    {"min_width": 0}, {"min_height": float("nan")}, {"ideal_width": float("inf")},
+    {"ideal_height": 8193}, {"min_width": 400, "ideal_width": 200},
+    {"min_height": 400, "ideal_height": 200}, {"role": "primary"},
+])
+def test_workspace_sizing_rejects_invalid_or_positional_metadata(metadata):
+    with pytest.raises(ValidationError):
+        WorkspaceLayoutMetadata(**metadata)
+
+
+def test_optional_workspace_sizing_roundtrips_without_changing_canvas_presentation():
+    legacy = NodePresentation(states=("node", "preview"), initial="node", open="preview")
+    assert legacy.workspace_layout is None
+    sized = NodePresentation(**{**legacy.model_dump(), "workspace_layout": {"ideal_width": 720}})
+    assert NodePresentation.model_validate_json(sized.model_dump_json()) == sized
+    assert sized.states == legacy.states and sized.sizes == legacy.sizes
+    definition = replace(create_builtin_registry().node_type("text"), presentation=sized)
+    assert definition.catalog_item("custom").presentation.workspace_layout.ideal_width == 720

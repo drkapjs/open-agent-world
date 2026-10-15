@@ -401,13 +401,13 @@ def test_agent_and_skill_timeout_reach_backend(runtime_client, monkeypatch):
     monkeypatch.setattr(native, "run_appcontainer", capture)
     provider = WorldAgentCapabilityProvider(client.app.state.services)
     result = client.portal.call(provider.invoke_tool, agent["id"], "operation:execute_command",
-        {"sandbox": sandbox["id"], "argv": ["python", "-V"], "timeout_seconds": 1200})
+        {"sandbox": sandbox["id"], "argv": ["python", "-V"], "timeout_seconds": 36000})
     assert result["exit_code"] == 0
-    run(client, agent, sandbox, skill, timeout_seconds=900)
-    assert observed == [1200, 900]
+    run(client, agent, sandbox, skill, timeout_seconds=36000)
+    assert observed == [36000, 36000]
 
 
-@pytest.mark.parametrize("value", [0, -1, 3601, float("inf"), float("nan"), True])
+@pytest.mark.parametrize("value", [0, -1, 36001, float("inf"), float("nan"), True])
 def test_invalid_agent_timeout_rejected(runtime_client, value):
     client, backend, native = runtime_client
     agent, sandbox, skill, _, _ = setup_skill(client)

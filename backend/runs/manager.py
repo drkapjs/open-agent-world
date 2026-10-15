@@ -106,6 +106,7 @@ class RunManager:
     admission_check: Any = None
     cleanup_execution: Callable[[str], Awaitable[None]] | None = None
     execution_settled: Callable[[], None] | None = None
+    conversation_event: Callable[[AgentEvent, RunRecord], Awaitable[str | None]] | None = None
     shutting_down: bool = False
 
     def __post_init__(self):
@@ -116,6 +117,16 @@ class RunManager:
     @property
     def current_context(self) -> InvocationContext | None:
         return _current_invocation.get()
+
+    async def notify_conversation_input(self, agent_id: str, conversation_id: str, session_id: str) -> None:
+        for run in self.list_runs(agent_id=agent_id):
+            if run.status not in TERMINAL_RUN_STATUSES and self._conversation_scope(run) == (conversation_id, session_id):
+                try:
+                    await self._provider(run.runtime_provider_id).notify_input(run.run_id)
+                except Exception:
+                    # Input is already durable. A wakeup is best-effort; leave
+                    # delivery to the next model boundary or queued Run.
+                    logger.exception('Failed to wake provider for conversation input in run %s', run.run_id)
 
     def provider_for_agent_configuration(
         self, provider_id: str
@@ -191,9 +202,11 @@ class RunManager:
             self._terminal_done.setdefault(record.run_id, asyncio.Event()).set()
             await self._publish_run(record, EventType.RUN_INTERRUPTED)
         for record in self.list_runs():
-            if record.lifecycle.get('cleanup') in {'pending', 'failed'}:
-                self.store.update_lifecycle(record.run_id, cleanup='uncertain', holds_capacity=False, session_lost=True,
-                    cleanup_reason='Backend restarted during cancellation; external termination is unconfirmed')
+            if (record.lifecycle.get('cleanup') in {'pending', 'failed'}
+                    or record.lifecycle.get('execution') in {'running', 'closing'}):
+                self.store.update_lifecycle(record.run_id, execution='interrupted', cleanup='uncertain',
+                    holds_capacity=False, session_lost=True,
+                    cleanup_reason='Backend restarted before execution settled; external termination is unconfirmed')
 
     async def shutdown(self) -> None:
         self.shutting_down = True
@@ -251,6 +264,7 @@ class RunManager:
         context_id: str | None = None,
         run_id: str | None = None,
         initial_lifecycle: Mapping[str, Any] | None = None,
+        resume_external_work: bool = False,
     ) -> RunRecord:
         if not isinstance(prompt, str) or not prompt.strip():
             raise ValueError("Run prompt must be a non-empty string")
@@ -271,8 +285,11 @@ class RunManager:
             if parent_run_id is not None:
                 parent = self.get_run(parent_run_id)
                 ancestor = parent
+                recovering_external = resume_external_work and caller_kind == "delegation"
                 while ancestor:
-                    if ancestor.status in {RunStatus.CANCELLED, RunStatus.INTERRUPTED, RunStatus.FAILED} or ancestor.lifecycle.get('cancellation_requested'):
+                    recovering_external = recovering_external or bool(ancestor.lifecycle.get("background_job_notification") and ancestor.lifecycle.get("work_continuation"))
+                    user_stopped = ancestor.lifecycle.get('cancellation_requested') and ancestor.lifecycle.get('cancellation_origin') != 'shutdown'
+                    if user_stopped or (not recovering_external and ancestor.status in {RunStatus.CANCELLED, RunStatus.INTERRUPTED, RunStatus.FAILED}):
                         raise RuntimeUnavailableError('The parent Run has ended; dependent work cannot be admitted')
                     ancestor = self.get_run(ancestor.parent_run_id) if ancestor.parent_run_id else None
                 task_id = task_id or parent.task_id
@@ -340,6 +357,20 @@ class RunManager:
         if event is not None and run_id in self._runtime_tasks:
             await event.wait()
         return self.get_run(run_id)
+
+    def execution_in_progress(self, run_id: str) -> bool:
+        """A terminal result may still own a provider stream and its cleanup."""
+        task = self._runtime_tasks.get(run_id)
+        return task is not None and not task.done()
+
+    async def wait_settled(self, run_id: str) -> RunRecord:
+        """Wait for a terminal result AND the provider execution to unwind.
+
+        Admission must still be rechecked: failed cleanup can retain capacity.
+        Explicitly suspended Runs are not terminal even after a turn exits.
+        """
+        await self.wait_terminal(run_id)
+        return await self.wait_execution(run_id)
 
     async def wait_terminal(self, run_id: str) -> RunRecord:
         """Wait until the durable Run reaches a terminal lifecycle state."""
@@ -451,10 +482,10 @@ class RunManager:
             event_type = EventType.RUN_RESUMED
             self._suspensions.pop(run_id, None)
         if target in TERMINAL_RUN_STATUSES:
-            self._release_agent_slot(run_id)
             self._suspensions.pop(run_id, None)
+            self._release_settled_capacity(run_id)
             self._terminal_done.setdefault(run_id, asyncio.Event()).set()
-            record = self.store.update_lifecycle(run_id, holds_capacity=False, awaiting=None)
+            record = self.store.update_lifecycle(run_id, holds_capacity=self.holds_agent_slot(run_id), awaiting=None)
         await self._publish_run(record, event_type)
         if current.status is RunStatus.WAITING and target is RunStatus.RUNNING:
             await self._publish_agent_operational(record.agent_id, "running", run_id)
@@ -482,7 +513,7 @@ class RunManager:
         if current.status in TERMINAL_RUN_STATUSES and current.lifecycle.get('cleanup') not in {'pending', 'failed', 'uncertain'}:
             # Explicit Stop also revokes pending continuations of a finished turn.
             if not self.shutting_down:
-                current = self.store.update_lifecycle(run_id, cancellation_requested=True)
+                current = self.store.update_lifecycle(run_id, cancellation_requested=True, cancellation_origin='user')
             # A provider can emit a terminal status before its local stream has
             # finished unwinding. Agent deletion must join that tail before it
             # removes provider state.
@@ -494,7 +525,8 @@ class RunManager:
                     if child.lifecycle.get('cancellation_policy', 'dependent') == 'dependent':
                         await self.cancel_run(child.run_id)
             return current
-        self.store.update_lifecycle(run_id, cancellation_requested=True, cleanup='pending', cleanup_reason=None)
+        self.store.update_lifecycle(run_id, cancellation_requested=True,
+            cancellation_origin='shutdown' if self.shutting_down else 'user', cleanup='pending', cleanup_reason=None)
         if current.status not in TERMINAL_RUN_STATUSES:
             try:
                 await self.transition_run(run_id, RunStatus.CANCELLED)
@@ -531,6 +563,9 @@ class RunManager:
             self.store.update_lifecycle(run_id, cleanup='uncertain' if current.lifecycle.get('session_lost') or provider is None else 'complete',
                 cleanup_reason=None,
                 termination_scope='provider-owned execution; remote side effects are not inferred')
+            self._release_settled_capacity(run_id)
+            await self._publish_agent_operational(
+                current.agent_id, "running" if self._occupied_agent_runs(current.agent_id) else "idle", run_id)
         pending = self._cleanup_tasks.get(run_id)
         if pending is not None and pending.done() and (pending.cancelled() or pending.exception() is not None):
             self._cleanup_tasks.pop(run_id, None)
@@ -673,6 +708,7 @@ class RunManager:
             state_context=self._state_context(record),
             group_context=team,
             delegation_context=record.lifecycle.get("delegation_context"),
+            extensions={"background_job_notification": record.lifecycle.get("background_job_notification")},
         )
         token = _current_invocation.set(context)
         try:
@@ -712,10 +748,12 @@ class RunManager:
                     closer = getattr(stream, 'aclose', None)
                     if closer is not None:
                         try:
-                            await closer()
-                        except Exception as error:
+                            self.store.update_lifecycle(record.run_id, execution='closing')
+                            async with asyncio.timeout(self.cleanup_timeout_seconds):
+                                await closer()
+                        except BaseException as error:
                             self.store.update_lifecycle(record.run_id, cleanup='failed',
-                                cleanup_reason=f'Provider stream cleanup failed: {error}')
+                                cleanup_reason=f'Provider stream cleanup failed: {type(error).__name__}: {error}')
                             raise
 
             reader = asyncio.create_task(read_stream(), name=f'provider-stream:{record.run_id}')
@@ -761,8 +799,8 @@ class RunManager:
                     event_kind = event.type.value
                     text = event.payload.get("text")
                     if event_kind == "agent_message" and isinstance(text, str):
-                        # Streaming snapshots are live Run state. Keep them out of
-                        # SQLite until the provider turn reaches a terminal result.
+                        # Conversation owns message persistence; Run output keeps
+                        # the latest snapshot for terminal-result consumers.
                         self._live_output[record.run_id] = text
                     elif event_kind == "agent_progress":
                         # Model-provided reasoning is a transient, user-visible
@@ -785,15 +823,6 @@ class RunManager:
                         else:
                             active_tools = max(0, active_tools - 1)
                         current_lifecycle = self.get_run(record.run_id).lifecycle
-                        trace = list(current_lifecycle.get("tool_trace") or [])
-                        # Use the same identity and sanitized details in REST
-                        # and WebSocket so reconnects do not duplicate tool rows.
-                        trace.append({
-                            **published.payload,
-                            "id": published.id,
-                            "timestamp": published.timestamp.isoformat(),
-                            "type": event_kind,
-                        })
                         self.store.update_lifecycle(
                             record.run_id,
                             active_tools=active_tools,
@@ -806,15 +835,31 @@ class RunManager:
                             last_signal=event_kind,
                             tool_count=int(current_lifecycle.get("tool_count") or 0)
                                 + (1 if event_kind == "tool_started" else 0),
-                            tool_trace=trace[-50:],
                         )
                     elif event_kind not in {"agent_message"}:
                         self.store.update_lifecycle(record.run_id, last_signal=event_kind)
-                    if event_kind == "agent_completed" and isinstance(text, str) and text.strip():
+                    public_progress = event_kind == 'agent_progress' and event.payload.get('kind', 'status') in (
+                        'status', 'plan', 'reasoning_summary',
+                    )
+                    if event_kind in {'tool_started', 'tool_completed'} or public_progress:
+                        # The public activity checkpoint also retains narration
+                        # boundaries. REST and WS share identity and sanitized
+                        # tool details; raw reasoning is never checkpointed.
+                        lifecycle = self.get_run(record.run_id).lifecycle
+                        trace = [*(lifecycle.get('tool_trace') or []), {
+                            **published.payload, 'id': published.id,
+                            'timestamp': published.timestamp.isoformat(), 'type': event_kind,
+                        }]
+                        self.store.update_lifecycle(record.run_id, tool_trace=trace[-50:],
+                            tool_trace_truncated=bool(lifecycle.get('tool_trace_truncated')) or len(trace) > 50)
+                    if event_kind == "agent_completed" and isinstance(text, str):
+                        # An explicit empty result must clear earlier narration.
+                        # Only providers omitting the result may use the latest
+                        # message as their legacy terminal-output fallback.
                         self._live_output[record.run_id] = text
                     if event.run_status is not None:
                         final_text = self._live_output.get(record.run_id)
-                        if isinstance(final_text, str) and final_text.strip():
+                        if isinstance(final_text, str):
                             self.state.set(
                                 context.state_context.local_scope,
                                 "output_text",
@@ -864,6 +909,7 @@ class RunManager:
             self.store.update_lifecycle(record.run_id, execution='finished', active_tools=0)
             _current_invocation.reset(token)
             self._runtime_tasks.pop(record.run_id, None)
+            self._release_settled_capacity(record.run_id)
             execution_done = self._execution_done.get(record.run_id)
             if execution_done is not None:
                 execution_done.set()
@@ -931,8 +977,8 @@ class RunManager:
         execution_done = self._execution_done.get(run_id)
         if execution_done is not None:
             execution_done.set()
-        # Safety net: a terminal Run must never retain its Agent slot, even if
-        # the terminal transition's release was interrupted by an exception.
+        # Safety net after task exit. Cleanup debt must still retain capacity;
+        # a terminal result alone is never evidence of released resources.
         try:
             status = self.store.get(run_id).status
         except Exception:
@@ -940,7 +986,7 @@ class RunManager:
             # map dies with the manager, so there is nothing to reconcile.
             return
         if status in TERMINAL_RUN_STATUSES:
-            self._release_agent_slot(run_id)
+            self._release_settled_capacity(run_id)
             # Successful terminal output has already been checkpointed once
             # before the terminal transition; release the ephemeral overlay.
             self._live_output.pop(run_id, None)
@@ -1018,6 +1064,14 @@ class RunManager:
     def _release_agent_slot(self, run_id: str) -> None:
         self._occupied_runs.pop(run_id, None)
 
+    def _release_settled_capacity(self, run_id: str) -> None:
+        record = self.get_run(run_id)
+        if (record.status in TERMINAL_RUN_STATUSES
+                and not self.execution_in_progress(run_id)
+                and record.lifecycle.get('cleanup') not in {'pending', 'failed'}):
+            self._release_agent_slot(run_id)
+            self.store.update_lifecycle(run_id, holds_capacity=False)
+
     def _assert_agent_accepts_runs(self, agent_id: str) -> None:
         if self.admission_check is not None:
             self.admission_check(agent_id)
@@ -1090,6 +1144,19 @@ class RunManager:
         payload = (public_tool_payload(event.payload)
                    if event.type.value in {"tool_started", "tool_completed"}
                    else dict(event.payload))
+        if event.type.value == 'tool_completed' and payload.get('call_id'):
+            # Carry the original tool identity into the result checkpoint too.
+            # Match only explicit call IDs; concurrent wrapper calls share names.
+            for start in reversed(self.get_run(record.run_id).lifecycle.get('tool_trace') or []):
+                if start.get('type') == 'tool_started' and start.get('call_id') == payload['call_id']:
+                    for key in ('tool_name', 'capability_id', 'author', 'subagent'):
+                        if key in start:
+                            payload.setdefault(key, start[key])
+                    break
+        if self.conversation_event is not None:
+            message_id = await self.conversation_event(event, record)
+            if message_id:
+                payload['conversation_message_id'] = message_id
         return await self.events.publish(
             EventType(event.type.value),
             node_id=record.agent_id,

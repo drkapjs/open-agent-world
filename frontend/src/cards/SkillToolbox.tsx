@@ -1,5 +1,5 @@
 import { t, useLocale } from "../i18n";
-import { Boxes, Download, FilePlus2, Plus, RefreshCw, Settings2, Trash2, Wrench, X } from "lucide-react";
+import { ArrowLeft, Boxes, Download, FilePlus2, Plus, RefreshCw, Settings2, Trash2, Wrench, X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { apiErrorMessage, nodeDocumentDownloadUrl, worldApi } from "../api/client";
 import { useWorldStore } from "../state/worldStore";
@@ -8,6 +8,7 @@ import { useHydrationLease } from '../canvas/useCardRendering';
 import type { WorldCard } from "../types/world";
 import { SkillDefaultsEditor, settingsFromValue, settingsToValue, type SettingRow } from "./SkillDefaultsEditor";
 import { SkillFilesEditor, type SkillFiles } from "./SkillFilesEditor";
+import { WorkspaceEmptyState } from '../workspace/WorkspacePrimitives';
 
 interface Skill {
   id: string; name: string; description: string; instructions: string;
@@ -67,7 +68,7 @@ export function SkillNodeBody({ card, workspace = false }: { card: WorldCard; wo
   return <SkillToolboxBody card={card} workspace={workspace} single />;
 }
 
-export function SkillToolboxBody({ card, workspace = false, single = false }: { card: WorldCard; workspace?: boolean; single?: boolean }) {
+export function SkillToolboxBody({ card, workspace = false, single = false, showHeading = !workspace }: { card: WorldCard; workspace?: boolean; single?: boolean; showHeading?: boolean }) {
   useLocale();
   const { box, accept, reload, error, setError } = useToolbox(card.id, single);
   const updateCard = useWorldStore((state) => state.updateCard);
@@ -107,10 +108,10 @@ export function SkillToolboxBody({ card, workspace = false, single = false }: { 
     catch (error) { setError(apiErrorMessage(error)); }
   };
   return <div className={`skill-toolbox nowheel ${workspace ? "is-workspace" : ""}`}>
-    <header className="toolbox-heading"><div><span className="toolbox-eyebrow">{single ? "SKILL" : t("SKILL TOOLBOX")}</span><h3>{box?.value.name ?? t("Loading toolbox…")}</h3></div>{single ? <Wrench size={28} strokeWidth={1.3} /> : <Boxes size={28} strokeWidth={1.3} />}</header>
-    <p className="toolbox-help">{box?.value.description || (single ? t("Connect an Agent with Use skill to share these instructions, settings and files.") : t("Collect the tools you use together. Connect an Agent with “Use skills” to let it open the right tool for the job."))}</p>
+    {showHeading && <header className="toolbox-heading"><h3>{box?.value.name ?? t("Loading toolbox…")}</h3></header>}
+    {box?.value.description && <p className="toolbox-help">{box.value.description}</p>}
     {box?.value.source && <p className="toolbox-origin">{t("From")} {box.value.author || box.value.source.plugin_id} · v{box.value.source.version} {t("· Editable local copy")}</p>}
-    <div className="toolbox-toolbar">
+    {!editing && <div className="toolbox-toolbar">
       {!single && <>
       <button className="primary-button" onClick={add} disabled={!box || busy || editing}><Plus size={14} /> {t("Add skill")}</button>
       <button className="secondary-button" aria-label={t("Toolbox settings")} disabled={!box || busy || editing} onClick={() => setSettings({ value: { ...box!.value }, revision: box!.revision })}><Settings2 size={14} /> {t("Toolbox")}</button>
@@ -119,7 +120,7 @@ export function SkillToolboxBody({ card, workspace = false, single = false }: { 
       </>}
       {single && card.parent_id && <button className="secondary-button" disabled={busy || editing} onClick={() => void updateCard(card.id, { parent_id: null })}>{t("Detach skill")}</button>}
       <button className="secondary-button" aria-label={t("Reload toolbox")} disabled={busy} onClick={() => { setDraft(undefined); setSettings(undefined); void reload(); }}><RefreshCw size={14} /></button>
-    </div>
+    </div>}
     {error && <p className="toolbox-error" role="alert">{error}</p>}
     {settings && <form className="toolbox-settings toolbox-editor" aria-label={t("Toolbox settings")} onSubmit={async (event) => {
       event.preventDefault(); const { skills: _skills, source: _source, ...metadata } = settings.value;
@@ -136,10 +137,10 @@ export function SkillToolboxBody({ card, workspace = false, single = false }: { 
         <button className="primary-button">{t("Save toolbox")}</button>
       </fieldset>
     </form>}
-    <div className="toolbox-layout">
+    {!settings && <div className="toolbox-layout" data-detail={!!draft || undefined}>
       <section className="toolbox-tools" aria-label={t("Skills")}>
         {!single && !!box?.value.skills.length && <input className="toolbox-search" aria-label={t("Search skills")} placeholder={t("Find a tool…")} value={search} onChange={(event) => setSearch(event.target.value)} />}
-        {box?.value.skills.length === 0 && <div className="toolbox-empty"><Wrench size={30} strokeWidth={1.3} /><strong>{t("Start with one useful tool.")}</strong><p>{t("Add a skill, write its instructions, or import a SKILL.md file.")}</p></div>}
+        {box?.value.skills.length === 0 && <WorkspaceEmptyState icon={<Wrench size={24} />} title={t("Start with one useful tool.")} description={t("Add a skill, write its instructions, or import a SKILL.md file.")} />}
         {box?.value.skills.filter((skill) => `${skill.name} ${skill.description}`.toLowerCase().includes(search.toLowerCase())).map((skill) =>
           <button key={skill.node_id || skill.id} className={`toolbox-tool ${draft?.skill.id === skill.id && draft?.skill.node_id === skill.node_id ? "is-selected" : ""}`} aria-label={t("Edit skill {v0}", { v0: String(skill.name) })} disabled={busy || editing} onClick={() => select(skill)}>
             <Wrench size={18} /><span><strong>{skill.name}</strong><small>{skill.description || t("Open instructions")}</small><em>{Object.keys(skill.files).length} {t("files")}</em></span>
@@ -147,7 +148,7 @@ export function SkillToolboxBody({ card, workspace = false, single = false }: { 
         {!!box?.value.skills.length && box.value.skills.every((skill) => !`${skill.name} ${skill.description}`.toLowerCase().includes(search.toLowerCase())) && <p className="toolbox-help">{t("No skills match your search.")}</p>}
       </section>
       {draft && <form className="toolbox-editor" aria-label={t("Skill details")} onSubmit={(event) => { event.preventDefault(); void saveSkill(); }}>
-        <header><strong>{draft.isNew ? t("New skill") : draft.skill.name}</strong><button type="button" aria-label={t("Close skill details")} disabled={busy} onClick={() => setDraft(undefined)}><X size={16} /></button></header>
+        <header><button type="button" className="toolbox-editor-back" aria-label={t("Close skill details")} disabled={busy} onClick={() => setDraft(undefined)}><ArrowLeft size={14} />{single ? t('Close') : t('Back to skills')}</button></header>
         <fieldset disabled={busy}>
           <label>{t("Skill name")}<input required maxLength={120} value={draft.skill.name} onChange={(event) => patch({ name: event.target.value })} /></label>
           <label>{t("When to use")}<textarea rows={2} maxLength={1000} value={draft.skill.description} onChange={(event) => patch({ description: event.target.value })} /></label>
@@ -172,7 +173,7 @@ export function SkillToolboxBody({ card, workspace = false, single = false }: { 
           <div className="toolbox-editor-actions">{!draft.isNew && !single && <button type="button" className="secondary-button" onClick={async () => { if (await mutate("remove", { skill_id: draft.skill.node_id || draft.skill.id }, draft.revision)) setDraft(undefined); }}><Trash2 size={14} /> {t("Detach skill")}</button>}<button className="primary-button">{t("Save skill")}</button></div>
         </fieldset>
       </form>}
-    </div>
+    </div>}
     {!single && !editing && box && <footer className="toolbox-footer"><span>{box.summary.total} {t("skills · v")}{box.value.version}</span><span>{t("Instructions load on demand")}</span></footer>}
   </div>;
 }

@@ -85,7 +85,10 @@ nav:
       - Development setup: developers/setup.md
       - Your first plugin: developers/first-plugin.md
       - Give an Agent a tool: developers/agent-tools.md
+      - Runtime context compaction: developers/context-compaction.md
       - Add a custom interface: developers/frontend.md
+      - Workspace design system: developers/workspace-design.md
+      - Connected data sources: developers/data-sources.md
       - Progressive card tutorials: developers/progressive-tutorials.md
       - Test and distribute: developers/testing.md
       - Local Pack distribution: pack-distribution.md
@@ -122,6 +125,7 @@ nav:
           - Canvas control: canvas-control.md
           - Canvas placement: layout.md
           - Canvas performance: canvas-performance.md
+          - Relationship maps: graph-architecture.md
           - Terrain renderer: terrain-webgl.md
           - Card finishes: developers/card-finishes.md
   - Contribute to OAW:

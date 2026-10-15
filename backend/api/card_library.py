@@ -34,6 +34,16 @@ def plugin_usage(services: ApplicationServices, plugin_id: str) -> list[str]:
             usages.append("world relationships")
         if db.execute("SELECT 1 FROM pending_node_deletions WHERE plugin_id=? LIMIT 1", (plugin_id,)).fetchone():
             usages.append("pending lifecycle cleanup")
+    for job in services.background_jobs.records():
+        if job.get("tracking_released") or (job["status"] not in {"submitting", "queued", "running", "unknown"} and not job["wake_requested"]):
+            continue
+        try:
+            owner = services.plugins.owner_id("background_job_provider", job["provider"])
+        except ValueError:
+            continue
+        if owner == plugin_id:
+            usages.append("tracked background work")
+            break
     return usages
 
 

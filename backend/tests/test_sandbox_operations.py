@@ -311,8 +311,8 @@ def test_real_adk_parallel_tool_batch_survives_busy_and_waits(runtime_client, mo
     from google.adk.models.base_llm import BaseLlm
     from google.adk.models.llm_response import LlmResponse
     from google.genai import types
-    from backend.agents import AgentConfig, AgentEventType, GoogleAdkAgentRuntime
-    from backend.runs import InvocationCaller, InvocationContext, RuntimeInput, RunStatus
+    from backend.agents import AgentConfig, GoogleAdkAgentRuntime
+    from backend.runs import RunStatus
 
     client, backend, _ = runtime_client
     agent, sandbox, *_ = setup_skill(client)
@@ -363,12 +363,12 @@ def test_real_adk_parallel_tool_batch_survives_busy_and_waits(runtime_client, mo
     async def scenario():
         config = AgentConfig(agent_id=agent['id'], name='Recovery test')
         await runtime.create_agent(config)
-        context = InvocationContext(run_id='test-recovery', agent_id=agent['id'], parent_run_id=None,
-            root_run_id='test-recovery', caller=InvocationCaller('test'), context_id=None,
-            task_id=None, runtime_provider_id='google.adk')
-        events = [event async for event in runtime.execute(config, context, RuntimeInput(prompt='Run the check after installation'))]
-        assert events[-1].run_status == RunStatus.SUCCEEDED
-        assert sum(event.type == AgentEventType.TOOL_COMPLETED for event in events) == 4
+        # Live input and operation ownership require a real host invocation.
+        services.install_runtime_provider('core.mock', runtime, default=True)
+        run = await services.run_manager.start_run(agent['id'], 'Run the check after installation')
+        await services.run_manager.wait_execution(run.run_id)
+        assert services.run_manager.get_run(run.run_id).status == RunStatus.SUCCEEDED
+        assert len(observed) == 4
         assert model.step == 4
         await runtime.delete_agent(agent['id'])
     client.portal.call(scenario)

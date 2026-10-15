@@ -1,0 +1,16 @@
+from backend.plugins.loader import load_plugin_registry
+
+
+def test_research_preview_projects_counts_without_task_content():
+    from backend.tests.plugin_support import install_test_plugin
+    from backend.tests.research_tasks import register
+    registry = load_plugin_registry()
+    install_test_plugin(registry, "test.research", register)
+    definition = registry.node_type("test.research.tasks").document
+    action = definition.actions["summary"]
+    assert action.read_only and action.project
+    value = {"plans": [{"title": "Copper study", "tasks": [
+        {"status": "done", "description": "Large scientific instructions", "depends_on": []},
+        {"status": "pending", "description": "More instructions", "depends_on": ["first"]},
+    ]}]}
+    assert action.handler(value, {}) == {"total": 2, "done": 1, "latest_title": "Copper study"}

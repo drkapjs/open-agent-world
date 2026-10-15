@@ -33,6 +33,23 @@ describe("ordered Run activity", () => {
     })]);
     expect(activity.items[0]).toMatchObject({ kind: "status", model_attempt: 1 });
   });
+  it('pairs concurrent wrappers by call ID and retains identity and legacy failure on reload', () => {
+    const events = [
+      event(1, 'tool_started', { name: 'oaw_invoke_tool', call_id: 'a', tool_name: 'read_file', arguments: { path: 'a' } }),
+      event(2, 'tool_started', { name: 'oaw_invoke_tool', call_id: 'b', tool_name: 'execute_command' }),
+      event(3, 'tool_completed', { name: 'oaw_invoke_tool', call_id: 'b', ok: false, response: { error: 'denied' } }),
+      event(4, 'tool_completed', { name: 'oaw_invoke_tool', call_id: 'a', response: { content: 'A' } }),
+    ];
+    const state = mergeRunActivity(undefined, run, [...events].reverse());
+    const restored = mergeRunActivity(undefined, { ...run, tool_trace: events.map(event => ({
+      ...event.payload, id: event.id, timestamp: event.timestamp, type: event.type })) }, []);
+    expect(restored.items).toEqual(state.items);
+    expect(state.items[0]).toMatchObject({ tool_name: 'read_file', response: { content: 'A' } });
+    expect(state.items[1]).toMatchObject({ tool_name: 'execute_command', success: false });
+    expect(toolFailed(state.items[1])).toBe(true);
+    expect(toolFailed({ id: 'nested', type: 'tool_completed', response: { ok: true, result: { exit_code: 1 } } })).toBe(true);
+  });
+
   it("interleaves public progress and tools, updating completion in place", () => {
     const state = mergeRunActivity(undefined, run, [
       event(5, "agent_message", { text: "Answer" }),
@@ -94,6 +111,28 @@ describe("ordered Run activity", () => {
     ]);
     expect(state.items).toHaveLength(3);
     expect(state.items[0].response).toBeUndefined();
+  });
+
+  it('restores the original call time when an older REST start follows a live completion', () => {
+    const done = event(3, 'tool_completed', { name: 'read', call_id: 'c', response: 'done' });
+    const state = mergeRunActivity(undefined, run, [done]);
+    const start = event(1, 'tool_started', { name: 'read', call_id: 'c', arguments: 'file' });
+    const repaired = mergeRunActivity(state, { ...run, tool_trace: [{ ...start.payload, type: start.type,
+      timestamp: start.timestamp, id: start.id }] }, []);
+    expect(repaired.items).toHaveLength(1);
+    expect(repaired.items[0]).toMatchObject({ type: 'tool_completed', timestamp: start.timestamp,
+      started_at: start.timestamp, finished_at: done.timestamp, response: 'done', arguments: 'file' });
+    expect(state.items[0].timestamp).toBe(done.timestamp);
+    const restored = mergeRunActivity(undefined, { ...run, tool_trace: [start, done].map(event => ({
+      ...event.payload, id: event.id, type: event.type, timestamp: event.timestamp })) }, []);
+    expect(restored.items[0].started_at).toBe(repaired.items[0].started_at);
+    expect(restored.items[0].finished_at).toBe(repaired.items[0].finished_at);
+  });
+
+  it('reports a truncated durable checkpoint even when there are no new events', () => {
+    const state = mergeRunActivity(undefined, run, []);
+    expect(mergeRunActivity(state, { ...run, tool_trace_truncated: true }, []).truncated).toBe(true);
+    expect(state.truncated).toBe(false);
   });
 
   it("renders old name-only traces without inventing arguments or results", () => {
