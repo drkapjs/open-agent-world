@@ -34,11 +34,11 @@ function uv {
 }
 
 try {
-    $actual = Initialize-BackendEnvironment -Root $testRoot -AdditionalPlugins @($extra)
+    $actual = Initialize-BackendEnvironment -Root $testRoot -DevelopmentProfile 'fixture-profile' -AdditionalPlugins @($extra)
     if ($actual -isnot [string] -or $actual -ne $python) { throw 'Installer output contaminated the backend executable.' }
     $receipt = Get-Content -Raw -LiteralPath (Join-Path $testRoot 'receipt.json') | ConvertFrom-Json
     if ($receipt.python -ne $python -or $receipt.prefix -ne $venv) { throw 'Setup used a different interpreter from server startup.' }
-    if ($receipt.plugins.Count -ne 2 -or $receipt.plugins[1] -ne $extra) { throw "Plugin paths with spaces were not preserved: $($receipt.plugins | ConvertTo-Json -Compress)" }
+    if ($receipt.plugins.Count -ne 4 -or $receipt.plugins[0] -ne '--profile' -or $receipt.plugins[1] -ne 'fixture-profile' -or $receipt.plugins[3] -ne $extra) { throw "Profile or plugin paths with spaces were not preserved: $($receipt.plugins | ConvertTo-Json -Compress)" }
     if ($script:syncArguments[0] -ne 'sync' -or $script:syncArguments -contains '--with-editable') { throw 'A temporary uv overlay was requested.' }
     $start = $ast.Find({ param($node) $node -is [Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Start-Process' -and $node.Extent.Text -match '-RedirectStandardError \$backendError' }, $true)
     if ($start.Extent.Text -notmatch '-FilePath \$backendPython') { throw 'Backend launch bypasses the prepared interpreter.' }

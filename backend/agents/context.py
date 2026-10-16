@@ -6,6 +6,7 @@ after a successful reduction; conversation messages are never mutated.
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import json
 from collections import Counter
@@ -45,13 +46,19 @@ def _local_tokenizer():
     """
     from importlib.resources import files
     from tiktoken import Encoding
-    from tiktoken.load import load_tiktoken_bpe
     url = "https://openaipublic.blob.core.windows.net/encodings/cl100k_base.tiktoken"
     resource = files("litellm.litellm_core_utils.tokenizers").joinpath(hashlib.sha1(url.encode()).hexdigest())
+    # Windows LiteLLM wheels may package this text resource with CRLF. Verify
+    # canonical text bytes without rewriting the installed or locked artifact.
+    content = resource.read_bytes().replace(b"\r\n", b"\n")
+    if hashlib.sha256(content).hexdigest() != "223921b76ee99bde995b7ff738513eef100fb51d18c93597a113bcffe865b2a7":
+        raise ValueError("The bundled reference tokenizer failed its checksum check")
+    ranks = {base64.b64decode(token, validate=True): int(rank)
+             for token, rank in (line.split() for line in content.splitlines() if line)}
     return Encoding(
         name="oaw_local_cl100k_base",
         pat_str=r"'(?i:[sdmt]|ll|ve|re)|[^\r\n\p{L}\p{N}]?+\p{L}++|\p{N}{1,3}+| ?[^\s\p{L}\p{N}]++[\r\n]*+|\s++$|\s*[\r\n]|\s+(?!\S)|\s",
-        mergeable_ranks=load_tiktoken_bpe(str(resource), expected_hash="223921b76ee99bde995b7ff738513eef100fb51d18c93597a113bcffe865b2a7"),
+        mergeable_ranks=ranks,
         special_tokens={},
     )
 

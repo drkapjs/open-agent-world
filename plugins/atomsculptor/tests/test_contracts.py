@@ -1067,7 +1067,7 @@ class RuntimeContractTests(unittest.TestCase):
         plugin.register(real)
         self.assertIn("atomsculptor.adk-team", real.runtime_provider_model_resolvers)
         self.assertIn("atomsculptor.adk-team", real.runtime_provider_context_stores)
-        self.assertEqual(plugin.descriptor.plugin_api_version, "1.26")
+        self.assertEqual(plugin.descriptor.plugin_api_version, "1.35")
         defaults = real.nodes["atomsculptor.agent"].default_equipment
         self.assertEqual([(item.key, item.type, item.relationship) for item in defaults],
                          [("skills", "atomsculptor.skills", "atomsculptor.skills.use")])

@@ -1055,6 +1055,14 @@ class RunManager:
         return (self.plugins.has_runtime_provider(provider_id)
                 and self.plugins.runtime_provider_owner_id(provider_id) == "open-agent-world.core")
 
+    def runtime_provider_id_for_agent(self, agent_id: str) -> str | None:
+        """Resolve the invoking runtime without constructing a provider."""
+        context = self.current_context
+        if context is not None and context.agent_id == agent_id:
+            self.plugins.assert_runtime_provider_enabled(context.runtime_provider_id)
+            return context.runtime_provider_id
+        return self._optional_provider_id(self.world.get_card(agent_id))
+
     def _optional_provider_id(self, card: Card) -> str | None:
         configured = card.config.get("runtime_provider_id")
         provider_id = configured if isinstance(configured, str) and configured else None

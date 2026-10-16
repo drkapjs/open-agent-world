@@ -109,6 +109,18 @@ def runtime_router(manifest: dict, *, secure_cookie: bool = False):
         return {**{key: manifest[key] for key in ("id", "name", "created_at", "layout", "panels", "permissions")},
                 **workspace_snapshot(manifest, services)}
 
+    @router.get("/api/packs/{pack_id}/versions/{version}/{asset_path:path}", dependencies=[Depends(operator)])
+    async def pack_frontend_asset(pack_id: str, version: str, asset_path: str, services=Depends(get_services)):
+        from backend.api.packs import frontend_asset
+        from backend.deployment_workspace import frontend_catalog
+        modules = frontend_catalog(manifest, services)["frontend_modules"]
+        if not any(module.get("distribution_id", owner) == pack_id and module["version"] == version
+                   for owner, module in modules.items()):
+            raise HTTPException(404, "Pack asset unavailable")
+        # Reuse the active-version, public-path and checksum checks. This mounts
+        # no Pack management handlers on the operator application.
+        return await frontend_asset(pack_id, version, asset_path, services)
+
     from backend.deployment_workspace import workspace_router
     protected.include_router(workspace_router(manifest))
     router.include_router(protected)

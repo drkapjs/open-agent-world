@@ -452,6 +452,9 @@ class WorldAgentCapabilityProvider:
         self.services.world.get_card(agent_id)
         return self.services.settings.data_root / "runtime-state" / hashlib.sha256(agent_id.encode()).hexdigest()
 
+    def managed_environment_root(self):
+        return self.services.settings.data_root
+
     def __init__(self, services: ApplicationServices) -> None:
         self.services = services
 

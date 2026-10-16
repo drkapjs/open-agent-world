@@ -62,7 +62,24 @@ function Stop-RecordedProcessTree {
 
     # Python may launch child workers. Stop the whole tree so Ctrl+C
     # cannot leave the actual listener behind on the next run.
-    & taskkill.exe /PID $process.Id /T /F 2>$null | Out-Null
+    # The process can exit after the identity check. Windows PowerShell turns
+    # taskkill's stderr into a terminating error under Stop, even with 2>$null.
+    # Cleanup must not mask the original build/startup failure in that race.
+    $previousPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        & taskkill.exe /PID $process.Id /T /F 2>$null | Out-Null
+        $stopExitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousPreference
+    }
+    if ($stopExitCode -ne 0) {
+        $remaining = Get-ProcessRecord $process.Id
+        if ($null -ne $remaining -and [int64]$remaining.startTimeTicks -eq [int64]$Record.startTimeTicks) {
+            Write-Warning "Unable to stop backend process $($process.Id) (taskkill exit code $stopExitCode)."
+        }
+    }
 }
 
 function Get-BackendListener {
@@ -198,7 +215,7 @@ function Remove-OwnedBackendState {
 }
 
 function Initialize-BackendEnvironment {
-    param([string]$Root, [string[]]$AdditionalPlugins = @())
+    param([string]$Root, [string]$DevelopmentProfile = "default", [string[]]$AdditionalPlugins = @())
 
     # Installation hooks and the server must use the same persistent interpreter.
     # uv run --with-editable creates a temporary overlay with a different prefix.
@@ -209,7 +226,7 @@ function Initialize-BackendEnvironment {
     $plugins = @(Get-ChildItem -LiteralPath (Join-Path $Root 'plugins') -Directory |
         Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'pyproject.toml') } |
         ForEach-Object { $_.FullName })
-    & $python (Join-Path $Root 'scripts/install-plugins.py') @plugins @AdditionalPlugins | Out-Host
+    & $python (Join-Path $Root 'scripts/install-plugins.py') --profile $DevelopmentProfile @plugins @AdditionalPlugins | Out-Host
     if ($LASTEXITCODE -ne 0) { throw 'Plugin dependency installation failed.' }
     return $python
 }
@@ -248,7 +265,7 @@ try {
         }
         Remove-OwnedBackendState $previousState
     }
-    $backendPython = Initialize-BackendEnvironment -Root $projectRoot -AdditionalPlugins $resolvedPluginPaths
+    $backendPython = Initialize-BackendEnvironment -Root $projectRoot -DevelopmentProfile $Profile -AdditionalPlugins $resolvedPluginPaths
 
     $backendPort = Get-AvailableLocalPort -PreferredPort 8000
     $frontendPort = Get-AvailableLocalPort -PreferredPort 5173
@@ -312,6 +329,7 @@ try {
     }
     Write-Host "Backend activity: $backendOut"
     & npm.cmd --prefix frontend run dev -- --port $frontendPort --strictPort
+    if ($LASTEXITCODE -ne 0) { throw "Frontend development server failed (exit code $LASTEXITCODE). See the build error above." }
 }
 finally {
     if ($null -ne $backendState) {

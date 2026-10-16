@@ -10,8 +10,8 @@ from contextlib import aclosing
 from dataclasses import replace
 from typing import Any
 
-from backend.agents.tools import build_scoped_adk_tools
-from backend.agents.model_observation import (
+from open_agent_world.plugin_api.model_runtime import build_scoped_adk_tools
+from open_agent_world.plugin_api.model_runtime import (
     ModelTrace, model_stream_disconnected as _model_stream_disconnected,
     multiplex_adk_events, multiplex_adk_events as _multiplex_events,
 )
@@ -276,9 +276,11 @@ The modelling/delivery composites sequence their dependent native operations.
 Independent reads may run together. For code outside composites, save through
 write_sandbox_text_file, then execute direct python3 with that saved path. Small
 python3 -c input measurements are allowed; full programs and shell heredocs are
-not. Use the managed python_environment and known package_versions. If managed
-Python preparation fails, do not probe for system Python; report its actual error
-and returned install.log path, never invent one. Start a stopped Sandbox through
+not. Commands automatically prepare the Pack's declared modelling environment
+inside the selected Sandbox. Sandbox inspection describes its base interpreter,
+not the private profile's installed libraries; use command results as evidence.
+If preparation fails, do not probe for system Python; report its actual error
+and any returned log path, never invent one. Start a stopped Sandbox through
 its authorized tool. A running receipt needs native wait, not another model scan.
 timeout_seconds is a command deadline; wait_seconds is a collection interval.
 Null HOST time_budget values mean no total Run deadline, not zero time. Keep
@@ -1005,7 +1007,7 @@ class AtomSculptorRuntime(RuntimeProvider):
                 # Native Run state, no new database or journal. The latest
                 # model checkpoint and Sandbox receipts remain independent.
                 state = self.reasoning_store
-                from backend.runs.invocation_logs import archive_value
+                from open_agent_world.plugin_api.model_runtime import archive_value
                 checkpoint, _ = archive_value(checkpoint, [connection.api_key] if connection.api_key else [])
                 if state is not None:
                     state.set(state.ensure_scope("run", context.run_id), "execution_checkpoint", checkpoint, run_id=context.run_id)
@@ -1024,7 +1026,7 @@ class AtomSculptorRuntime(RuntimeProvider):
             checkpoint_store = None
             database = getattr(self.context_store, "database", None) or getattr(self.reasoning_store, "database", None)
             if database is not None:
-                from backend.runs.model_checkpoints import RunModelCheckpoints
+                from open_agent_world.plugin_api.model_runtime import RunModelCheckpoints
                 checkpoint_store = RunModelCheckpoints(database, context.run_id, api_key=connection.api_key,
                                                       state_store=self.reasoning_store)
             model_trace = _ModelTrace(trace_queue, connection.api_key,
@@ -1062,23 +1064,15 @@ class AtomSculptorRuntime(RuntimeProvider):
             output_limit = self._context_budget(config, model, bindings).output
             if not hasattr(evidence, "run_provenance"):
                 from pathlib import Path
-                from backend.runs.provenance import source_snapshot
+                from open_agent_world.plugin_api.model_runtime import runtime_source_snapshot
                 from urllib.parse import urlsplit, urlunsplit
-                import backend.agents
-                import backend.runs
-                import open_agent_world
                 from .skill_package import atomsculptor_skills
                 plugin_root = Path(__file__).parent
-                core_root = Path(backend.agents.__file__).parent.parent.parent
                 gateway = urlsplit(getattr(connection, "base_url", None) or "")
                 # Keep endpoint identity, never URL credentials or query keys.
                 endpoint = urlunsplit((gateway.scheme, gateway.netloc.rsplit("@", 1)[-1], gateway.path, "", ""))
                 evidence.run_provenance = {"schema_version": 1,
-                    "code": source_snapshot({"backend/agents": Path(backend.agents.__file__).parent,
-                        "backend/runs": Path(backend.runs.__file__).parent,
-                        "plugin/atomsculptor": plugin_root,
-                        "plugin_api": Path(open_agent_world.__file__).parent / "plugin_api",
-                        "task_graph": Path(open_agent_world.__file__).parent / "task_graph.py"}, repository=core_root),
+                    "code": runtime_source_snapshot({"plugin/atomsculptor": plugin_root}),
                     "model": {"adapter": getattr(connection, "adapter", None),
                         "model_id": getattr(connection, "model_id", None), "gateway": endpoint or None},
                     "settings": {"provider_config": dict(config.provider_config), "harness": evidence.limits.model_dump(mode="json"),
@@ -1095,7 +1089,7 @@ class AtomSculptorRuntime(RuntimeProvider):
                 + selection_notice + "\n\nUser request:\n" + runtime_input.prompt.strip()
             )
             managed = self._managed_roles(config, context, message_text, model, bindings)
-            from backend.agents.request_window import RequestWindow, ContextCapabilities
+            from open_agent_world.plugin_api.model_runtime import RequestWindow, ContextCapabilities
             windows = {role: RequestWindow(self._context_budget(config, model, bindings), model_trace, role,
                 reducer=getattr(managed.get(role), "reduce_final_request", None),
                 capabilities=ContextCapabilities.for_model(model))
@@ -1104,7 +1098,7 @@ class AtomSculptorRuntime(RuntimeProvider):
                 return any(getattr(part, "text", None) in evidence._host_static_texts | evidence._host_evidence_texts
                            for part in (content.parts or []))
             async def reduce_role(request, role):
-                from backend.agents.context import ManagedContext
+                from open_agent_world.plugin_api.model_runtime import ManagedContext
                 import hashlib
                 manager = managed.get(role)
                 if manager is None:
@@ -1148,10 +1142,10 @@ class AtomSculptorRuntime(RuntimeProvider):
                 callbacks[role].update(evidence.tool_callbacks(role))
             if config.provider_config.get("execution_mode") == "builder":
                 callbacks["atom_sculptor"].update(evidence.tool_callbacks("atom_sculptor"))
-            from backend.agents.tool_observation import archived_tool_callbacks
+            from open_agent_world.plugin_api.model_runtime import archived_tool_callbacks
             callbacks = {role: archived_tool_callbacks(model_trace, role, values)
                          for role, values in callbacks.items()}
-            from backend.agents.request_recovery import recoverable_model
+            from open_agent_world.plugin_api.model_runtime import recoverable_model
             from .model_recovery import bounded_output_model
             role_models = {role: bounded_output_model(
                 recoverable_model(model, model_trace, role, evidence.limits.request_recovery, context_window=windows[role]), model_trace, role,
@@ -1297,7 +1291,7 @@ class AtomSculptorRuntime(RuntimeProvider):
                                     "response": {"error": "Interrupted before a confirmed tool result; outcome unknown"},
                                 })
                         role = waiting["role"].replace("_", " ")
-                        from backend.runs.recovery import recovery_state
+                        from open_agent_world.plugin_api.model_runtime import recovery_state
                         recovery_classification, recovery_receipts = await recovery_state(
                             getattr(self.context_store, "database", None),
                             getattr(self.capabilities, "services", None),
@@ -1367,13 +1361,13 @@ class AtomSculptorRuntime(RuntimeProvider):
         database = getattr(self.context_store, "database", None)
         if database is None:
             return 0
-        from backend.runs.tool_receipts import RunToolReceipts
+        from open_agent_world.plugin_api.model_runtime import RunToolReceipts
         return len(RunToolReceipts(database).list_run(run_id))
 
     def _managed_roles(self, config, context, prompt: str, model, bindings) -> dict[str, Any]:
         if self.context_store is None:
             return {}
-        from backend.agents.context import ManagedContext
+        from open_agent_world.plugin_api.model_runtime import ManagedContext
 
         if isinstance(model, str):
             model = bindings.LLMRegistry.new_llm(model)
@@ -1389,7 +1383,7 @@ class AtomSculptorRuntime(RuntimeProvider):
         )}
 
     def _context_budget(self, config, model, bindings):
-        from backend.agents.context import ContextBudget
+        from open_agent_world.plugin_api.model_runtime import ContextBudget
         limit_reader = getattr(self.model_connection_resolver, "context_limits", None)
         limits = limit_reader(config.model) if callable(limit_reader) else None
         if limits is not None:
@@ -1474,7 +1468,7 @@ class AtomSculptorRuntime(RuntimeProvider):
             from google.adk.runners import Runner
             from google.adk.sessions import InMemorySessionService
             from google.adk.models import LLMRegistry
-            from backend.agents.resilient_litellm import ResilientLiteLlm
+            from open_agent_world.plugin_api.model_runtime import ResilientLiteLlm
             from google.genai import types
             from google.adk.models.lite_llm import LiteLlm
         except ImportError as exc:

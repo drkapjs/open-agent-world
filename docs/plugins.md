@@ -7,27 +7,38 @@ This is the detailed plugin contract reference. New authors should follow
 For everyday use, see [Plugins and packs](user-guide/plugins.md).
 
 For third-party installation in a production/desktop host, use the
-[`.oawpack` distribution contract](pack-distribution.md). It combines one Pack,
-one version and one runtime owner with a dynamically loaded frontend. The source
+[`.oawpack` distribution contract](pack-distribution.md). It combines a versioned
+distribution, explicit runtime ownership and a dynamically loaded frontend. The source
 plugin contracts below remain the internal runtime and development interface.
 
 ## Using plugins
 
 Plugins add cards, relationships, tools, and runtime integrations. The backend discovers packages under the repository's `plugins/` directory and installed Python entry points at startup. Install only reviewed code: plugins execute inside the trusted backend process.
 
-After installing a package and its dependencies, restart the backend, open **Pack & Card Library**, open the plugin's pack, and add its collected cards to your deck. Installation is separate from collection and deck selection. The Store tab is a placeholder, not an online marketplace.
+After installing a package and its dependencies, restart the backend, open **Pack & Card Library**, open the plugin's pack, and add its collected cards to your deck. Installation is separate from collection and deck selection. The Store provides a remote catalog and sends verified downloads through the same installer as local `.oawpack` files.
 
-Trusted checkout plugins can declare no-argument setup hooks under the Python
-entry-point group `open_agent_world.setup`. `scripts/install-plugins.py` invokes
-only hooks belonging to the selected distributions, after their dependencies
-install successfully, in the destination Python. Normal setup, development
-startup and desktop packaging all use this path; `--dry-run` never calls hooks.
-Hooks must be idempotent, keep dependencies owned by the Pack and support the
-desktop payload's relocation. MatCreator uses this for its isolated native
-runtime. These hooks are not executed by plugin discovery, an Agent Run, plain
-`pip install`, or the `.oawpack` upload API.
+Source projects declare dependencies and execution targets in `oaw.pack.toml`.
+Reuse named dependency groups explicitly between a Pack engine and Sandbox;
+Sandbox does not inherit the entire host environment. The Library shows source,
+loaded version and per-environment readiness separately. See the
+[source declaration and diagnostics guide](pack-distribution.md#source-declaration-and-schema-3)
+for `doctor`, `build-project` and compatibility with older Packs.
 
-To disable a plugin, first remove its world objects, relationships, dependent Agent runtimes, and pending cleanup; the Library enforces these constraints. Uninstall by removing the package and restarting after removing its world dependencies. Collection and deck references survive unavailability. See [Card Library](card-library.md#availability-and-remaining-boundaries).
+`scripts/install-plugins.py` reads each declared Pack without importing it,
+registers the Python adapter with `--no-deps`, and prepares its shared adapter
+libraries and install-time environments using the same managed providers as
+archive installation. MatCreator's native worker uses its declared private
+Python environment; XRD prepares its scientific worker on first use. Existing
+undeclared plugins retain their legacy `open_agent_world.setup` hook. Discovery
+does not run setup hooks or download dependencies, and `--dry-run` does neither.
+
+The Library previews removal and checks world objects, dependent Packs, Agent
+runtimes and active work. Source Pack uninstall changes this profile's enrollment
+without deleting the checkout; archive uninstall preserves retained versions for
+reinstallation. Shared managed resources are collected only after their final
+consumer and active process lease are released. Restart unloads active code.
+Collection, deck references and user data survive removal. See
+[Card Library](card-library.md#availability-and-remaining-boundaries).
 
 ## Bundled plugin guides
 
@@ -223,7 +234,10 @@ Normal backend startup scans immediate package directories under the repository'
 `plugins/` folder. Each package declares the entry-point group above in its
 `pyproject.toml`; both `src` and flat Python package layouts are supported. No
 `-PluginPath` flag or editable installation is needed for these local packages.
-Dependencies must already be available in the backend environment.
+Declare installation intent in `oaw.pack.toml` and prepare additional adapter
+libraries with the backend interpreter running `scripts/install-plugins.py`.
+The shared adapter layer is separate from isolated host workers and Sandbox
+environments; [the distribution guide](pack-distribution.md) covers all three.
 
 The loader also discovers installed entry points. An installed entry with the
 same name and factory as a local declaration is loaded only once. Local packages
@@ -389,12 +403,12 @@ internal components. UI extensions are trusted application code, not a security
 sandbox; error boundaries isolate rendering and module-load errors, not arbitrary
 asynchronous side effects.
 
-Vite discovers immediate `plugins/*/frontend` entries at startup/build time and
-loads their view modules on demand. Restart development servers after adding a
-plugin; rebuild the frontend for production. Existing sources support Vite HMR.
-Installing a Python wheel alone does not add its UI to an existing frontend
-bundle: place its frontend source under the local plugin directory and rebuild.
-This version does not load remote JavaScript or independently versioned React.
+Vite discovers immediate `plugins/*/frontend` projects at startup/build time.
+Each project owns `package.json`, a lockfile and a build script using the public
+SDK. Development and production both load that independent build artifact;
+source edits rebuild the Pack and reload the page. Restart Vite after adding a
+new project. Installed `.oawpack` frontends load from their immutable version
+without rebuilding the host. React and the public SDK always use host instances.
 
 See [Codex](../plugins/codex/frontend/index.tsx) for a working SDK-based settings
 view and its package-owned icon.
@@ -1200,8 +1214,8 @@ removal still use the existing discovery mechanism and require a restart.
   cancellation.
 - Never cache capability authorization. Re-derive it from the live graph for every
   privileged operation.
-- Plugin packages cannot inject arbitrary frontend code. Custom browser rendering
-  requires a separately reviewed core frontend contribution.
+- Plugin frontends execute trusted browser code. Import host services through
+  `@oaw/plugin-api`; rendering error boundaries are not a security sandbox.
 
 The Greeter integration test verifies editable entry-point discovery, descriptor
 ownership, independent runtime state across registries, lifecycle updates,

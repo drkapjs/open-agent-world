@@ -27,6 +27,10 @@ class AgentCapabilityProvider(Protocol):
 
     def runtime_state_directory(self, agent_id: str) -> Path: ...
 
+    def managed_environment_root(self) -> Path:
+        """Profile data root for host-managed, rebuildable Pack environments."""
+        ...
+
     async def publish_execution(self, agent_id: str, run_id: str, snapshot: Mapping[str, Any]) -> None:
         """Publish a bounded ExecutionSnapshot for this runtime's current Run."""
         ...

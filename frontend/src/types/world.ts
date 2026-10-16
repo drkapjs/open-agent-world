@@ -241,8 +241,10 @@ export interface PackDefinition {
   packaging?: PackPackaging;
 }
 
-export interface RuntimeFrontendModule { version: string; api_version: number; url: string }
+export interface RuntimeFrontendModule { version: string; api_version: number; url: string; distribution_id?: string }
 export interface PluginCatalog {
+  /** Enabled owners, including service-only providers without visible cards. */
+  enabled_plugin_ids?: string[];
   frontend_modules?: Record<string, RuntimeFrontendModule>;
   packs: PackDefinition[];
   plugins: Array<{

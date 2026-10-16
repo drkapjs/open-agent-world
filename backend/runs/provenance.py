@@ -8,6 +8,22 @@ from pathlib import Path
 import subprocess
 
 
+def runtime_source_snapshot(plugin_components: dict[str, Path]):
+    """Capture host and plugin source provenance without exposing host layout.
+
+    Plugin components remain explicit; protected host identities cannot be
+    replaced by a plugin-supplied path. This reads files and never imports them.
+    """
+    import open_agent_world
+    backend_root = Path(__file__).resolve().parents[1]
+    public_root = Path(open_agent_world.__file__).resolve().parent
+    components = {"backend/agents": backend_root / "agents", "backend/runs": backend_root / "runs",
+                  "plugin_api": public_root / "plugin_api", "task_graph": public_root / "task_graph.py"}
+    if components.keys() & plugin_components.keys():
+        raise ValueError("Plugin provenance cannot replace a host component identity")
+    return source_snapshot({**components, **plugin_components}, repository=backend_root.parent)
+
+
 def source_snapshot(components: dict[str, Path], *, repository: Path | None = None):
     files, unavailable = {}, []
     for name, root in components.items():

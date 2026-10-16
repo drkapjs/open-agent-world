@@ -1,69 +1,21 @@
-import { transformWithEsbuild } from "vite";
 import { defineConfig } from "vitest/config";
-import { readFile } from "node:fs/promises";
-import { dirname } from "node:path";
-import { compileModule } from "svelte/compiler";
 import react from "@vitejs/plugin-react";
 import autoprefixer from "autoprefixer";
-import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { fileURLToPath, URL } from "node:url";
 import { localControlPlaneProxy, localManagementProxy } from "./server/control-plane.mjs";
+import { sourcePackArtifacts } from "./server/source-packs.mjs";
 
 const backendHttpUrl = process.env.OAW_DEV_BACKEND_HTTP_URL ?? "http://127.0.0.1:8000";
 const backendWsUrl = process.env.OAW_DEV_BACKEND_WS_URL ?? "ws://127.0.0.1:8000";
-const threlteMeasure = fileURLToPath(new URL("./src/plugins/threlteMeasure.svelte.ts", import.meta.url));
-const isThrelteMeasure = (source: string, importer?: string) =>
-  source.endsWith("/useMeasure.svelte.js") && !!importer?.replaceAll("\\", "/").includes("/@threlte/core/");
 
-export default defineConfig({
-  // Apply the same WebKit mask/backdrop fallbacks in development and releases.
+export default defineConfig(({ mode }) => ({
   css: { postcss: { plugins: [autoprefixer({ overrideBrowserslist: ["Chrome >= 109", "Firefox >= 115", "Safari >= 16.4"] })] } },
-  worker: { format: "es" },
-  // PDF.js worker is a URL asset, not a dependency to prebundle as JavaScript.
-  optimizeDeps: { include: ["sigma", "@sigma/edge-curve", "graphology", "graphology-layout-forceatlas2", "graphology-communities-louvain", "d3-contour"], exclude: ["pdfjs-dist"], esbuildOptions: { plugins: [{
-    name: "threlte-local-canvas-dimensions",
-    setup(build) {
-      // MatterViz is prebundled in dev; nested imports bypass Vite's resolver.
-      build.onResolve({ filter: /\/useMeasure\.svelte\.js$/ }, args => {
-        if (isThrelteMeasure(args.path, args.importer)) return { path: threlteMeasure, namespace: "oaw-threlte-measure" };
-      });
-      build.onLoad({ filter: /.*/, namespace: "oaw-threlte-measure" }, async () => {
-        const source = await transformWithEsbuild(await readFile(threlteMeasure, "utf8"), threlteMeasure, { loader: "ts" });
-        return { contents: compileModule(source.code, { filename: threlteMeasure, generate: "client" }).js.code,
-          loader: "js", resolveDir: dirname(threlteMeasure) };
-      });
-    },
-  }] } },
+  optimizeDeps: { include: ["sigma", "@sigma/edge-curve", "graphology", "graphology-layout-forceatlas2", "graphology-communities-louvain", "d3-contour"] },
   resolve: {
-    dedupe: ["react", "react-dom", "svelte", "matterviz", "three"],
-    alias: [
-      { find: "@oaw/plugin-api", replacement: fileURLToPath(new URL("./src/plugins/sdk.ts", import.meta.url)) },
-      { find: "pdfjs-dist", replacement: fileURLToPath(new URL("./node_modules/pdfjs-dist", import.meta.url)) },
-      { find: "lucide-react", replacement: fileURLToPath(new URL("./node_modules/lucide-react", import.meta.url)) },
-      { find: "@xyflow/react", replacement: fileURLToPath(new URL("./node_modules/@xyflow/react", import.meta.url)) },
-      // Plugin sources are siblings of `frontend`, so they cannot discover its
-      // node_modules by walking their own parent directories. Keep this narrow:
-      // MatterViz also imports `three/webgpu`, which must retain Three's package
-      // export resolution rather than being rewritten as a filesystem path.
-      { find: /^three$/, replacement: fileURLToPath(new URL("./node_modules/three/build/three.module.js", import.meta.url)) },
-      { find: /^three\/examples\/jsm\/(.*)$/, replacement: `${fileURLToPath(new URL("./node_modules/three/examples/jsm/", import.meta.url))}$1` },
-      { find: "react", replacement: fileURLToPath(new URL("./node_modules/react", import.meta.url)) },
-      { find: "react-dom", replacement: fileURLToPath(new URL("./node_modules/react-dom", import.meta.url)) },
-    ],
+    dedupe: ["react", "react-dom"],
+    alias: [{ find: "@oaw/plugin-api", replacement: fileURLToPath(new URL("./src/plugins/sdk.ts", import.meta.url)) }],
   },
-  plugins: [localControlPlaneProxy(), {
-    name: "threlte-local-canvas-dimensions",
-    enforce: "pre",
-    resolveId(source, importer) {
-      // Scope the compatibility adapter to Threlte's DOM measurement helper.
-      if (isThrelteMeasure(source, importer)) return threlteMeasure;
-    },
-  }, react(), svelte({ configFile: false })],
-  server: {
-    proxy: {
-      "/api": localManagementProxy(backendHttpUrl),
-      "/ws": localManagementProxy(backendWsUrl, true),
-    },
-  },
+  plugins: [localControlPlaneProxy(), ...(mode === "test" ? [] : [sourcePackArtifacts()]), react()],
+  server: { proxy: { "/api": localManagementProxy(backendHttpUrl), "/ws": localManagementProxy(backendWsUrl, true) } },
   test: { setupFiles: ["./src/test/setup.ts"] },
-});
+}));

@@ -3062,6 +3062,7 @@ class ApplicationServices:
         timeout_seconds: float | None = None,
         agent_id: str | None = None,
         _skill_request: RunSkillScript | None = None,
+        _background_job_id: str | None = None,
         _keep_on_disconnect: bool = False,
         _operation_id: str | None = None,
         environment_id: str | None = None,
@@ -3116,12 +3117,21 @@ class ApplicationServices:
                                 kind = "sandbox.run_skill_script"
                             authorize_invocation(self, agent_id, f"{kind}:{sandbox_id}", values)
 
+                        from backend.sandbox.pack_profiles import execution_profile_references, bind_command_profiles
+                        runtime_requirements = execution_profile_references(self, agent_id, sandbox_id,
+                            background_job_id=_background_job_id)
                         if _skill_request is not None:
                             from backend.skill_runtime import resolve_skill_mount
                             if agent_id is None:
                                 raise ResourceValidationError("Skill execution requires an Agent")
-                            execution_argv, mount = resolve_skill_mount(self, agent_id, sandbox_id, _skill_request)
+                            execution_argv, mount = resolve_skill_mount(self, agent_id, sandbox_id, _skill_request,
+                                                                      runtime_requirements=runtime_requirements)
                             options["runtime_mount"] = mount
+                        elif runtime_requirements:
+                            execution_argv, mount = bind_command_profiles(self.plugins, runtime_requirements, execution_argv)
+                            options['runtime_mount'] = mount
+                        if python_environment == 'none' and execution_argv[:4] == ['python3', '-I', '-S', '_oaw_profile/runner.py']:
+                            raise SandboxValidationError('Declared Pack environments require Sandbox Python; use auto or managed')
                         if getattr(backend, "supports_optional_python_runtime", False):
                             if isinstance(backend, SandboxManager):
                                 options["python_environment"] = python_environment
@@ -3175,16 +3185,9 @@ class ApplicationServices:
                         self._sandbox_commands[command_id] = receipt
                         self._sandbox_tasks[command_id] = asyncio.current_task()
                         save(self, sandbox_id, receipt)
-                    if isinstance(backend, SandboxManager):
-                        # Plugin bootstrap and explicit package installs mutate
-                        # the same shared interpreter. Keep this command's
-                        # receipt alive while it queues behind that preparation.
-                        await backend.wait_for_python_preparation(
-                            sandbox_id, execution_argv, python_environment,
-                            skill=_skill_request is not None,
-                        )
-                        # The graph may have changed during the wait. Never
-                        # dispatch a queued command using stale authority.
+                    async def recheck_admission() -> None:
+                        # Any asynchronous queue or interpreter preparation can
+                        # outlive the grants and dependency bindings it observed.
                         async with self._node_mutation(read_only=True):
                             self._require_card_type(sandbox_id, CardType.SANDBOX)
                             if agent_id is not None:
@@ -3195,11 +3198,33 @@ class ApplicationServices:
                                 }.items() if value is not None}
                                 kind = "sandbox.run_skill_script" if _skill_request else "sandbox.execute"
                                 authorize_invocation(self, agent_id, f"{kind}:{sandbox_id}", values)
+                            # Re-resolve Pack enablement, declarations and Skill
+                            # contents after asynchronous interpreter preparation.
+                            current_requirements = execution_profile_references(self, agent_id, sandbox_id,
+                                background_job_id=_background_job_id)
+                            if _skill_request is not None:
+                                current_argv, current_mount = resolve_skill_mount(self, agent_id, sandbox_id, _skill_request,
+                                    runtime_requirements=current_requirements)
+                            elif current_requirements:
+                                current_argv, current_mount = bind_command_profiles(self.plugins, current_requirements, argv)
+                            else:
+                                current_argv, current_mount = argv, None
+                            if current_argv != execution_argv or current_mount != options.get('runtime_mount'):
+                                raise SandboxValidationError('Pack environment or Skill changed while this command was preparing; retry the command')
                             self.resources.artifacts.assert_source_idle(sandbox_id)
                             self.summoning.assert_admission(sandbox_id)
                             if sandbox_id in self._sandbox_stopping:
                                 raise SandboxStateError('Sandbox admission is closed while termination cleanup is pending')
+                    if isinstance(backend, SandboxManager):
+                        await backend.wait_for_python_preparation(
+                            sandbox_id, execution_argv, python_environment,
+                            skill=_skill_request is not None,
+                        )
+                        await recheck_admission()
                     async def mark_command_started() -> None:
+                        # SandboxManager may prepare a new base interpreter after
+                        # the queue wait. Reauthorize at its final dispatch hook.
+                        await recheck_admission()
                         receipt["phase"] = "executing"
                         from backend.sandbox.history import save
                         save(self, sandbox_id, receipt)
@@ -4114,6 +4139,8 @@ def create_services(
         services.sandbox_backend.pack_requirements = services.plugin_bootstrap.requirements
     from backend.packs.installation import PackInstallationManager
     services.pack_installations = PackInstallationManager(settings.data_root, plugin_registry)
+    services.pack_installations.pin_loaded_resources()
+    services.pack_installations.reconcile_resources(collect=True)
     from backend.packs.marketplace import MarketplaceClient
     services.marketplace = MarketplaceClient(settings.marketplace_url)
     return services

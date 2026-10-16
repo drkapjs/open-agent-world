@@ -153,7 +153,15 @@ class CodexRuntime(RuntimeProvider):
         if self.server_command is not None:
             return list(self.server_command)
         connection = await self._discover(config)
-        return [connection["executable"], "app-server", "--listen", "stdio://"]
+        from open_agent_world.plugin_api import ExecutableEnvironmentManager, ExecutableEnvironmentSpec
+        get_root = getattr(self.capabilities, 'managed_environment_root', None)
+        manager = ExecutableEnvironmentManager(get_root() if get_root else None)
+        spec = ExecutableEnvironmentSpec('openai.codex', 'client', (), Path(__file__).parent,
+            ('codex',), ('--version',), '^codex-cli ', True)
+        # Adopt only during execution. Desktop/PATH/manual selection remains
+        # external ownership; status discovery never installs or creates state.
+        handle = await asyncio.to_thread(manager.external, spec, path=connection['executable'], verify=True)
+        return [handle.executable, "app-server", "--listen", "stdio://"]
 
     async def _tool(self, agent_id: str, name: str, arguments: dict) -> Any:
         if not isinstance(arguments, dict):

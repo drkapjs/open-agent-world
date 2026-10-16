@@ -457,7 +457,7 @@ def measure_energy_forces(folder: str, file_name: str, calculator: str,
     atoms = _load_atoms(folder, file_name)
     if isinstance(atoms, dict):
         return atoms
-    parameters = _json.loads(_local(parameters_file).read_text(), object_pairs_hook=_unique_json_fields)
+    parameters = _json.loads(_local(parameters_file).read_text(encoding="utf-8"), object_pairs_hook=_unique_json_fields)
     reference = _load_atoms(folder, reference_file) if reference_file else None
     if isinstance(reference, dict):
         return reference

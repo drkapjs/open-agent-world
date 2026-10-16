@@ -13,8 +13,8 @@ from typing import Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
-from backend.errors import RevisionConflictError
-from backend.plugins.registry import CapabilitySelector
+from open_agent_world.plugin_api import RevisionConflictError
+from open_agent_world.plugin_api import CapabilitySelector
 
 from open_agent_world.plugin_api import (
     CapabilityDefinition,
@@ -305,16 +305,12 @@ class AtomSculptorPlugin:
     descriptor = PluginDescriptor(
         id="atomsculptor",
         version="0.1.0",
-        plugin_api_version="1.26",
+        plugin_api_version="1.35",
         name="AtomSculptor",
         description="Agent-assisted atomistic structure modelling.",
-        # OAW provisions these as binary wheels in its managed Sandbox Python;
-        # they are never imported into the backend process.  This covers every
-        # bundled modelling/inspection skill without relying on a host Conda
-        # environment or a platform-specific prebuilt image.
-        python_requirements=(
-            "ase>=3.22", "matplotlib>=3.7", "numpy>=1.23", "pymatgen>=2024.0",
-        ),
+        # Ordinary runtime commands and Skill scripts use the same declared
+        # private Sandbox profile, prepared on use inside that Sandbox.
+        sandbox_environments=("modelling",),
     )
 
     def register(self, registration) -> None:

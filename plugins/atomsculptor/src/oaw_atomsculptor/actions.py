@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import json
 import posixpath
-from backend.agents.tool_execution import collect_operation_result, OperationReceiptMismatch
-from backend.sandbox.commands import python_entrypoint
+from open_agent_world.plugin_api.tool_execution import collect_operation_result, OperationReceiptMismatch
+from open_agent_world.plugin_api.sandbox import python_entrypoint
 
 
 READ_DEPENDENCIES = {"read_tool_result", "read_modelling_source", "read_skill", "read_skills", "preview_file", "inspect_artifacts", "list_resources",

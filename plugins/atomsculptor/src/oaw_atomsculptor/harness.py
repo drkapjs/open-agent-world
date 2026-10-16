@@ -13,8 +13,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from open_agent_world.plugin_api import AgentRuntimeError
 from .workflow import ModellingWorkflow, PLAN_LIMITS, PLAN_REJECTION_LIMIT
 from .actions import ExecutionActions, READ_DEPENDENCIES, inline_python
-from backend.agents.request_recovery import RequestRetryPolicy
-from backend.agents.tool_execution import tool_payload as _payload
+from open_agent_world.plugin_api.model_runtime import RequestRetryPolicy
+from open_agent_world.plugin_api.tool_execution import tool_payload as _payload
 
 
 class HarnessStopped(AgentRuntimeError):
@@ -835,7 +835,7 @@ class RunEvidence:
                 if isinstance(argv, (list, tuple)):
                     # Match an actual direct Python file invocation, not wc/cat,
                     # a shell string, python -c/-m, or an unrelated probe.
-                    from backend.sandbox.commands import python_entrypoint
+                    from open_agent_world.plugin_api.sandbox import python_entrypoint
                     entry = python_entrypoint(argv)
                     if entry and entry[0] == "script":
                         index = entry[2] - 1
@@ -993,8 +993,8 @@ class RunEvidence:
                     if not isinstance(cached, str):
                         cached = None
                         if old_source is not None and args.get("edits"):
-                            from backend.sandbox.text_edits import apply_text_edits
-                            from backend.sandbox.models import SandboxValidationError
+                            from open_agent_world.plugin_api.sandbox import apply_text_edits
+                            from open_agent_world.plugin_api.sandbox import SandboxValidationError
                             try:
                                 cached = apply_text_edits(old_source.encode(), args["edits"]).decode()
                             except (ValueError, SandboxValidationError):

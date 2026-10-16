@@ -59,6 +59,8 @@ def _skill(folder) -> Skill:
         description=description,
         instructions=instructions,
         files=contents,
+        runtime_requirements=({"owner": "atomsculptor", "environment": folder.name},)
+        if "requirements.txt" in contents else (),
     )
 
 

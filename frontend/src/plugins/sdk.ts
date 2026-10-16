@@ -27,6 +27,14 @@ export { useWorkspaceNavigation } from '../workspace/WorkspaceNavigation';
 export type { WorkspaceNavigation } from '../workspace/WorkspaceNavigation';
 export { composeWorkspace } from "../legions/workspaceRecipes";
 export type { WorkspaceCompositionItem, WorkspaceCompositionOptions, WorkspaceRecipe } from "../legions/workspaceRecipes";
+export { useModelOptions, useConnectedCards, updateCardConfig, useReadingPreferences, setReadingPreferences } from './hostServices';
+export { deploymentApiBase as hostApiBase } from '../deployment/api';
+export { ModelSelect } from '../cards/ModelSelect';
+export { DocumentMarkdown } from '../cards/DocumentMarkdown';
+export { PackDesigner, FaceDesigner, FunctionDesigner, Printer, Packer } from '../factory/FactoryViews';
+export { loadPackFrontendService } from './frontendServices';
+export type { StructureRendererService, StructureRendererHandle } from './frontendServices';
+export { READER_TRANSITION as SURFACE_TRANSITION, clamp as clampTransitionProgress, diffusionMask, blurMix, featherOpacity } from '../workspace/surfaceTransition';
 
 export interface CardStateStore {
   get(): Promise<{ value: Record<string, unknown>; revision: number }>;
@@ -222,5 +230,7 @@ export type { PluginVisualCaptureRequest, PluginVisualCaptureResult };
 export interface FrontendPlugin {
   apiVersion: 1;
   views: Record<string, ComponentType<PluginViewProps>>;
+  /** Named extensions consumed through loadPackFrontendService. */
+  services?: Record<string, unknown>;
 }
 export {ArrowLeft,ArrowRight,Play,Pause,RotateCcw,Square,Link2,Settings2} from "lucide-react";

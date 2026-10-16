@@ -194,7 +194,7 @@ def load_inputs(argv=None):
     manifests = [args[i+1] for i, v in enumerate(args[:-1]) if v == "--oaw-input-manifest"]
     if (args and args[-1] == "--oaw-input-manifest") or len(manifests) > 1:
         raise ValueError("Expected one --oaw-input-manifest PATH")
-    return HostInputs(json.loads(Path(manifests[0]).read_text()) if manifests else [])
+    return HostInputs(json.loads(Path(manifests[0]).read_text(encoding="utf-8")) if manifests else [])
 
 
 def transform_points(points, source_frame, target_frame):

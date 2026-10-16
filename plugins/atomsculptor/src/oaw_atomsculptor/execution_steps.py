@@ -13,7 +13,7 @@ from collections.abc import Mapping
 from copy import deepcopy
 from types import SimpleNamespace
 
-from backend.agents.tool_execution import execute_tool, tool_payload as _payload
+from open_agent_world.plugin_api.tool_execution import execute_tool, tool_payload as _payload
 
 
 from .workflow import EXPERIMENT_SCHEMA, script_target
@@ -426,8 +426,8 @@ class ExecutionSteps:
         if mode == "patch" and any(not v["old"] or v["old"] == v["new"] for v in edits):
             return error("step_no_change", "Patch old/new must describe a real change; no command ran.")
         if mode == "patch" and key in evidence.script_sources:
-            from backend.sandbox.text_edits import apply_text_edits
-            from backend.sandbox.models import SandboxValidationError
+            from open_agent_world.plugin_api.sandbox import apply_text_edits
+            from open_agent_world.plugin_api.sandbox import SandboxValidationError
             try:
                 preview = apply_text_edits(evidence.script_sources[key].encode(), edits)
             except (ValueError, SandboxValidationError) as exc:
@@ -592,7 +592,7 @@ class ExecutionSteps:
                     # Python puts the invoked script's directory on sys.path,
                     # not necessarily its workspace cwd. No source/env rewrite.
                     helper_path = posixpath.join(posixpath.dirname(key[1]), self.helper_module + ".py")
-                    helper_source = Path(__file__).with_name("modelling_io.py").read_text()
+                    helper_source = Path(__file__).with_name("modelling_io.py").read_text(encoding="utf-8")
                     if helper_path not in confirmed:
                         rejected = await save_input(helper_path, helper_source)
                         if rejected:

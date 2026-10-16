@@ -30,6 +30,14 @@ class SkillAsset(BaseModel):
     media_type: str = "application/octet-stream"
 
 
+class SkillRuntimeRequirement(BaseModel):
+    """Reference an installed Pack's Sandbox recipe; never host installation code."""
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    owner: str = Field(min_length=1, max_length=120, pattern=r"^[a-z][a-z0-9]*(?:[._:/-][a-z0-9]+)*$")
+    environment: str = Field(min_length=1, max_length=120, pattern=r"^[a-z][a-z0-9]*(?:[._:/-][a-z0-9]+)*$")
+    digest: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+
+
 class Skill(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: str = Field(default_factory=lambda: uuid4().hex, min_length=1, max_length=80, pattern=r"^[a-zA-Z0-9_-]+$")
@@ -40,6 +48,7 @@ class Skill(BaseModel):
     files: dict[str, str | SkillAsset] = Field(default_factory=dict)
     directories: list[str] = Field(default_factory=list)
     defaults: dict[str, Any] = Field(default_factory=dict)
+    runtime_requirements: tuple[SkillRuntimeRequirement, ...] = Field(default=(), max_length=20)
 
     @model_validator(mode="after")
     def file_tree(self):

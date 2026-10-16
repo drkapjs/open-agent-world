@@ -1015,7 +1015,7 @@ class ModellingWorkflow:
                 path = args.get("script_path") if name == "run_modelling_step" else args.get("path") if name == "write_sandbox_text_file" else None
                 argv = args.get("argv")
                 if name == "execute_command" and isinstance(argv, list) and len(argv) >= 2:
-                    from backend.sandbox.commands import python_entrypoint
+                    from open_agent_world.plugin_api.sandbox import python_entrypoint
                     entry = python_entrypoint(argv)
                     if entry and entry[0] == "script":
                         path = entry[1]

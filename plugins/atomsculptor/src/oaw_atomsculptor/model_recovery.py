@@ -36,7 +36,7 @@ def bounded_output_model(model: Any, trace: Any, role: str, evidence: Any,
         return model
     from google.adk.models.base_llm import BaseLlm
     from pydantic import Field
-    from backend.agents.request_recovery import _snapshot
+    from open_agent_world.plugin_api.model_runtime import snapshot_request as _snapshot
 
     class BoundedOutputModel(BaseLlm):
         delegate: Any = Field(exclude=True)

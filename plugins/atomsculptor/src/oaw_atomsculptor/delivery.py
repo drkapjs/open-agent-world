@@ -20,7 +20,7 @@ from importlib.resources import files
 from types import SimpleNamespace
 from typing import Any
 
-from backend.agents.tool_execution import (
+from open_agent_world.plugin_api.tool_execution import (
     execute_tool, tool_payload as _payload, collect_operation_result, OperationReceiptMismatch,
 )
 
@@ -47,7 +47,7 @@ def _cli_parameters(command):
     The existing Skill CLI derives its options from these same signatures.
     No model source, external Skill content or function body is executed here.
     """
-    source = files(__package__).joinpath("skills/structure-inspect/scripts/structure_inspect.py").read_text()
+    source = files(__package__).joinpath("skills/structure-inspect/scripts/structure_inspect.py").read_text(encoding="utf-8")
     function = next(node for node in ast.parse(source).body
                     if isinstance(node, ast.FunctionDef) and node.name == command)
     count = len(function.args.args) - len(function.args.defaults)

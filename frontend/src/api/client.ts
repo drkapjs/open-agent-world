@@ -345,6 +345,9 @@ export const worldApi = {
       { method: 'POST', headers: { 'X-OAW-Pack-Install': '1' }, signal });
   },
   getInstalledPacks(): Promise<import('../types/packs').PackInstallations> { return request('/packs'); },
+  getPackUninstallPlan(id: string): Promise<import('../types/packs').PackUninstallPlan> {
+    return request(`/packs/${encodeURIComponent(id)}/uninstall-plan`);
+  },
   inspectPack(file: File): Promise<import('../types/packs').PackInspection> {
     return request('/packs/inspect', { method: 'POST', headers: { 'Content-Type': 'application/vnd.oaw.pack', 'X-OAW-Pack-Install': '1' }, body: file });
   },

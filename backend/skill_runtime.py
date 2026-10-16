@@ -49,7 +49,8 @@ def skill_script_schema():
     return schema
 
 
-def resolve_skill_mount(services, agent_id: str, sandbox_id: str, request: RunSkillScript):
+def resolve_skill_mount(services, agent_id: str, sandbox_id: str, request: RunSkillScript,
+                        *, runtime_requirements=()):
     """Called at command submission, never from saved equipment or tool state."""
     services.capabilities.require_sandbox_execute(agent_id, sandbox_id)
     skill_node = services.world.get_card(request.skill_id)
@@ -69,4 +70,9 @@ def resolve_skill_mount(services, agent_id: str, sandbox_id: str, request: RunSk
     # Membership is validated before any backend receives the request.
     from pathlib import PurePosixPath
     mount.command(argv, PurePosixPath("/.oaw") / bundle.key)
+    references = (*runtime_requirements, *skill.runtime_requirements)
+    if references:
+        from backend.sandbox.pack_profiles import bind_profiles
+        return bind_profiles(services.plugins, references, bundle,
+                             interpreter, request.script_path, request.argv)
     return argv, mount
