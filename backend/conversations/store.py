@@ -515,7 +515,9 @@ class ConversationStore:
                                   if isinstance(lifecycle.get("confirmed_tool_count"), int) else None),
             tool_count=int(lifecycle.get("tool_count") or len(trace)),
             tool_trace=trace[-50:],
-            tool_trace_truncated=bool(lifecycle.get('tool_trace_truncated')) or len(trace) > 50,
+            tool_trace_truncated=bool(lifecycle.get("tool_trace_truncated")) or len(trace) > 50,
+            structure_outcomes=lifecycle.get("structure_outcomes") or {},
+            delivery_state=lifecycle.get("delivery_state"),
         )
 
     @staticmethod

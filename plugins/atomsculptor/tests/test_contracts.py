@@ -16,7 +16,7 @@ from backend.capabilities.provider import _CapabilityContext
 from backend.agents.context import Checkpoint, ContextBudget, ManagedContext, replayable_contents
 from backend.errors import ResourceValidationError
 
-from oaw_atomsculptor import AtomSculptorAgentConfig, AtomSculptorPlugin, BUILD_SUPERCELL, IMPORT_FILE, OBSERVE, OBSERVE_INPUT_SCHEMA, ObserveStructure, READ, RECORD_CANDIDATES, RECORD_INTERFACE_CANDIDATES_INPUT_SCHEMA, STAGE_FILE, WRITE, WRITE_INPUT_SCHEMA, _build_supercell, _import_structure_file, _observe, _stage_structure_file, _structure_digest, _structure_overview, _write, create_plugin
+from oaw_atomsculptor import AtomSculptorAgentConfig, AtomSculptorPlugin, BUILD_SUPERCELL, IMPORT_FILE, OBSERVE, OBSERVE_INPUT_SCHEMA, ObserveStructure, READ, RECORD_CANDIDATES, RECORD_INTERFACE_CANDIDATES_INPUT_SCHEMA, STAGE_FILE, WRITE, WRITE_INPUT_SCHEMA, _build_supercell, _import_structure_file, _observe, _stage_structure_file, _structure_overview, _write, create_plugin
 from oaw_atomsculptor.runtime import (
     AtomSculptorRuntime,
     BUILDER_INSTRUCTION,
@@ -91,7 +91,7 @@ class StructureContractTests(unittest.TestCase):
         overview = _structure_overview(document, revision=2, detail="summary", offset=0, limit=100)
         self.assertEqual(overview["revision"], 2)
         self.assertEqual(overview["value"]["atom_count"], 520)
-        self.assertEqual(len(overview["structure_digest"]), 64)
+        self.assertNotIn("structure_digest", overview)
         self.assertNotIn("atoms", overview["value"])
         window = _structure_overview(document, revision=2, detail="atoms", offset=200, limit=100)["atom_window"]
         self.assertEqual((window["offset"], window["returned"], window["total"]), (200, 100, 520))
@@ -117,6 +117,17 @@ class StructureContractTests(unittest.TestCase):
         self.assertIn("python3", BUILDER_INSTRUCTION)
         self.assertIn("heredocs", BUILDER_INSTRUCTION)
         self.assertIn("`structure-inspect`, never `structure_inspect`", BUILDER_INSTRUCTION)
+
+    def test_direct_builder_uses_user_delivery_instead_of_specialist_report(self) -> None:
+        from oaw_atomsculptor.runtime import DIRECT_DELIVERY, SPECIALIST_DELIVERY
+        class Agent:
+            def __init__(self, **values):
+                self.__dict__.update(values)
+        config = AgentConfig("fixture", "Fixture", provider_config={"execution_mode": "builder"})
+        direct = _build_team(SimpleNamespace(Agent=Agent), "fixture", config, {"structure_builder": []})
+        self.assertIn(DIRECT_DELIVERY, direct.instruction)
+        self.assertNotIn(SPECIALIST_DELIVERY, direct.instruction)
+        self.assertNotIn("Return one compact JSON object", direct.instruction)
 
     def test_sandbox_text_write_checks_live_execute_grant(self) -> None:
         calls = []
@@ -172,12 +183,17 @@ class StructureContractTests(unittest.TestCase):
             SimpleNamespace(role="user", parts=[response]),
         ])
         _trim_specialist_history(SimpleNamespace(types=types), trace, "structure_builder", request)
-        self.assertEqual(request.contents[1].parts, [call, signed])
+        self.assertEqual(request.contents[1].parts, [unsigned, call, signed])
         self.assertIs(request.contents[2].parts[0], response)
+        self.assertTrue(trace.queue.empty())
+        # With no signed prefix, unsigned thought omission remains allowed.
+        request.contents[1].parts = [unsigned, call]
+        _trim_specialist_history(SimpleNamespace(types=types), trace, "structure_builder", request)
+        self.assertEqual(request.contents[1].parts, [call])
         notice = trace.queue.get_nowait()[1]
         self.assertEqual(notice["unsigned_thought_parts_omitted"], 1)
 
-    def test_completed_sandbox_script_body_is_not_replayed_to_builder(self) -> None:
+    def test_completed_sandbox_script_preserves_real_source_and_receipt(self) -> None:
         types = SimpleNamespace(
             Content=lambda **kwargs: SimpleNamespace(**kwargs),
             FunctionCall=lambda **kwargs: SimpleNamespace(**kwargs),
@@ -197,9 +213,9 @@ class StructureContractTests(unittest.TestCase):
         saved_call = request.contents[0].parts[0].function_call
         self.assertEqual(saved_call.id, "save-1")
         self.assertEqual(saved_call.args["path"], "build.py")
-        self.assertEqual(saved_call.args["content"], "<saved to Sandbox workspace>")
+        self.assertEqual(saved_call.args["content"], source)
         self.assertEqual(request.contents[1].parts[0].function_response.response["written"], len(source))
-        self.assertEqual(trace.queue.get_nowait()[1]["saved_script_bodies_omitted"], 1)
+        self.assertTrue(trace.queue.empty())
 
     def test_model_stream_disconnect_is_distinct_from_sandbox_failure(self) -> None:
         class MidStreamFallbackError(Exception):
@@ -561,7 +577,7 @@ class RuntimeContractTests(unittest.TestCase):
             return callbacks, [await queue.get(), await queue.get(), await queue.get()]
 
         callbacks, events = asyncio.run(exercise())
-        self.assertEqual(callbacks["include_contents"], "none")
+        self.assertEqual(callbacks["include_contents"], "default")
         self.assertEqual(calls, ["before", "after"])
         self.assertEqual([item[1]["model_request"] for item in events], [1, 1, 1])
         self.assertEqual([item[1]["phase"] for item in events], ["context", "model", "model"])
@@ -795,8 +811,8 @@ class RuntimeContractTests(unittest.TestCase):
 
     def test_instructions_bound_specialist_retries_and_treat_invocations_as_independent(self) -> None:
         self.assertIn("independent task", ROOT_INSTRUCTION)
-        self.assertIn("at most two times", ROOT_INSTRUCTION)
-        self.assertIn("tell the user which delegation failed", " ".join(ROOT_INSTRUCTION.split()))
+        self.assertIn("requires new executed evidence for each review", ROOT_INSTRUCTION)
+        self.assertIn("needs_plan_review", ROOT_INSTRUCTION)
         self.assertIn("Never replace a specialist by deriving", ROOT_INSTRUCTION)
         self.assertIn("independent task", PLANNER_INSTRUCTION)
         self.assertIn("Call finish_task immediately", PLANNER_INSTRUCTION)
@@ -866,7 +882,7 @@ class RuntimeContractTests(unittest.TestCase):
 
         allowed, denied, notice = asyncio.run(exercise())
         self.assertEqual(allowed, [None, None])
-        self.assertIn("already called twice", denied["error"])
+        self.assertIn("budget exhausted", denied["error"])
         self.assertEqual(notice[0], "progress")
 
     def test_specialists_have_distinct_graph_scoped_tool_sets(self) -> None:
@@ -878,7 +894,8 @@ class RuntimeContractTests(unittest.TestCase):
         names = lambda role: {tool.name for tool in _role_definitions(definitions, role)}
         self.assertIn("task_board_read", names("planner"))
         self.assertIn("inspect_atom_structure", names("planner"))
-        self.assertNotIn("read_skills", names("planner"))
+        self.assertIn("read_skills", names("planner"))
+        self.assertNotIn("run_skill_script", names("planner"))
         self.assertNotIn("observe_atom_structure", names("planner"))
         self.assertNotIn("replace_atom_structure", names("planner"))
         self.assertIn("replace_atom_structure", names("structure_builder"))
@@ -1050,7 +1067,10 @@ class RuntimeContractTests(unittest.TestCase):
         plugin.register(real)
         self.assertIn("atomsculptor.adk-team", real.runtime_provider_model_resolvers)
         self.assertIn("atomsculptor.adk-team", real.runtime_provider_context_stores)
-        self.assertEqual(plugin.descriptor.plugin_api_version, "1.24")
+        self.assertEqual(plugin.descriptor.plugin_api_version, "1.26")
+        defaults = real.nodes["atomsculptor.agent"].default_equipment
+        self.assertEqual([(item.key, item.type, item.relationship) for item in defaults],
+                         [("skills", "atomsculptor.skills", "atomsculptor.skills.use")])
         self.assertIn(OBSERVE, real.capability_handlers)
         self.assertTrue(real.capabilities[READ].read_only)
         self.assertTrue(real.capabilities[OBSERVE].read_only)
@@ -1204,42 +1224,35 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertNotIn("atoms", loaded)
         self.assertIn(b'"id":7', next(iter(context.files.values())))
 
-    def test_file_import_rebases_only_selection_changes(self) -> None:
+    def test_file_import_uses_native_revision_without_digest_protocol(self) -> None:
         import json
         from backend.errors import RevisionConflictError
 
         original = StructureDocument(atoms=[Atom(id=7, symbol="C", x=1, y=2, z=3)]).model_dump(mode="json")
-        digest = _structure_digest(original)
-        changed_selection = {**original, "selected_atom_ids": [7]}
 
         class Context:
-            document = changed_selection
             revision = 3
+            written = None
 
             async def read_sandbox_workspace_file(self, _capability, _sandbox_id, _path):
                 return json.dumps(original).encode()
 
             async def node_document_action(self, _capability, action, arguments, expected_revision=None):
-                if action == "import_preflight":
-                    return {"revision": self.revision, "value": self.document}
+                if expected_revision != self.revision:
+                    raise RevisionConflictError("Document revision changed")
                 self.written = (arguments["structure"], expected_revision)
                 return {"revision": self.revision + 1, "summary": {"atom_count": 1}}
 
         context = Context()
-        result = asyncio.run(_import_structure_file(context, "write", {
-            "sandbox_id": "sandbox", "file_name": "output.json", "expected_revision": 2,
-            "expected_structure_digest": digest,
-        }))
-        self.assertEqual(result["revision"], 4)
-        self.assertEqual(context.written[1], 3)
-        self.assertEqual(context.written[0]["selected_atom_ids"], [7])
-
-        context.document = {**changed_selection, "atoms": [{**original["atoms"][0], "x": 9.0}]}
+        args = {"sandbox_id": "sandbox", "file_name": "output.json", "expected_revision": 2}
         with self.assertRaises(RevisionConflictError):
-            asyncio.run(_import_structure_file(context, "write", {
-                "sandbox_id": "sandbox", "file_name": "output.json", "expected_revision": 2,
-                "expected_structure_digest": digest,
-            }))
+            asyncio.run(_import_structure_file(context, "write", args))
+        self.assertIsNone(context.written)
+        result = asyncio.run(_import_structure_file(context, "write", {**args, "expected_revision": 3}))
+        self.assertEqual(result["revision"], 4)
+        self.assertEqual(context.written, (original, 3))
+        self.assertNotIn("file_sha256", result)
+        self.assertNotIn("structure_digest", result)
 
     def test_agent_supercell_tool_forwards_the_inspected_revision(self) -> None:
         class Context:

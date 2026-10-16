@@ -100,13 +100,16 @@ export function RunActivityDetails({ run, activity, finalReply, showModelRequest
   const count = run?.tool_count ?? activity?.items.filter(item => item.type.startsWith("tool_")).length ?? 0;
   const seconds = run?.started_at && run.finished_at
     ? Math.max(0, Math.round((Date.parse(run.finished_at) - Date.parse(run.started_at)) / 1000)) : undefined;
+  const importedBeforeFailure = run?.delivery_state === "failed"
+    && Object.values(run.structure_outcomes ?? {}).some(outcome => outcome.phase === "confirmed");
   if (!run && detailsActivity && !detailsActivity.items.length && !detailsActivity.truncated && !count) return null;
   return <details className="run-activity-history" open={open} onToggle={event => {
     // Ignore toggle events from nested tool disclosures.
     if (event.target === event.currentTarget) setOpen(event.currentTarget.open);
   }}>
-    <summary>{run ? `${t(runStatusLabel(run.status))} · ` : ''}{seconds === undefined ? t("Execution details") : t("Worked for {v0}s", { v0: seconds })}
+    <summary>{run ? `${importedBeforeFailure ? t("Structure verified; final reply failed") : t(runStatusLabel(run.status))} · ` : ''}{seconds === undefined ? t("Execution details") : t("Worked for {v0}s", { v0: seconds })}
       {count ? ` · ${count} ${t("tool calls")}` : ""}</summary>
+    {importedBeforeFailure ? <p>{t("Structure write verified; final reply failed. Inspect the current structure before retrying.")}</p> : null}
     {open ? <RunActivityStream activity={detailsActivity} runId={run?.run_id} showModelRequests={showModelRequests} /> : null}
   </details>;
 }

@@ -8,6 +8,10 @@ def activity_update(lifecycle: dict[str, Any], kind: str, payload: dict[str, Any
                     event_id: str, timestamp: str) -> dict[str, Any]:
     if kind == "agent_progress":
         updates = {}
+        if payload.get("stage") in {"imported", "confirmed"} and isinstance(payload.get("target"), str):
+            outcomes = dict(lifecycle.get("structure_outcomes") or {})
+            outcomes[payload["target"]] = {"phase": payload["stage"], "revision": payload.get("revision")}
+            updates["structure_outcomes"] = outcomes
         if payload.get("kind") == "model_reasoning" or payload.get("phase") not in {"context", "model", "model_recovery", "model_preflight_rejected"}:
             return updates
         if not isinstance(payload.get("model_request"), int):

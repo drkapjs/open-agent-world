@@ -205,6 +205,13 @@ describe("Run activity surface", () => {
 });
 
 describe("Completed Run details", () => {
+  it("distinguishes confirmed structure writes from failed final reply delivery", () => {
+    useLocale.setState({ locale: "en" });
+    render(<RunActivityDetails run={{ run_id: "failed", agent_id: "agent", status: "failed",
+      tool_count: 1, tool_trace: [], delivery_state: "failed",
+      structure_outcomes: { structure: { phase: "confirmed", revision: 2 } } }} />);
+    expect(screen.getByText(/Structure verified; final reply failed/)).toBeTruthy();
+  });
   it("keeps the final reply outside expanded details while preserving commentary and tools", () => {
     useLocale.setState({ locale: "en" });
     const completed: RunActivityState = { ...activity, items: [

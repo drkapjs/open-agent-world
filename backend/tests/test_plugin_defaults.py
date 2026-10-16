@@ -181,6 +181,21 @@ def test_lifecycle_creation_failure_also_removes_equipment_and_events(tmp_path, 
         assert services.events.sequence == before
 
 
+def test_atomsculptor_uses_the_same_default_equipment_contract(tmp_path):
+    with app(tmp_path) as client:
+        from backend.capabilities.provider import WorldAgentCapabilityProvider
+        agent = create_node(client, "atomsculptor.agent")["id"]
+        box = owned(client, agent)[0]
+        assert box["type"] == "atomsculptor.skills"
+        assert len(document(client, box["id"])["value"]["skills"]) == 18
+        provider = WorldAgentCapabilityProvider(client.app.state.services)
+        tools = client.portal.call(provider.list_tools, agent)
+        read = next(tool for tool in tools if tool.name == "read_skills")
+        listing = client.portal.call(provider.invoke_tool, agent, read.capability_id, {"toolbox": box["id"]})
+        assert len(listing["skills"]) == 18
+        assert any(row["skill_id"] == "structure-inspect" for row in listing["skills"])
+        assert not any(tool.name == "run_skill_script" for tool in tools)
+        assert not client.get("/api/edges").json()
 
 
 def test_existing_builtin_skills_are_not_updated_on_plugin_changes(tmp_path):

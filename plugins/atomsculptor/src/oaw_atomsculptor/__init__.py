@@ -8,7 +8,6 @@ document contract rather than on the retired AtomSculptor Sandbox APIs.
 from __future__ import annotations
 
 from collections import Counter
-from hashlib import sha256
 import json
 from typing import Literal
 from uuid import uuid4
@@ -21,6 +20,7 @@ from open_agent_world.plugin_api import (
     CapabilityDefinition,
     CapabilityGrantDefinition,
     AgentNodeBehavior,
+    DefaultEquipment,
     NodeDocumentAction,
     NodeDocumentDefinition,
     NodeTypeDefinition,
@@ -33,6 +33,7 @@ from open_agent_world.skill_packages import register_skill_package
 from . import structure
 from .skill_package import atomsculptor_skills
 from .runtime import AtomSculptorRuntime
+from .harness import HarnessLimits
 
 
 READ = "atomsculptor.structure.read"
@@ -94,8 +95,13 @@ class AtomSculptorAgentConfig(BaseModel):
     runtime_provider_id: Literal["atomsculptor.adk-team"] = "atomsculptor.adk-team"
     model: str = "oaw:default"
     max_concurrent_runs: Literal[1] = 1
+    # Disable the native outer deadline as well as the plugin total budget.
+    run_execution_deadline_seconds: float | None = Field(default=0, ge=0,
+        json_schema_extra={"privileged": True})
     inherit_legion_model: Literal[False] = False
     system_instruction: str = "Coordinate atomistic modelling through the connected OAW resources."
+    harness: HarnessLimits = Field(default_factory=HarnessLimits)
+    execution_mode: Literal["team", "builder"] = "team"
 
 
 class ObserveStructure(BaseModel):
@@ -134,15 +140,9 @@ class ImportStructureFile(BaseModel):
     model_config = ConfigDict(extra="forbid")
     file_name: str = Field(min_length=1, max_length=4096)
     expected_revision: int = Field(ge=0)
-    expected_structure_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
-def _structure_digest(document: dict) -> str:
-    """Hash persisted modelling state without transient atom/layer selection."""
-    structural = {key: value for key, value in document.items()
-                  if key not in {"selected_atom_ids", "active_layer_ids"}}
-    raw = json.dumps(structural, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return sha256(raw.encode("utf-8")).hexdigest()
+
 
 
 def _structure_overview(document: dict, *, revision: int, detail: str, offset: int, limit: int) -> dict:
@@ -201,7 +201,6 @@ def _structure_overview(document: dict, *, revision: int, detail: str, offset: i
     }
     response = {
         "revision": revision,
-        "structure_digest": _structure_digest(document),
         "summary": {
             "atom_count": len(atoms),
             "formula": formula,
@@ -284,8 +283,7 @@ async def _stage_structure_file(context, capability, arguments):
     await context.write_sandbox_workspace_file(capability, sandbox_id, file_name, raw)
     return {"file_name": file_name, "sandbox_id": sandbox_id,
             "revision": snapshot["revision"], "atom_count": len(snapshot["value"].get("atoms", [])),
-            "size_bytes": len(raw), "sha256": sha256(raw).hexdigest(),
-            "structure_digest": _structure_digest(snapshot["value"])}
+            "size_bytes": len(raw)}
 
 
 async def _import_structure_file(context, capability, arguments):
@@ -296,25 +294,8 @@ async def _import_structure_file(context, capability, arguments):
         parsed = json.loads(raw)
     except (UnicodeDecodeError, ValueError) as exc:
         raise ValueError("Sandbox file must contain a valid Atom Structure JSON document") from exc
-    current = await context.node_document_action(capability, "import_preflight", {})
-    revision = request.expected_revision
-    if current["revision"] != revision:
-        if not request.expected_structure_digest or _structure_digest(current["value"]) != request.expected_structure_digest:
-            raise RevisionConflictError("Structure changed; inspect it again before importing the Sandbox file")
-        if not isinstance(parsed, dict):
-            raise ValueError("Sandbox file must contain an Atom Structure JSON object")
-        # Only selection changed. Preserve the user's latest UI intent while
-        # retaining optimistic revision checking at the actual write.
-        atom_ids = {atom.get("id") for atom in parsed.get("atoms", []) if isinstance(atom, dict)}
-        parsed["selected_atom_ids"] = [atom_id for atom_id in current["value"].get("selected_atom_ids", [])
-                                       if atom_id in atom_ids]
-        layer_ids = {layer.get("id") for layer in parsed.get("layers", []) if isinstance(layer, dict)}
-        active = [layer_id for layer_id in current["value"].get("active_layer_ids", []) if layer_id in layer_ids]
-        if active:
-            parsed["active_layer_ids"] = active
-        revision = current["revision"]
     updated = await context.node_document_action(
-        capability, "import_structure_file", {"structure": parsed}, expected_revision=revision,
+        capability, "import_structure_file", {"structure": parsed}, expected_revision=request.expected_revision,
     )
     return {"file_name": request.file_name, "sandbox_id": sandbox_id,
             "revision": updated["revision"], "summary": updated["summary"]}
@@ -324,7 +305,7 @@ class AtomSculptorPlugin:
     descriptor = PluginDescriptor(
         id="atomsculptor",
         version="0.1.0",
-        plugin_api_version="1.24",
+        plugin_api_version="1.26",
         name="AtomSculptor",
         description="Agent-assisted atomistic structure modelling.",
         # OAW provisions these as binary wheels in its managed Sandbox Python;
@@ -411,7 +392,7 @@ class AtomSculptorPlugin:
             CapabilityDefinition(
                 kind=IMPORT_FILE,
                 tool_name="import_atom_structure_file",
-                description="Replace the Atom Structure from a validated JSON file in an authorized Sandbox without returning its atoms to the model. Generate that file with structure-inspect's to_atomsculptor_document --output-name; inspect the current Structure and pass expected_revision plus structure_digest. If only UI selection changed, the import preserves its latest stable IDs.",
+                description="Replace the Atom Structure from a validated JSON file in an authorized Sandbox without returning its atoms to the model. Generate that file with structure-inspect's to_atomsculptor_document --output-name; inspect the current Structure and pass expected_revision.",
                 input_schema=ImportStructureFile.model_json_schema(),
                 selectors=(_SANDBOX_SELECTOR,),
                 target_capabilities=frozenset({WRITE}),
@@ -436,6 +417,8 @@ class AtomSculptorPlugin:
                 traits=frozenset({"core.agent", "ui.schema-agent.v1"}),
                 surfaces={"preview": True, "inspector": True, "workspace": True},
                 lifecycle=AgentNodeBehavior(),
+                default_equipment=(DefaultEquipment(key="skills", type="atomsculptor.skills",
+                    relationship="atomsculptor.skills.use"),),
                 templateable=True,
                 template_status="idle",
             )

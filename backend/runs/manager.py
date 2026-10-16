@@ -498,7 +498,11 @@ class RunManager:
             self._suspensions.pop(run_id, None)
             self._release_settled_capacity(run_id)
             self._terminal_done.setdefault(run_id, asyncio.Event()).set()
-            record = self.store.update_lifecycle(run_id, holds_capacity=self.holds_agent_slot(run_id), awaiting=None)
+            outcomes = record.lifecycle.get("structure_outcomes") or {}
+            delivery = ({"delivery_state": "succeeded" if target is RunStatus.SUCCEEDED else "failed"}
+                        if outcomes else {})
+            record = self.store.update_lifecycle(run_id, holds_capacity=self.holds_agent_slot(run_id), awaiting=None,
+                **delivery)
         await self._publish_run(record, event_type)
         if current.status is RunStatus.WAITING and target is RunStatus.RUNNING:
             await self._publish_agent_operational(record.agent_id, "running", run_id)

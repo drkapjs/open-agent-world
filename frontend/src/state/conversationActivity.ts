@@ -140,6 +140,8 @@ export function activeConversationRuns(
       confirmed_tool_count: durable?.confirmed_tool_count ?? existing?.confirmed_tool_count,
       tool_count: durable?.tool_count ?? existing?.tool_count ?? 0,
       tool_trace: [...(durable?.tool_trace ?? existing?.tool_trace ?? [])],
+      structure_outcomes: durable?.structure_outcomes ?? existing?.structure_outcomes,
+      delivery_state: durable?.delivery_state ?? existing?.delivery_state,
       tool_trace_truncated: durable?.tool_trace_truncated ?? existing?.tool_trace_truncated,
       live_text: existing?.live_text,
     };

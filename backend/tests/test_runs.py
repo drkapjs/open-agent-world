@@ -868,6 +868,18 @@ async def test_native_execution_deadline_override_retains_default_and_stop(tmp_p
         services.close()
 
 
+def test_native_deadline_uses_atomsculptor_default_for_existing_card(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from oaw_atomsculptor import AtomSculptorAgentConfig
+    services = _services(tmp_path, RecordingProvider())
+    try:
+        manager = services._require_run_manager()
+        monkeypatch.setattr(manager.plugins, "node_type", lambda _: SimpleNamespace(config_model=AtomSculptorAgentConfig))
+        assert manager._execution_deadline(SimpleNamespace(type="atomsculptor.agent", config={})) is None
+        assert manager._execution_deadline(SimpleNamespace(type="atomsculptor.agent",
+            config={"run_execution_deadline_seconds": 90})) == 90
+    finally:
+        services.close()
 
 
 @pytest.mark.asyncio

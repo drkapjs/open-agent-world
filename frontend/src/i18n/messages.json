@@ -5,6 +5,8 @@
   "Model input": ["Model input", "模型输入"],
   "Model response": ["Model response", "模型响应"],
   "Details incomplete": ["Details incomplete", "详情不完整"],
+  "Structure verified; final reply failed": ["Structure verified; final reply failed", "结构已验证，最终答复失败"],
+  "Structure write verified; final reply failed. Inspect the current structure before retrying.": ["Structure write verified; final reply failed. Inspect the current structure before retrying.", "结构写回已验证，但最终答复失败。重试前请检查当前结构。"],
   "Model attempt": ["Model attempt", "请求尝试"],
   "Agent color": ["Agent color","Agent 颜色"],
   "Workstream": ["Workstream","工作脉络"],

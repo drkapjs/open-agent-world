@@ -85,6 +85,50 @@ def test_native_idle_interruption_retains_attempt_diagnostics_without_faking_ret
     assert row["watchdog_scope"] == "adapter_content" and row["error_chain_types"] == ["ModelStreamStalled"]
 
 
+@pytest.mark.asyncio
+async def test_complete_metrics_and_structure_outcome_survive_failed_delivery(tmp_path):
+    class Provider(RecordingProvider):
+        async def execute(self, config, context, runtime_input):
+            def event(kind, payload):
+                return AgentEvent(context.agent_id, context.run_id, kind, payload)
+            for i in range(30):
+                yield event(AgentEventType.TOOL_STARTED, {"name": "inspect", "call_id": str(i)})
+                yield event(AgentEventType.TOOL_COMPLETED, {"name": "inspect", "call_id": str(i), "response": {"revision": i}})
+                yield event(AgentEventType.PROGRESS, {"kind": "status", "phase": "model", "model_request": i,
+                    "role": "builder", "model_attempt": 1, "text": "started"})
+                yield event(AgentEventType.PROGRESS, {"kind": "status", "phase": "model", "model_request": i,
+                    "role": "builder", "model_attempt": 1, "elapsed_ms": 1000,
+                    "input_tokens": 10, "output_tokens": 2, "text": "returned"})
+            for stage in ("imported", "confirmed"):
+                yield event(AgentEventType.PROGRESS, {"stage": stage, "target": "structure", "revision": 2, "text": stage})
+            raise RuntimeError("final reply failed")
+    services = _services(tmp_path, Provider())
+    try:
+        agent = await services.create_card(CardCreate(type="agent", name="Fixture"))
+        manager = services._require_run_manager()
+        run = await manager.start_run(agent.id, "build")
+        settled = await manager.wait_execution(run.run_id)
+        assert settled.status is RunStatus.FAILED
+        life = settled.lifecycle
+        assert life["execution"] == "finished"
+        assert len(life["tool_trace"]) == 50 and life["tool_trace_truncated"]
+        assert life["tool_metrics"]["started"] == life["tool_metrics"]["completed"] == 30
+        assert len(life["tool_calls"]) == len(life["model_requests"]) == 30
+        assert life["structure_outcomes"] == {"structure": {"phase": "confirmed", "revision": 2}}
+        assert life["delivery_state"] == "failed"
+        agent_log, conversation_log = tmp_path / "agent.json", tmp_path / "conversation.txt"
+        agent_log.write_text(json.dumps({"run": settled.model_dump(mode="json")}))
+        conversation_log.write_text("")
+        spec = importlib.util.spec_from_file_location("comparison", Path(__file__).parents[2] / "scripts/compare-atomsculptor-runs.py")
+        comparison = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(comparison)
+        stats = comparison.summarize(agent_log, conversation_log)
+        assert stats["model_requests_started"] == stats["model_requests_returned"] == 30
+        assert stats["tool_calls_started"] == stats["tool_calls_completed"] == 30
+        assert stats["known_output_tokens"] == 60 and stats["known_input_tokens"] == 300
+        assert stats["model_usage_scope"] == stats["tool_calls_by_name_scope"] == "run"
+    finally:
+        services.close()
 
 
 def test_retry_countdown_preserves_native_attempt_interruption_and_diagnostics():

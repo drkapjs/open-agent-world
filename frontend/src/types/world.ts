@@ -491,6 +491,8 @@ export interface ConversationRunSummary {
   tool_count: number;
   tool_trace: ConversationToolTrace[];
   tool_trace_truncated?: boolean;
+  structure_outcomes?: Record<string, { phase: string; revision?: number }>;
+  delivery_state?: string | null;
   live_text?: string;
 }
 

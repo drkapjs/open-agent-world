@@ -134,6 +134,8 @@ class ConversationRunSummary(BaseModel):
     tool_count: int = 0
     tool_trace: list[dict[str, Any]] = Field(default_factory=list)
     tool_trace_truncated: bool = False
+    structure_outcomes: dict[str, Any] = Field(default_factory=dict)
+    delivery_state: str | None = None
 
 
 class ConversationDeliveryState(BaseModel):

@@ -132,3 +132,50 @@ def test_region_rules_reject_ambiguous_or_invalid_atom_indices(tmp_path, malform
     assert "unique fields" in result["error"] if malformation=="duplicate" else "indices" in result["error"]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('nonperiodic', [True, False])
+async def test_delivery_pipeline_uses_real_cli_then_imports_and_reads_back_once(tmp_path, nonperiodic):
+    import asyncio
+    from backend.agents.models import ScopedToolDefinition
+    from oaw_atomsculptor.delivery import run_delivery_step, _validate_argv
+    from test_workflow import evidence, activate, execute, tool
+    positions, cell = finite_tube()
+    write(tmp_path / 'candidate.extxyz', ase.Atoms('C80', positions=positions, cell=cell, pbc=False))
+    commands = []
+    def skill(argv):
+        commands.append(argv)
+        result = subprocess.run([sys.executable, str(SCRIPTS / 'structure_inspect.py'), *argv],
+                                cwd=tmp_path, text=True, capture_output=True, timeout=30)
+        return {'command_id': f'cli-{len(commands)}', 'exit_code': result.returncode,
+                'stdout': result.stdout, 'stderr': result.stderr}
+    e = evidence(); await activate(e)
+    await execute(e, 'probe.py')
+    assert e.workflow.advance(e, 'probe', 'box', 'probe.py')['ok']
+    await execute(e, 'build.py')
+    argv = _validate_argv('candidate.extxyz', {'expected_count': 80, 'min_vacuum': 8, 'nonperiodic': True})
+    result = skill(argv)
+    assert result['exit_code'] == 0, result
+    await tool(e, 'run_skill_script', {'sandbox': 'box', 'argv': argv, 'script': 'scripts/structure_inspect.py'}, result)
+    assert e.workflow.advance(e, 'build', 'box', 'build.py', structure_path='candidate.extxyz')['ok']
+    names = ('run_skill_script', 'import_atom_structure_file', 'inspect_atom_structure')
+    definitions = [ScopedToolDefinition('operation:' + name, name, 'Fixture operation') for name in names]
+    e.configure_tools(definitions)
+    revision = 1; imported = []; digest = None
+    async def invoke(capability, args):
+        nonlocal revision, digest
+        name = capability.removeprefix('operation:')
+        if name == 'run_skill_script':
+            return skill(args['argv'])
+        if name == 'import_atom_structure_file':
+            data = (tmp_path / args['file_name']).read_bytes()
+            assert 'expected_file_sha256' not in args
+            assert args['expected_revision'] == revision
+            document = json.loads(data); assert len(document['atoms']) == 80
+            imported.append(document); revision += 1; digest = hashlib.sha256(data).hexdigest()
+        return {'revision': revision,  'summary': {'atom_count': 80}}
+    result = await run_delivery_step(e, definitions, invoke, asyncio.Event(), call_id='delivery',
+        sandbox='box', skill='fixture', structure_path='candidate.extxyz', target='structure',
+        output_name='candidate.json', validate={'expected_count': 80, 'min_vacuum': 8, 'nonperiodic': nonperiodic})
+    assert result['ok'], result
+    assert len(imported) == 1 and e.confirmed['structure'] == 2 and e.workflow.current == 'complete'
+    assert [x[0] for x in commands] == ['validate_structure', 'validate_structure', 'to_atomsculptor_document']
