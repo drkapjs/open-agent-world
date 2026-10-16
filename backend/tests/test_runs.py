@@ -90,7 +90,14 @@ class RecordingProvider(RuntimeProvider):
                     ),
                 ),
             )[0]
-            await tool()
+            yield AgentEvent(context.agent_id, context.run_id, AgentEventType.TOOL_STARTED,
+                             {"name": "buggy_tool", "call_id": "test-bug"})
+            self.tool_feedback = await tool()
+            yield AgentEvent(context.agent_id, context.run_id, AgentEventType.TOOL_COMPLETED,
+                             {"name": "buggy_tool", "call_id": "test-bug",
+                              "response": self.tool_feedback, "success": False})
+            self.tool_started.set()
+            await self.continue_tool.wait()
         if self.mode == "tool":
             yield AgentEvent(
                 context.agent_id,
@@ -114,7 +121,7 @@ class RecordingProvider(RuntimeProvider):
         )
         if self.mode == "waiting":
             await self.release_turn.wait()
-        if self.mode in {"success", "tool"}:
+        if self.mode in {"success", "tool", "tool_failure"}:
             yield AgentEvent(
                 context.agent_id,
                 context.run_id,
@@ -411,7 +418,7 @@ async def test_root_and_child_run_lineage_and_registry_provider(tmp_path: Path) 
         agent = await services.create_card(CardCreate(type="agent", name="Atlas"))
         manager = services._require_run_manager()
         root = await manager.start_run(agent.id, "root", task_id="task-a")
-        await manager.wait_terminal(root.run_id)
+        await manager.wait_settled(root.run_id)
         child = await manager.start_run(
             agent.id,
             "child",
@@ -584,7 +591,7 @@ async def test_tool_activity_does_not_change_status_or_release_slot(
             await manager.start_run(agent.id, "second")
 
         provider.continue_tool.set()
-        assert (await manager.wait_terminal(run.run_id)).status is RunStatus.SUCCEEDED
+        assert (await manager.wait_settled(run.run_id)).status is RunStatus.SUCCEEDED
         assert not manager.holds_agent_slot(run.run_id)
     finally:
         services.close()
@@ -627,7 +634,7 @@ async def test_failure_is_run_local_and_concurrency_is_explicit(tmp_path: Path) 
 
 
 @pytest.mark.asyncio
-async def test_unexpected_tool_exception_fails_the_run(tmp_path: Path) -> None:
+async def test_unexpected_tool_exception_is_feedback_and_run_can_continue(tmp_path: Path) -> None:
     provider = RecordingProvider(mode="tool_failure")
     services = _services(tmp_path, provider)
     try:
@@ -635,10 +642,21 @@ async def test_unexpected_tool_exception_fails_the_run(tmp_path: Path) -> None:
         manager = services._require_run_manager()
 
         started = await manager.start_run(agent.id, "exercise tool")
-        failed = await manager.wait_terminal(started.run_id)
+        await asyncio.wait_for(provider.tool_started.wait(), timeout=2)
+        assert provider.tool_feedback["ok"] is False
+        assert provider.tool_feedback["error"]["code"] == "tool_execution_error"
+        assert "plugin implementation bug" not in str(provider.tool_feedback)
+        assert manager.get_run(started.run_id).status is RunStatus.RUNNING
+        assert manager.holds_agent_slot(started.run_id)
+        assert manager.get_run(started.run_id).lifecycle["active_tools"] == 0
 
-        assert failed.status is RunStatus.FAILED
-        assert failed.error == "plugin implementation bug"
+        provider.continue_tool.set()
+        completed = await asyncio.wait_for(manager.wait_terminal(started.run_id), timeout=2)
+        await manager.wait_execution(started.run_id)
+        assert completed.status is RunStatus.SUCCEEDED
+        assert completed.error is None
+        assert manager.final_text(started.run_id) == "exercise tool"
+        assert not manager.holds_agent_slot(started.run_id)
     finally:
         services.close()
 
@@ -713,6 +731,7 @@ async def test_inactive_provider_stream_fails_run_instead_of_stalling(
         record = await manager.wait_terminal(run.run_id)
         assert record.status is RunStatus.FAILED
         assert "no activity" in (record.error or "")
+        await manager.wait_execution(run.run_id)
         assert not manager.holds_agent_slot(run.run_id)
         assert services.get_card(agent.id).status == "idle"
     finally:
@@ -778,6 +797,7 @@ async def test_final_text_reads_from_state_and_terminal_task_releases_slot(
         assert record.status is RunStatus.SUCCEEDED
         # The durable state store is the only source for run output.
         assert manager.final_text(run.run_id) == "produce output"
+        await manager.wait_execution(run.run_id)
         assert not manager.holds_agent_slot(run.run_id)
 
         # Safety net: even if a terminal transition failed to release the slot,
@@ -815,5 +835,91 @@ async def test_silent_stream_exhaustion_is_a_provider_protocol_error(
         assert "provider protocol error" in (record.error or "")
         assert not manager.holds_agent_slot(run.run_id)
         assert services.get_card(agent.id).status == "idle"
+    finally:
+        services.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("configured,unlimited", [(0, True), (None, False), (0.05, False)])
+async def test_native_execution_deadline_override_retains_default_and_stop(tmp_path, configured, unlimited):
+    provider = RecordingProvider(mode="tool")
+    services = _services(tmp_path, provider)
+    try:
+        agent = await services.create_card(CardCreate(type="agent", name="Atlas",
+            config={"run_execution_deadline_seconds": configured, "run_inactivity_timeout_seconds": 0}))
+        manager = services._require_run_manager()
+        manager.execution_deadline_seconds = 0.05
+        assert manager._execution_deadline(agent) == (None if unlimited else 0.05)
+        run = await manager.start_run(agent.id, "long operation")
+        await asyncio.wait_for(provider.tool_started.wait(), 2)
+        if unlimited:
+            await asyncio.sleep(0.15)
+            assert manager.get_run(run.run_id).status is RunStatus.RUNNING
+            await manager.cancel_run(run.run_id)
+            assert (await manager.wait_terminal(run.run_id)).status is RunStatus.CANCELLED
+        else:
+            record = await asyncio.wait_for(manager.wait_terminal(run.run_id), 2)
+            assert record.status is RunStatus.FAILED
+            assert "deadline" in record.error
+        assert "run_execution_deadline_seconds" not in provider.configs[agent.id].provider_config
+        await asyncio.wait_for(manager.wait_execution(run.run_id), 2)
+        assert not manager.holds_agent_slot(run.run_id)
+    finally:
+        services.close()
+
+
+def test_native_deadline_uses_atomsculptor_default_for_existing_card(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from oaw_atomsculptor import AtomSculptorAgentConfig
+    services = _services(tmp_path, RecordingProvider())
+    try:
+        manager = services._require_run_manager()
+        monkeypatch.setattr(manager.plugins, "node_type", lambda _: SimpleNamespace(config_model=AtomSculptorAgentConfig))
+        assert manager._execution_deadline(SimpleNamespace(type="atomsculptor.agent", config={})) is None
+        assert manager._execution_deadline(SimpleNamespace(type="atomsculptor.agent",
+            config={"run_execution_deadline_seconds": 90})) == 90
+    finally:
+        services.close()
+
+
+@pytest.mark.asyncio
+async def test_provider_timeout_with_both_host_watchdogs_disabled_reports_failure(tmp_path):
+    class TimeoutProvider(RecordingProvider):
+        async def execute(self, config, context, input):
+            raise TimeoutError("remote request expired")
+            yield  # async generator protocol
+
+    services = _services(tmp_path, TimeoutProvider())
+    try:
+        agent = await services.create_card(CardCreate(type="agent", name="Atlas", config={
+            "run_execution_deadline_seconds": 0, "run_inactivity_timeout_seconds": 0}))
+        manager = services._require_run_manager()
+        run = await manager.start_run(agent.id, "request")
+        result = await asyncio.wait_for(manager.wait_terminal(run.run_id), 2)
+        assert result.status is RunStatus.FAILED and "no activity" in result.error
+        assert "None seconds" not in result.error and "NoneType" not in result.error
+        await asyncio.wait_for(manager.wait_execution(run.run_id), 2)
+        assert not manager.holds_agent_slot(run.run_id)
+    finally:
+        services.close()
+
+
+@pytest.mark.asyncio
+async def test_explicit_failed_provider_outcome_retains_report_and_error_detail(tmp_path):
+    class FailedProvider(RecordingProvider):
+        async def execute(self, config, context, input):
+            yield AgentEvent(context.agent_id, context.run_id, AgentEventType.COMPLETED,
+                {"text": "Task unfinished; inspect saved sample.py before continuing.",
+                 "error": "Budget exhausted; saved execution checkpoint."}, run_status="failed")
+    services = _services(tmp_path, FailedProvider())
+    try:
+        agent = await services.create_card(CardCreate(type="agent", name="Atlas"))
+        manager = services._require_run_manager()
+        run = await manager.start_run(agent.id, "request")
+        result = await manager.wait_terminal(run.run_id)
+        assert result.status is RunStatus.FAILED and result.error == "Budget exhausted; saved execution checkpoint."
+        assert "sample.py" in manager.final_text(run.run_id)
+        await asyncio.wait_for(manager.wait_execution(run.run_id), 2)
+        assert not manager.holds_agent_slot(run.run_id)
     finally:
         services.close()

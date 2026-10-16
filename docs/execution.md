@@ -120,3 +120,79 @@ template keys; instantiation uses template keys to new IDs. External references
 must be cleared. Execution history and Run IDs should not be copied into presets.
 No material-science-specific state, tool name or dependency rule is built into
 the host contract.
+
+## Long computations and durable waiting (API 1.33)
+
+A Run is a bounded Agent turn. A background job is separately persisted external
+work that can outlive that turn and backend restarts. Waiting for a job ends the
+turn and releases the runtime worker; it does not extend the Run deadline. The
+existing host continuation loop observes jobs without calling a model. Only a
+terminal observation or an uncertain submission admits a new Agent turn, through
+the same capacity, permission, queued-input and continuation-budget checks used
+by work sources. The 64-turn limit counts Agent continuations, not status probes.
+
+A conversation turn that registers `wait_background_jobs` ends with a durable
+system notice explaining automatic monitoring and continuation. Earlier progress
+messages remain in history without becoming a final Agent reply. Startup restores
+missing notices, including for older turns that incorrectly promoted progress to
+their final reply. An explicit empty provider completion clears the Run output;
+only completions that omit output retain the legacy latest-message fallback.
+
+Agents with an authorized Sandbox discover these tools in their live catalog:
+
+| Tool | Contract |
+| --- | --- |
+| `inspect_background_jobs` | Read records scoped to this Agent/session and discover provider specification schemas |
+| `submit_background_job` | Persist a reservation before submission; reuse the same `request_key` to recover its record |
+| `attach_background_job` | Verify existing external work without submitting; supply `job_id` to reconcile an uncertain reservation |
+| `wait_background_jobs` | Persist continuation intent and then end the Agent turn |
+| `control_background_job` | Pause/resume monitoring, acknowledge an outcome, request external cancellation, or explicitly detach tracking |
+
+Host IDs and provider `external_id` values are distinct. Reusing a request key
+with different parameters is rejected. The journal stores ownership, identity,
+state, request fingerprint and notification admission, not submission scripts or
+credentials. Credentials remain in the authorized Sandbox. An interrupted submit
+becomes `unknown`; the host never automatically resubmits it. This prevents replay
+through the same key, not duplicates created using a different key or outside OAW.
+
+Transient inspection failures retain the prior job state and back off up to one
+hour. Provider calls are bounded: preflight/inspection/cancellation at 90 seconds,
+submission at 180 seconds. Compute duration is a separate explicit provider budget.
+Permission is checked again after asynchronous calls and before continuation.
+Revocation pauses monitoring; elapsed time never proves a job succeeded or vanished.
+
+User Stop pauses automation and does **not** cancel remote compute. Normal host
+shutdown preserves pending external monitoring. A continuation already admitted
+before a crash is never blindly replayed; its interrupted record requires explicit
+inspection/resume. Cancellation is confirmed only by observing the provider's
+terminal state. Resource/session deletion and provider disable are blocked while
+work is tracked. `detach` explicitly relinquishes tracking and allows deletion;
+it does not stop the external job or its charges.
+
+The backend must be running to check or deliver notifications. Closing it pauses
+local observation; remote compute can continue and checking resumes at startup.
+Startup schedules an immediate check for active jobs instead of retaining a
+previous process's retry delay. Providers using Sandbox commands restore a
+stopped Sandbox only through the owning Agent's current `sandbox.start` grant;
+execute-only access still requires the Sandbox to be running. Paused monitors
+and stopped Agent turns remain paused. An unavailable Sandbox is reported in
+the job's observation error without changing the remote computation state.
+Ordinary commands and managed Python installation use the same on-demand
+preparation. The Sandbox UI accepts commands without a separate Start action;
+Stop remains available for active work, recovery, and editing locked settings.
+There is no OS wake service. `core.sandbox-operation` can attach to an already
+admitted operation, but local Sandbox processes remain interrupted after host
+restart. This release is a single-host monitor, not a multi-worker distributed
+scheduler. Scientific success and artifact collection remain the Agent/plugin's
+responsibility after provider completion.
+
+Trusted plugins register `BackgroundJobProvider` through
+`registration.register_background_job_provider(id, definition)`. Import
+`BackgroundJobProvider`, `BackgroundJobContext` and `JobObservation` from
+`open_agent_world.plugin_api`. A provider declares a Pydantic specification model,
+an asynchronous `inspect(context, external_id)`, and optionally `prepare`,
+`submit(context, specification, request_id)` and `cancel` callbacks. `prepare`
+must have no submission side effects. Return the stable external ID immediately
+from `submit`; never poll the computation inside that callback. `context.execute`
+runs bounded argv through the live authorized Sandbox. Providers must not retain
+credentials in observations. The MatCreator Pack supplies a Bohrium batch adapter.

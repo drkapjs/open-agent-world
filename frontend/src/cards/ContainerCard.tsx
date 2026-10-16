@@ -11,6 +11,7 @@ import { LegionCardNode } from "./LegionCard";
 import { SkillContainerNode } from "./SkillContainer";
 import type { CanvasNode } from "./types";
 import { containerShowsWorkspace } from "../state/containers";
+import { WorldCardNode } from "./CardFrame";
 
 export function ContainerCardNode(props: NodeProps<CanvasNode>) {
   useLocale();
@@ -19,7 +20,10 @@ export function ContainerCardNode(props: NodeProps<CanvasNode>) {
   const catalog = useWorldStore((state) => state.catalog);
   if(props.data.card.type==="core.shadow-collection")return <ShadowCollectionNode {...props}/>;
   const card = props.data.card;
-  const definition = catalog.node_types.find((type) => type.id === card.type)!;
+  const definition = catalog.node_types.find((type) => type.id === card.type);
+  // The catalog can refresh before React Flow replaces its existing container
+  // node during Pack changes. Use the normal missing-card surface in that gap.
+  if (!definition?.container || card.missing_plugin) return <WorldCardNode {...props} />;
   const workspace = containerShowsWorkspace(card, catalog, level);
   const workspaceOnly = definition.container?.member_display === "workspace";
   if (definition.traits.includes("ui.agent-barracks.v1")) return <BarracksContainerNode {...props} />;

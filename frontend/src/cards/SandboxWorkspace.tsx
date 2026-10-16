@@ -1,7 +1,7 @@
 import { useWorkspaceAccess } from '../workspace/WorkspaceAccess';
 import { t, useLocale } from "../i18n";
-import { ChevronDown, ChevronRight, Download, File, FileText, Folder, FolderOpen, History, LayoutPanelLeft, RefreshCw, Settings, Square, Terminal } from "lucide-react";
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { ArrowLeft, Download, FileText, FolderOpen, History, RefreshCw, Settings, Square, Terminal } from "lucide-react";
+import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
 import { apiErrorMessage, worldApi } from "../api/client";
 import { useWorldStore } from "../state/worldStore";
 import { useOpenFiles } from "../state/openFiles";
@@ -11,13 +11,16 @@ import type { WorldCard } from "../types/world";
 import { IconButton } from "../components/IconButton";
 import { SandboxRuntimeControls, SandboxSettings, sandboxSettingsDirty } from "./SandboxCard";
 import { PublishFiles } from "./Artifacts";
+import { useTransferQueue } from '../files/TransferList';
+import { saveDownload } from '../files/transferQueue';
 import { WorkspaceSection, useWorkspaceSections } from "../workspace/WorkspaceSection";
+import { useWorkspaceNavigation } from '../workspace/WorkspaceNavigation';
+import { WorkspaceEmptyState } from "../workspace/WorkspacePrimitives";
 import "./sandboxWorkspace.css";
 
-interface Root { id: string; label: string; access: string; directory: boolean }
-interface Entry { name: string; directory: boolean; blocked: boolean; size: number }
-interface Files { entries?: Entry[]; truncated?: boolean; state?: string; text?: string; data?: string; media_type?: string; message?: string }
-interface Receipt { id: string; caller: string; state: string; argv: string[]; stdout?: string; stderr?: string; error?: string; exit_code?: number; duration_seconds?: number; skill_id?: string }
+import { SandboxFileBrowser, type FileRoot as Root, type FileEntry as Entry, type FileSelection, type FileChange } from "./SandboxFileBrowser";
+interface Files { entries?: Entry[]; truncated?: boolean; next_cursor?: string; state?: string; text?: string; data?: string; media_type?: string; message?: string }
+interface Receipt { id: string; caller: string; state: string; argv: string[]; stdout?: string; stderr?: string; error?: string; exit_code?: number; duration_seconds?: number; skill_id?: string; operation_kind?: string }
 interface Bundle { cached?: boolean; current?: boolean; revision: number; files: string[]; status: string; note: string }
 
 function tabKeys(event: KeyboardEvent<HTMLElement>) {
@@ -33,16 +36,38 @@ function tabKeys(event: KeyboardEvent<HTMLElement>) {
 const boundedSize = (value: number, min: number, max: number, fallback: number) =>
   Number.isFinite(value) ? Math.max(min, Math.min(max, value)) : fallback;
 
+function historyReceipt(value: unknown, index: number): Receipt | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const item = value as Record<string, unknown>;
+  const optionalText = (key: string) => typeof item[key] === "string" ? item[key] as string : undefined;
+  return {
+    id: optionalText("id") ?? `legacy-${index}`,
+    caller: optionalText("caller") ?? "unknown",
+    state: optionalText("state") ?? "unknown",
+    argv: Array.isArray(item.argv) ? item.argv.filter((part): part is string => typeof part === "string") : [],
+    stdout: optionalText("stdout"), stderr: optionalText("stderr"), error: optionalText("error"),
+    exit_code: typeof item.exit_code === "number" ? item.exit_code : undefined,
+    duration_seconds: typeof item.duration_seconds === "number" ? item.duration_seconds : undefined,
+    skill_id: optionalText("skill_id"), operation_kind: optionalText("operation_kind"),
+  };
+}
+
+const receiptLabel = (receipt: Receipt) => receipt.argv.at(-1) ?? receipt.operation_kind ?? "Sandbox operation";
+
 export function SandboxWorkspace({ card }: { card: WorldCard }) {
   useLocale();
   const { deployed, permissions } = useWorkspaceAccess();
   const terminalAllowed = !deployed || permissions[card.id]?.includes("terminal");
   const filesAllowed = !deployed || permissions[card.id]?.some(p => p === "files" || p === "preview");
   const sections = useWorkspaceSections();
+  const navigation = useWorkspaceNavigation();
   const filesInline = sections.isInline("files");
   const previewInline = sections.isInline("preview");
   const terminalInline = sections.isInline("terminal");
   const hasWorkArea = previewInline || terminalInline;
+  const [compactView, setCompactView] = useState('files');
+  const inlineViews = [filesInline && 'files', previewInline && 'preview', terminalInline && 'terminal'].filter(Boolean) as string[];
+  const visibleView = inlineViews.includes(compactView) ? compactView : inlineViews[0];
   const refreshSandbox = useWorldStore(s => s.refreshSandbox);
   const info = useWorldStore(s => s.sandboxInfo[card.id]);
   const execute = useWorldStore(s => s.executeSandbox);
@@ -88,8 +113,10 @@ export function SandboxWorkspace({ card }: { card: WorldCard }) {
   const recalled = useRef(-1);
   const savedDraft = useRef("");
   const [commands, setCommands] = useSurfaceDraft<string[]>(draftKey('commands'), []);
+  const [managedPython, setManagedPython] = useState(false);
   const [terminalTab, setTerminalTab] = useSurfaceDraft(draftKey('terminal-tab'), 'terminal');
   const [selection, setSelection] = useSurfaceDraft<{ root: string; path: string; label: string } | undefined>(draftKey('selection'), undefined);
+  const selectionRef = useRef(selection); selectionRef.current = selection;
   const [preview, setPreview] = useState<Files>();
   const staticPreviewKey = draftKey('static-preview');
   useEffect(() => {
@@ -106,6 +133,8 @@ export function SandboxWorkspace({ card }: { card: WorldCard }) {
   const [publishPaths, setPublishPaths] = useSurfaceDraft<string[]>(draftKey('publish-paths'), []);
   const binding = JSON.stringify([card.id, card.config.runtime, card.config.workspace_path, card.config.workspace_access,
     info?.runtime_id, info?.workspace_path, info?.workspace_access, info?.workspace]);
+  const transfers = useTransferQueue(binding);
+  useHydrationLease(card.id, 'sandbox-transfers', transfers.active);
   const fileContext = useRef({ binding, live: true, generation: 0, requests: new Map<string, number>() });
   if (fileContext.current.binding !== binding) {
     fileContext.current.live = false;
@@ -132,17 +161,21 @@ export function SandboxWorkspace({ card }: { card: WorldCard }) {
   const activeCommands = history.filter(h => h.state === "running");
   const running = activeCommands.length === 1 ? activeCommands[0] : undefined;
   const occupied = !!busy || !!running || card.status === "running" || diagnosticBusy;
-  const ready = (info?.state === "ready" || info?.state === "running") && !busy && !diagnosticBusy;
+  const ready = !!info?.available && info.state !== "error" && !busy && !diagnosticBusy && !settingsDirty;
   const output = Array.isArray(card.config.output) && card.config.output.length
     ? card.config.output.map(String).slice(-250).join("\n")
-    : history.map(h => [`$ ${h.argv.at(-1) ?? h.argv.join(" ")}`, h.stdout, h.stderr, h.error].filter(Boolean).join("\n")).join("\n");
+    : history.map(h => [`$ ${receiptLabel(h)}`, h.stdout, h.stderr, h.error].filter(Boolean).join("\n")).join("\n");
   useEffect(() => {
     // An empty terminal starts at the top already. Reading scrollHeight while
     // many workspaces mount during canvas culling forces layout for each one.
     if (!output && !draft) return;
     if (followOutput.current && terminalScroll.current) terminalScroll.current.scrollTop = terminalScroll.current.scrollHeight;
   }, [output, draft, terminalTab, tab]);
-  async function refreshHistory() { if (card.ephemeral || !terminalAllowed) return; setHistory(await worldApi.sandboxWorkspace<Receipt[]>(card.id, "history")); }
+  async function refreshHistory() {
+    if (card.ephemeral || !terminalAllowed) return;
+    const records = await worldApi.sandboxWorkspace<unknown>(card.id, "history");
+    setHistory(Array.isArray(records) ? records.map(historyReceipt).filter((receipt): receipt is Receipt => !!receipt) : []);
+  }
   async function refreshFiles() {
     if (card.ephemeral || !filesAllowed) return;
     const current = fileRequest("roots");
@@ -199,37 +232,49 @@ export function SandboxWorkspace({ card }: { card: WorldCard }) {
     if (tree[key]) return;
     await loadDirectory(root, path);
   }
-  async function loadDirectory(root: string, path: string) {
+  async function loadDirectory(root: string, path: string, cursor = '') {
     const key = `${root}:${path}`, current = fileRequest(`directory:${key}`);
     setLoading(s => ({ ...s, [key]: true }));
-    try { const value = await worldApi.sandboxWorkspace<Files>(card.id, fileQuery("list", root, path)); if (current()) setTree(s => ({ ...s, [key]: value })); }
+    try {
+      const value = await worldApi.sandboxWorkspace<Files>(card.id, `${fileQuery('list', root, path)}&${new URLSearchParams({ cursor })}`);
+      if (current()) setTree(s => ({ ...s, [key]: { ...value, entries: cursor ? [...(s[key]?.entries ?? []), ...(value.entries ?? [])].filter((entry, index, all) => all.findIndex(other => other.name === entry.name) === index) : value.entries } }));
+    }
     catch (e) { if (current()) setTree(s => ({ ...s, [key]: { state: "permission_denied", message: apiErrorMessage(e) } })); }
     finally { if (current()) setLoading(s => ({ ...s, [key]: false })); }
   }
-  async function select(root: string, path: string, label: string) {
+  async function select(root: string, path: string, label: string, reveal = true) {
     const current = fileRequest("preview");
     setSelection({ root, path, label }); setPreview(undefined);
-    useOpenFiles.getState().open({ kind: "sandbox", source_id: card.id, root, path }, label);
+    if (reveal) navigation?.activate({ card_id: card.id, section_id: 'preview' });
+    useOpenFiles.getState().open({ kind: "sandbox", source_id: card.id, root, path }, label, { reveal });
     try {
       const value = await worldApi.sandboxWorkspace<Files>(card.id, fileQuery("preview", root, path));
       if (current()) setPreview(value);
     } catch (e) { if (current()) setPreview({ state: "permission_denied", message: apiErrorMessage(e) }); }
   }
-  function directory(root: string, path: string): React.ReactNode {
-    const key = `${root}:${path}`, value = tree[key];
-    if (!expanded[key]) return null;
-    return <ul>{loading[key] && !value ? <li className="sandbox-tree-note">{t("Loading…")}</li> : value?.state ? <li className="sandbox-tree-note">{value.message ?? value.state}</li> : <>
-      {value?.entries?.length === 0 && <li className="sandbox-tree-note">{t("Empty folder")}</li>}
-      {value?.entries?.map(e => { const next = path ? `${path}/${e.name}` : e.name; return <li key={e.name}>
-        <button className="sandbox-tree-entry" disabled={e.blocked} title={e.blocked ? t("Links are blocked") : next}
-          aria-expanded={e.directory ? !!expanded[`${root}:${next}`] : undefined}
-          aria-current={!e.directory && selection?.root === root && selection.path === next ? "true" : undefined}
-          onClick={() => void (e.directory ? expand(root, next) : select(root, next, e.name))}>
-          {e.directory ? <>{expanded[`${root}:${next}`] ? <ChevronDown size={11} /> : <ChevronRight size={11} />}<Folder size={13} /></> : <FileText size={13} />}
-          <span>{e.name}</span>
-        </button>{e.directory && directory(root, next)}</li>; })}
-      {value?.truncated && <li className="sandbox-tree-note">{t("First 300 entries shown.")}</li>}
-    </>}</ul>;
+  async function filesChanged(change: FileChange) {
+    if (!context.live || fileContext.current !== context) return;
+    const remap = (path: string) => path === change.path || path.startsWith(`${change.path}/`)
+      ? change.destination === undefined ? undefined : change.destination + path.slice(change.path.length) : path;
+    context.generation++; setLoading({}); setTree({});
+    const open = Object.fromEntries(Object.entries(expandedRef.current).flatMap(([key, value]) => {
+      if (!key.startsWith('workspace:')) return [[key, value]];
+      const path = remap(key.slice('workspace:'.length));
+      return path === undefined ? [] : [[`workspace:${path}`, value]];
+    }));
+    if (change.destination !== undefined) open[`workspace:${change.destination.split('/').slice(0, -1).join('/')}`] = true;
+    expandedRef.current = open; setExpanded(open);
+    setPublishPaths(paths => paths.flatMap(path => { const next = remap(path); return next === undefined ? [] : [next]; }));
+    useOpenFiles.getState().changeSandboxPath(card.id, change.path, change.destination);
+    const current = selectionRef.current;
+    if (current?.root === 'workspace' && remap(current.path) === undefined) {
+      setSelection(undefined); setPreview(undefined);
+      useNodeSurfaceStore.getState().setDraft(staticPreviewKey, '');
+    } else if (current) {
+      const path = current.root === 'workspace' ? remap(current.path)! : current.path;
+      void select(current.root, path, current.label, false);
+    }
+    await refreshFiles();
   }
   async function action(name: string, body: unknown = {}) {
     setError("");
@@ -256,7 +301,7 @@ export function SandboxWorkspace({ card }: { card: WorldCard }) {
     recalled.current = -1;
     setCommands(current => [...current, command].slice(-100));
     setDraft(""); setError("");
-    try { await execute(card.id, command); await refreshHistory(); await refreshFiles(); }
+    try { await execute(card.id, command, managedPython ? "managed" : "auto"); await refreshHistory(); await refreshFiles(); }
     catch (e) { setError(apiErrorMessage(e)); }
     finally { submitting.current = false; }
   }
@@ -284,14 +329,12 @@ export function SandboxWorkspace({ card }: { card: WorldCard }) {
       setDraft(recalled.current === -1 ? savedDraft.current : previous[recalled.current]);
     }
   }
-  async function download() {
-    if (!selection) return;
-    try {
-      const blob = await worldApi.downloadSandboxFile(card.id, selection.root, selection.path);
-      const url = URL.createObjectURL(blob), link = document.createElement("a");
-      link.href = url; link.download = selection.label; link.click();
-      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-    } catch (e) { setError(apiErrorMessage(e)); }
+  async function download(file: FileSelection | undefined = selection) {
+    if (!file) return;
+    await transfers.queue.add([{ name: file.label, size: file.size ?? 0, direction: 'download', run: async options => {
+      const blob = await worldApi.downloadSandboxFile(card.id, file.root, file.path, options);
+      if (!options.signal?.aborted) saveDownload(blob, file.label);
+    } }]);
   }
   async function savePreset() {
     // Route through the store so the mutation is serialized and revision-guarded.
@@ -304,41 +347,30 @@ export function SandboxWorkspace({ card }: { card: WorldCard }) {
   }, [skill, card.id, history.length]);
   return <div className="sandbox-workspace nodrag nopan nowheel">
     <header className="sandbox-window-toolbar">
-      <nav className="sandbox-tabs" role="tablist" aria-label={t("Sandbox window")} onKeyDown={tabKeys}>
-        {(deployed ? ["workspace"] as const : ["workspace", "settings"] as const).map(view => <button key={view} role="tab" id={`${card.id}-${view}-tab`}
-          aria-selected={tab === view} aria-controls={`${card.id}-${view}-panel`} tabIndex={tab === view ? 0 : -1}
-          onClick={() => setTab(view)}>
-          {view === "workspace" ? <LayoutPanelLeft size={13} /> : <Settings size={13} />}
-          {view === "workspace" ? t("Workspace") : t("Settings")}{view === "settings" && settingsDirty && <span className="sandbox-dirty-dot" aria-label={t("Unsaved changes")} />}
-        </button>)}
-      </nav>
-      <SandboxRuntimeControls card={card} disabled={settingsDirty || diagnosticBusy} />
+      <SandboxRuntimeControls compact card={card} disabled={settingsDirty || diagnosticBusy} />
+      {!deployed && <button type="button" className="sandbox-settings-toggle" aria-expanded={tab === 'settings'} aria-controls={`${card.id}-settings-panel`}
+        aria-label={tab === 'settings' ? t('Back to workspace') : t('Settings')} aria-description={settingsDirty ? t('Unsaved changes') : undefined}
+        onClick={() => setTab(tab === 'settings' ? 'workspace' : 'settings')}>
+        {tab === 'settings' ? <ArrowLeft size={14} /> : <Settings size={14} />}
+        {tab === 'settings' ? t('Back to workspace') : t('Settings')}
+        {settingsDirty && <span className="sandbox-dirty-dot" aria-hidden="true" />}
+      </button>}
     </header>
     {(error || (tab === "workspace" && runtimeError)) && <p className="sandbox-workspace-error" role="alert">{error || runtimeError}</p>}
-    {tab === 'workspace' && <div className="sandbox-workbench" role="tabpanel" id={`${card.id}-workspace-panel`} aria-labelledby={`${card.id}-workspace-tab`}>
-      <WorkspaceSection id="files" title={t("Files")} className={`sandbox-files-section${hasWorkArea ? "" : " is-only-section"}`} style={{ width: hasWorkArea ? sidebarWidth : "100%" }}>
-      <aside ref={sidebarElement} className="sandbox-files nodrag nopan nowheel" aria-label={t("Sandbox files")}>
-        <header className="sandbox-pane-heading"><span><FolderOpen size={13} /> {t("Files")}</span>
-          <IconButton icon={RefreshCw} size="xs" quiet label={t("Refresh files")} disabled={loading.roots} onClick={() => { void refreshFiles(); if (selection) void select(selection.root, selection.path, selection.label); }} />
-        </header>
-        <div className="sandbox-tree-scroll">
-          {loading.roots && !roots.length && <p className="sandbox-tree-note">{t("Loading files…")}</p>}
-          {filesError && <p className="sandbox-tree-note" role="alert">{filesError}</p>}
-          {!loading.roots && !roots.length && !filesError && <p className="sandbox-tree-note">{t("Start the sandbox to browse files.")}</p>}
-          {roots.map(root => <section className="sandbox-file-root" key={root.id}>
-            <button className="sandbox-tree-entry sandbox-root-entry" aria-expanded={root.directory ? !!expanded[`${root.id}:`] : undefined}
-              title={root.id === "workspace" ? info?.workspace_path ?? info?.workspace ?? t("Managed workspace") : root.label}
-              onClick={() => void (root.directory ? expand(root.id, "") : select(root.id, "", root.label))}>
-              {root.directory ? <>{expanded[`${root.id}:`] ? <ChevronDown size={11} /> : <ChevronRight size={11} />}<Folder size={13} /></> : <File size={13} />}
-              <span>{root.label}</span>{root.access === "read_only" && <small>{t("Read only")}</small>}
-            </button>
-            {root.directory && directory(root.id, "")}
-          </section>)}
-        </div>
-        <footer className="sandbox-files-footer" title={info?.workspace_path ?? info?.workspace ?? t("Managed workspace")}>
-          <Folder size={11} /><span>{info?.workspace_path ?? info?.workspace ?? t("Managed workspace")}</span>
-        </footer>
-      </aside>
+    {tab === 'workspace' && inlineViews.length > 1 && <nav className="sandbox-compact-navigation" aria-label={t('Workspace views')}>
+      {inlineViews.map(view => <button type="button" key={view} aria-pressed={visibleView === view} onClick={() => setCompactView(view)}>
+        {view === 'files' ? <FolderOpen size={14} /> : view === 'preview' ? <FileText size={14} /> : <Terminal size={14} />}
+        {view === 'files' ? t('Files') : view === 'preview' ? t('Preview') : t('Terminal')}
+      </button>)}
+    </nav>}
+    <div className="sandbox-workbench" role="region" hidden={tab !== 'workspace'} id={`${card.id}-workspace-panel`} aria-label={t('Workspace')} data-compact-view={visibleView}>
+      <WorkspaceSection id="files" title={t("Files")} layout={{ min_width: 240, min_height: 180, ideal_width: 320, ideal_height: 540 }} className={`sandbox-files-section${hasWorkArea ? "" : " is-only-section"}`} style={{ '--sandbox-sidebar-width': hasWorkArea ? `${sidebarWidth}px` : "100%" } as CSSProperties}>
+      <SandboxFileBrowser key={binding} cardId={card.id} roots={roots} tree={tree} expanded={expanded}
+        loading={loading} selection={selection} error={filesError} sidebarRef={sidebarElement}
+        workspacePath={info?.workspace_path ?? info?.workspace ?? t("Managed workspace")}
+        writable={!deployed && !card.ephemeral && roots.some(root => root.id === 'workspace' && root.access === 'read_write') && info?.workspace_access !== 'read_only'}
+        onExpand={expand} onSelect={(root, path, label) => { if (previewInline) setCompactView('preview'); return select(root, path, label); }} onDownload={download} transfers={transfers} onLoadMore={loadDirectory} onChange={filesChanged}
+        onRefresh={async () => { await refreshFiles(); if (selection) await select(selection.root, selection.path, selection.label); }} />
       </WorkspaceSection>
       {filesInline && hasWorkArea && <div className="sandbox-file-divider" role="separator" aria-label={t("Resize file sidebar")} aria-orientation="vertical"
         aria-valuemin={180} aria-valuemax={420} aria-valuenow={sidebarWidth} tabIndex={0}
@@ -351,10 +383,13 @@ export function SandboxWorkspace({ card }: { card: WorldCard }) {
         onPointerUp={e => { if (resizing.current) saveSidebarWidth(resizing.current.width + (e.clientX - resizing.current.x) / resizing.current.scale); resizing.current = undefined; e.currentTarget.releasePointerCapture(e.pointerId); }}
         onPointerCancel={() => { resizing.current = undefined; }}
         onKeyDown={e => { if (e.key === "ArrowLeft" || e.key === "ArrowRight") { e.preventDefault(); e.stopPropagation(); saveSidebarWidth(sidebarWidth + (e.key === "ArrowRight" ? 16 : -16)); } }} />}
-      <main ref={workArea} className="sandbox-work-area" hidden={!hasWorkArea}>
-        <WorkspaceSection id="preview" title={t("File preview")} className="sandbox-preview-section">
+      <main ref={workArea} className="sandbox-work-area" hidden={!hasWorkArea} data-empty-preview={!selection && previewInline && terminalInline || undefined}>
+        <WorkspaceSection id="preview" title={t("File preview")} layout={{ min_width: 280, min_height: 180, ideal_width: 640, ideal_height: 420 }} className="sandbox-preview-section">
         <section className="sandbox-preview nodrag nopan nowheel" aria-label={t("File preview")}>
-          {!deployed && <PublishFiles card={card} paths={publishPaths.length ? publishPaths : selection?.root === "workspace" ? [selection.path] : []}>
+          <header className="sandbox-pane-heading sandbox-preview-heading">
+            <span className="sandbox-preview-location" title={selection?.path}><FileText size={14} /><span>{selection?.label ?? t('Preview')}{selection && <small>{selection.root === 'workspace' ? t('Workspace') : t('Resource')} / {selection.path || selection.label}</small>}</span></span>
+            <div className="sandbox-pane-actions">
+          {!deployed && <PublishFiles compact card={card} paths={publishPaths.length ? publishPaths : selection?.root === "workspace" ? [selection.path] : []}>
             {Object.entries(tree).filter(([key]) => key.startsWith("workspace:")).flatMap(([key, value]) =>
               (value.entries ?? []).filter(entry => !entry.blocked).map(entry => {
                 const parent = key.slice("workspace:".length);
@@ -364,22 +399,20 @@ export function SandboxWorkspace({ card }: { card: WorldCard }) {
                   onChange={event => setPublishPaths(current => event.target.checked ? [...current, path] : current.filter(p => p !== path))} />{path}</label>;
               }))}
           </PublishFiles>}
-          <header className="sandbox-pane-heading">
-            <span title={selection?.path}><FileText size={13} />{selection?.label ?? t("File preview")}</span>
-            {selection && <div className="sandbox-pane-actions">
+            {selection && <>
               {selection.root.startsWith("resource:") && <button className="secondary-button" onClick={() => useNodeSurfaceStore.getState().openInspector(selection.root.slice(9))}>{t("Edit resource")}</button>}
-              <IconButton icon={Download} size="xs" quiet label={t("Download file")} title={t("Download file (up to 16 MiB)")} onClick={() => void download()} />
-            </div>}
+              <IconButton icon={Download} size="xs" quiet label={t("Download file")} onClick={() => void download()} />
+            </>}
+            </div>
           </header>
           {selection ? <>
-            <div className="sandbox-preview-path" title={selection.path}>{selection.root === "workspace" ? t("Workspace") : t("Resource")} / {selection.path || selection.label}</div>
             <div className="sandbox-preview-content">
-              {!preview ? <div className="sandbox-pane-empty">{t("Loading preview…")}</div>
+              {!preview ? <WorkspaceEmptyState busy title={t('Loading preview…')} />
                 : preview.state === "text" ? <pre>{preview.text || t("Empty file")}</pre>
                 : preview.state === "image" ? <img alt={selection.label} src={`data:${preview.media_type};base64,${preview.data}`} />
                 : <div className="sandbox-pane-empty">{preview.message ?? ({ oversized: t("Preview exceeds 1 MiB. Download to view."), unsupported: t("Preview unsupported. Download to open locally."), missing: t("File no longer exists."), permission_denied: t("Permission denied.") }[preview.state ?? ""] ?? preview.state)}</div>}
             </div>
-          </> : <div className="sandbox-pane-empty"><FileText size={26} strokeWidth={1.2} /><span>{t("Select a file to preview")}</span></div>}
+          </> : <WorkspaceEmptyState className="sandbox-preview-empty" title={t('Select a file to preview')} actions={filesInline ? <button type="button" className="onboarding-text-button" onClick={() => setCompactView('files')}>{t('Browse files')}</button> : undefined} />}
         </section>
         </WorkspaceSection>
         {previewInline && terminalInline && <div className="sandbox-terminal-divider" role="separator" aria-label={t("Resize terminal")} aria-orientation="horizontal"
@@ -392,7 +425,7 @@ export function SandboxWorkspace({ card }: { card: WorldCard }) {
           onPointerUp={e => { if (terminalResize.current) saveTerminalHeight(terminalResize.current.height + (terminalResize.current.y - e.clientY) / terminalResize.current.area * 100); terminalResize.current = undefined; e.currentTarget.releasePointerCapture(e.pointerId); }}
           onPointerCancel={() => { terminalResize.current = undefined; }}
           onKeyDown={e => { if (e.key === "ArrowUp" || e.key === "ArrowDown") { e.preventDefault(); e.stopPropagation(); saveTerminalHeight(terminalHeight + (e.key === "ArrowUp" ? 4 : -4)); } }} />}
-        <WorkspaceSection id="terminal" title={t("Terminal")} className="sandbox-terminal-section" style={{ flexBasis: previewInline ? `${terminalHeight}%` : "100%" }}>
+        <WorkspaceSection id="terminal" title={t("Terminal")} layout={{ min_width: 280, min_height: 180, ideal_width: 640, ideal_height: 280 }} className="sandbox-terminal-section" style={{ flexBasis: previewInline ? `${terminalHeight}%` : "100%" }}>
         <section className="sandbox-terminal nodrag nopan nowheel" aria-label={t("Sandbox terminal")}>
           <header className="sandbox-pane-heading">
             <nav className="sandbox-tabs" role="tablist" aria-label={t("Terminal views")} onKeyDown={tabKeys}>
@@ -401,6 +434,10 @@ export function SandboxWorkspace({ card }: { card: WorldCard }) {
                 onClick={() => setTerminalTab(view)}>{view === "terminal" ? <Terminal size={12} /> : <History size={12} />}{view === "terminal" ? t("Terminal") : t("History")}</button>)}
             </nav>
             <div className="sandbox-pane-actions">
+              {info?.runtime_id === "darwin" && <label className="sandbox-python-option" title={t("Prepare OAW's managed Python for commands that invoke Python inside a shell.")}>
+                <input type="checkbox" checked={managedPython} onChange={e => setManagedPython(e.target.checked)} />
+                {t("Managed Python")}
+              </label>}
               <span className="sandbox-shell-hint" title={t("Non-interactive commands. Each command starts in the working folder; cd and export do not persist. Interactive prompts are unsupported. Closing this window leaves execution running.")}>{t("Non-interactive")}</span>
               {activeCommands.length > 0 && <button type="button" onClick={() => setTerminalTab("history")}>{activeCommands.length} {t("running")}</button>}
               {running && <IconButton icon={Square} size="xs" quiet label={t("Cancel command")} onClick={() => void action(`cancel?command_id=${encodeURIComponent(running.id)}`)} />}
@@ -412,7 +449,7 @@ export function SandboxWorkspace({ card }: { card: WorldCard }) {
               onScroll={e => { const el = e.currentTarget; followOutput.current = el.scrollHeight - el.scrollTop - el.clientHeight < 32; }}
               onClick={() => { if (!window.getSelection()?.toString()) terminalInput.current?.focus(); }}>
               <div role="log" aria-live="polite" aria-label={t("Command output")}>
-                {output ? <pre>{output}</pre> : <span>{ready ? t("Ready for a command.") : occupied ? t("Command running?") : t("Start the sandbox to run commands.")}</span>}
+                {output ? <pre>{output}</pre> : <span>{ready ? t("Ready for a command.") : occupied ? t("Command running?") : settingsDirty ? t("Save or reset settings before running commands.") : t("Execution environment unavailable.")}</span>}
               </div>
               <form className="sandbox-command-form" onSubmit={e => { e.preventDefault(); void run(); }}>
                 <span className="sandbox-prompt" aria-hidden="true">$</span>
@@ -423,21 +460,21 @@ export function SandboxWorkspace({ card }: { card: WorldCard }) {
             </div>
           </div>
           <div className="sandbox-history" role="tabpanel" id={`${card.id}-history-panel`} aria-labelledby={`${card.id}-history-tab`} hidden={terminalTab !== "history"}>
-            {!history.length && <div className="sandbox-pane-empty">{t("No executions yet.")}</div>}
+            {!history.length && <WorkspaceEmptyState title={t('No executions yet.')} description={t('Run a command to see its output and status here.')} actions={<button type="button" className="secondary-button" onClick={() => { setTerminalTab('terminal'); terminalInput.current?.focus(); }}>{t('Terminal')}</button>} />}
             {[...history].reverse().map(h => <article key={h.id}><header><strong>{h.caller} · {h.state}</strong><small>{t("Exit")} {h.exit_code ?? "—"} · {h.duration_seconds?.toFixed(2) ?? "—"}s</small></header>
               {h.state === "running" && <IconButton icon={Square} size="xs" quiet label={t("Cancel command")} onClick={() => void action(`cancel?command_id=${encodeURIComponent(h.id)}`)} />}
-              <code>{h.argv.join(" ")}</code><pre>{h.error || `${h.stdout ?? ""}${h.stderr ?? ""}`}</pre></article>)}
+              <code>{h.argv.join(" ") || h.operation_kind || t("Unknown command")}</code><pre>{h.error || `${h.stdout ?? ""}${h.stderr ?? ""}`}</pre></article>)}
           </div>
         </section>
         </WorkspaceSection>
       </main>
-    </div>}
-    {!deployed && tab === 'settings' && <div className="sandbox-settings-window" role="tabpanel" id={`${card.id}-settings-panel`} aria-labelledby={`${card.id}-settings-tab`}>
+    </div>
+    {!deployed && tab === 'settings' && <div className="sandbox-settings-window" role="region" id={`${card.id}-settings-panel`} aria-label={t('Sandbox settings')}>
       <div className="sandbox-settings-content">
         <SandboxSettings card={card} onDirtyChange={setSettingsDirty} />
         <details className="sandbox-settings"><summary>{t("Command presets")}</summary><div className="sandbox-config-form">
           <p className="sandbox-help">{t("Save the current command for reuse.")}</p>
-          <label className="field-label">{t("Load preset")}<select aria-label={t("Command preset")} value="" onChange={e => { setDraft(e.target.value); setTab("workspace"); setTerminalTab("terminal"); }}><option value="">{t("Choose a preset")}</option>{Object.entries(card.config.presets as Record<string, string> ?? {}).map(([name, command]) => <option key={name} value={command}>{name}</option>)}</select></label>
+          <label className="field-label">{t("Load preset")}<select aria-label={t("Command preset")} value="" onChange={e => { setDraft(e.target.value); setTab("workspace"); setTerminalTab("terminal"); setCompactView("terminal"); }}><option value="">{t("Choose a preset")}</option>{Object.entries(card.config.presets as Record<string, string> ?? {}).map(([name, command]) => <option key={name} value={command}>{name}</option>)}</select></label>
           <label className="field-label">{t("Preset name")}<input value={presetName} onChange={e => setPresetName(e.target.value)} placeholder={t("e.g. Run tests")} /></label>
           {draft.trim() && <pre className="sandbox-preset-preview">{draft}</pre>}
           <div className="editor-actions"><button className="secondary-button" disabled={!presetName.trim() || !draft.trim()} onClick={() => void savePreset()}>{t("Save preset")}</button></div>

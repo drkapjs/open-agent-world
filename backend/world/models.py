@@ -70,6 +70,9 @@ class AgentConfig(BaseModel):
     status: AgentStatus = AgentStatus.IDLE
     runtime_provider_id: str | None = Field(default=None, json_schema_extra={"privileged": True})
     max_concurrent_runs: Annotated[int, Field(ge=1, le=64)] = 1
+    run_execution_deadline_seconds: float | None = Field(default=None, ge=0,
+        description="Total Run deadline in seconds; null uses the server default, zero disables it.",
+        json_schema_extra={"privileged": True})
     inherit_legion_model: bool = True
     legion_role: str = Field(default="", max_length=200, json_schema_extra={"agentReadable": True, "agentWritable": True})
 
@@ -117,9 +120,9 @@ class SandboxConfig(BaseModel):
     workspace_path: str | None = Field(default=None, max_length=4096, json_schema_extra={"privileged": True})
     workspace_access: Literal["read_only", "read_write"] = Field(default="read_write", json_schema_extra={"privileged": True})
     network_enabled: bool = Field(default=False, json_schema_extra={"privileged": True})
-    memory_bytes: int = Field(default=512 * 1024 * 1024, ge=16 * 1024 * 1024, le=8 * 1024 * 1024 * 1024)
+    memory_bytes: int = Field(default=2048 * 1024 * 1024, ge=16 * 1024 * 1024, le=8 * 1024 * 1024 * 1024)
     active_process_limit: int = Field(default=64, ge=1, le=256)
-    command_timeout: float = Field(default=600, gt=0, le=36000)
+    command_timeout: float = Field(default=6000, gt=0, le=36000)
     presets: dict[str, str] = Field(default_factory=dict, max_length=30)
 
     @field_validator("presets")

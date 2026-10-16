@@ -19,6 +19,25 @@ def toolset(client, agent):
     return {tool.__name__: tool for tool in build_scoped_tool_callables(provider, agent['id'], definitions)}
 
 
+def test_inspection_defaults_to_caller_metadata_and_output_is_explicit(runtime_client):
+    client, _, _ = runtime_client
+    agent, sandbox, *_ = setup_skill(client)
+    services = client.app.state.services
+    for key, caller, output in [('mine', agent['id'], 'my lengthy output'), ('peer', 'another-agent', 'peer output')]:
+        history.save(services, sandbox['id'], {'id': key, 'caller': caller, 'state': 'finished',
+            'argv': ['example'], 'stdout': output, 'stderr': '', 'run_id': key})
+    tools = toolset(client, agent)
+    async def scenario():
+        summary = await tools['inspect_sandbox'](sandbox=sandbox['id'])
+        assert [r['id'] for r in summary['recent_commands']] == ['mine']
+        assert 'stdout' not in summary['recent_commands'][0]
+        assert summary['shared_python'] is None
+        detailed = await tools['inspect_sandbox'](sandbox=sandbox['id'], history_scope='all', include_output=True)
+        assert [r['stdout'] for r in detailed['recent_commands']] == ['my lengthy output', 'peer output']
+        assert (await tools['inspect_sandbox'](sandbox=sandbox['id'], history_limit=0))['recent_commands'] == []
+    client.portal.call(scenario)
+
+
 def test_real_lock_busy_preserves_type_across_prepare_and_transport(tmp_path, monkeypatch):
     runtime = python_runtime.SharedPythonRuntime(tmp_path)
     with python_runtime.mutation_lock(runtime.root):
@@ -82,15 +101,16 @@ def test_delayed_results_and_failures_remain_observable(runtime_client, monkeypa
     async def scenario():
         pending = await tools['execute_command'](sandbox=sandbox['id'], argv=['work'], wait_seconds=0)
         release.set()
+        result = await tools['wait_sandbox_operation'](sandbox=sandbox['id'], operation_id=pending['operation_id'], wait_seconds=1)
         if outcome == 'security':
-            with pytest.raises(SandboxSecurityError):
-                await tools['wait_sandbox_operation'](sandbox=sandbox['id'], operation_id=pending['operation_id'], wait_seconds=1)
-            with pytest.raises(SandboxSecurityError):
-                await tools['wait_sandbox_operation'](sandbox=sandbox['id'], operation_id=pending['operation_id'], wait_seconds=0)
+            # Native isolation still fails closed; the Agent receives the
+            # denial as tool data, including on later reads of the same receipt.
+            assert result['ok'] is False
+            assert result['error']['code'] == 'permission_denied'
+            assert result['error']['message'] == 'isolation unavailable'
         else:
-            result = await tools['wait_sandbox_operation'](sandbox=sandbox['id'], operation_id=pending['operation_id'], wait_seconds=1)
             assert result.get('exit_code') == 7 if outcome != 'preparation' else result['error']['code'] == 'environment_preparation_failed'
-            assert await tools['wait_sandbox_operation'](sandbox=sandbox['id'], operation_id=pending['operation_id'], wait_seconds=0) == result
+        assert await tools['wait_sandbox_operation'](sandbox=sandbox['id'], operation_id=pending['operation_id'], wait_seconds=0) == result
     client.portal.call(scenario)
 
 
@@ -122,6 +142,72 @@ def test_cancelling_wait_preserves_workers_and_targeted_cancel_stops_only_one(ru
         assert stopped == ['a']
         release.set()
         assert (await tools['wait_sandbox_operation'](sandbox=sandbox['id'], operation_id=b['operation_id'], wait_seconds=1))['stdout'] == 'b'
+    client.portal.call(scenario)
+
+
+def test_cancel_cleanup_timeout_returns_conflict_and_keeps_the_run_alive(runtime_client, monkeypatch):
+    client, backend, _ = runtime_client
+    agent, sandbox, *_ = setup_skill(client)
+    services = client.app.state.services
+    tools = toolset(client, agent)
+    release = asyncio.Event()
+
+    async def execute(sandbox_id, argv, **kwargs):
+        await release.wait()
+        return CommandResult(sandbox_id, tuple(argv), 0, 'done', '', .01)
+
+    async def cleanup_deadline(self, operation, *, timeout_seconds):
+        operation.close()
+        raise TimeoutError('plugin lifecycle cleanup exceeded its deadline')
+
+    monkeypatch.setattr(backend, 'execute', execute)
+    monkeypatch.setattr(type(services), '_run_bounded_lifecycle_cleanup', cleanup_deadline)
+
+    async def scenario():
+        pending = await tools['execute_command'](sandbox=sandbox['id'], argv=['work'], wait_seconds=0)
+        # A cleanup that outlives its 5-second budget must surface as a
+        # retryable tool conflict, never as an exception that ends the Run.
+        result = await tools['cancel_command'](sandbox=sandbox['id'], command_id=pending['command_id'])
+        assert result['ok'] is False
+        assert result['error']['code'] == 'conflict'
+        assert 'draining' in result['error']['message']
+        receipt = next(item for item in history.read(services, sandbox['id'])
+                       if item['id'] == pending['operation_id'])
+        assert receipt['cleanup'] == 'pending'
+        release.set()
+        await tools['wait_sandbox_operation'](sandbox=sandbox['id'], operation_id=pending['operation_id'], wait_seconds=1)
+    client.portal.call(scenario)
+
+
+def test_start_and_stop_sandbox_tools_are_registered(runtime_client):
+    client, _, _ = runtime_client
+    services = client.app.state.services
+    assert callable(services.plugins.capability_handler('sandbox.start'))
+    assert callable(services.plugins.capability_handler('sandbox.stop'))
+
+
+def test_inspect_reports_the_command_gate_and_error_recovery(runtime_client, monkeypatch):
+    from dataclasses import replace
+
+    from backend.sandbox.models import SandboxState
+
+    client, _, _ = runtime_client
+    agent, sandbox, *_ = setup_skill(client)
+    services = client.app.state.services
+    real = services.get_sandbox
+
+    async def errored(self, sandbox_id):
+        return replace(await real(sandbox_id), state=SandboxState.ERROR)
+
+    monkeypatch.setattr(type(services), 'get_sandbox', errored)
+    tools = toolset(client, agent)
+
+    async def scenario():
+        inspected = await tools['inspect_sandbox'](sandbox=sandbox['id'])
+        assert inspected['state'] == 'error'
+        assert inspected['commands_accepted'] is False
+        assert 'start_sandbox' in inspected['state_guidance']
+        assert 'Execute + Start/Stop' in inspected['state_guidance']
     client.portal.call(scenario)
 
 
@@ -225,8 +311,8 @@ def test_real_adk_parallel_tool_batch_survives_busy_and_waits(runtime_client, mo
     from google.adk.models.base_llm import BaseLlm
     from google.adk.models.llm_response import LlmResponse
     from google.genai import types
-    from backend.agents import AgentConfig, AgentEventType, GoogleAdkAgentRuntime
-    from backend.runs import InvocationCaller, InvocationContext, RuntimeInput, RunStatus
+    from backend.agents import AgentConfig, GoogleAdkAgentRuntime
+    from backend.runs import RunStatus
 
     client, backend, _ = runtime_client
     agent, sandbox, *_ = setup_skill(client)
@@ -274,15 +360,19 @@ def test_real_adk_parallel_tool_batch_survives_busy_and_waits(runtime_client, mo
     runtime = GoogleAdkAgentRuntime(WorldAgentCapabilityProvider(services))
     model = ScriptedModel()
     monkeypatch.setattr(runtime, '_adk_model', lambda _: model)
+    # This scripted model has no saved connection in the test world's catalog.
+    from backend.agents.context import ContextBudget
+    monkeypatch.setattr(runtime, '_context_budget', lambda *_: ContextBudget.for_model(model.model))
     async def scenario():
         config = AgentConfig(agent_id=agent['id'], name='Recovery test')
         await runtime.create_agent(config)
-        context = InvocationContext(run_id='test-recovery', agent_id=agent['id'], parent_run_id=None,
-            root_run_id='test-recovery', caller=InvocationCaller('test'), context_id=None,
-            task_id=None, runtime_provider_id='google.adk')
-        events = [event async for event in runtime.execute(config, context, RuntimeInput(prompt='Run the check after installation'))]
-        assert events[-1].run_status == RunStatus.SUCCEEDED
-        assert sum(event.type == AgentEventType.TOOL_COMPLETED for event in events) == 4
+        # Live input and operation ownership require a real host invocation.
+        services.install_runtime_provider('core.mock', runtime, default=True)
+        run = await services.run_manager.start_run(agent['id'], 'Run the check after installation')
+        await services.run_manager.wait_execution(run.run_id)
+        completed = services.run_manager.get_run(run.run_id)
+        assert completed.status == RunStatus.SUCCEEDED, completed.error
+        assert len(observed) == 4
         assert model.step == 4
         await runtime.delete_agent(agent['id'])
     client.portal.call(scenario)

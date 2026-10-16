@@ -1,13 +1,32 @@
 import type { ComponentType } from "react";
+import type { PluginVisualCapture, PluginVisualCaptureRequest, PluginVisualCaptureResult } from "./visualCapture";
 import type { NodeSurfaceLevel, NodeTypeCatalogItem, WorldCard } from "../types/world";
+export type { TutorialDefinition, TutorialStep, TutorialText } from '../tutorials/types';
+export type { DataConsumer, DataSchema, DataQuery, Dataset, DataSourceHost } from './dataSources';
+export type { ExecutionNode, ExecutionEdge, ExecutionPage, ExecutionSnapshot, ExecutionSourceHost } from './executionSources';
 export type { NodePresentation, NodeSurfaceLevel, PluginStateSpec } from "../types/world";
 export { SchemaFields } from "./SchemaFields";
+export { CardFace, CardStock } from '../components/CardFace';
+export type { CardFaceProps } from '../components/CardFace';
+export { CARD_FACE_VARIANTS, CARD_FACE_TONES, cardFaceDesign } from '../components/cardFaceDesign';
+export type { CardFaceDesign, CardFaceVariant, CardFaceTone } from '../components/cardFaceDesign';
 export { t, useLocale } from "../i18n";
 export { useNestedFlowGestures } from "../canvas/useNestedFlowGestures";
+export { NetworkMap } from '../graph/NetworkMap';
+export type { NetworkMapProps } from '../graph/NetworkMap';
+export type { NetworkData, NetworkNode, NetworkEdge, NetworkMapHandle } from '../graph/types';
 export { useFileViewer } from "../state/openFiles";
-export type { FileReference, OpenedFile } from "../state/openFiles";
+export type { FileReference, OpenedFile, FileOpenOptions } from "../state/openFiles";
 export { WorkspaceSection, useWorkspaceSections } from "../workspace/WorkspaceSection";
 export type { WorkspaceSectionProps } from "../workspace/WorkspaceSection";
+export { ApplicationSurface, WorkspacePanel, WorkspaceToolbar, WorkspaceEmptyState } from '../workspace/WorkspacePrimitives';
+export { IconButton } from '../components/IconButton';
+export { Modal } from '../components/Modal';
+export type { WorkspaceLayoutMetadata } from "../workspace/workspaceLayoutMetadata";
+export { useWorkspaceNavigation } from '../workspace/WorkspaceNavigation';
+export type { WorkspaceNavigation } from '../workspace/WorkspaceNavigation';
+export { composeWorkspace } from "../legions/workspaceRecipes";
+export type { WorkspaceCompositionItem, WorkspaceCompositionOptions, WorkspaceRecipe } from "../legions/workspaceRecipes";
 
 export interface CardStateStore {
   get(): Promise<{ value: Record<string, unknown>; revision: number }>;
@@ -17,6 +36,15 @@ export interface CardStateStore {
 }
 
 export type PluginSlot = "preview" | "body" | "settings" | "workspace";
+
+/** A document mutation published by the authoritative backend. */
+export interface PluginDocumentChange {
+  nodeId: string;
+  revision: number;
+  actorId?: string;
+  runId?: string;
+}
+
 export interface XrdMultiphaseOptions {
   restart?: boolean;
   agent_node_id?: string;
@@ -128,6 +156,11 @@ export interface PluginViewProps {
   definition: NodeTypeCatalogItem;
   level: NodeSurfaceLevel;
   host: {
+    /** Only on workspace surfaces. Presentation only; defaults to this card.
+     * Does not save layout, grant access or interrupt layout editing. */
+    workspace?: { activate(view?: { card_id?: string; section_id?: string }): boolean };
+    dataSources?: import('./dataSources').DataSourceHost;
+    executionSources?: import('./executionSources').ExecutionSourceHost;
     /** Optional transient UI draft, isolated by the host's card/state scope/session.
      * Survives surface unmount; never written to durable state or preferences.
      * Clear with undefined after save/cancel. Older hosts may omit this capability. */
@@ -157,20 +190,35 @@ export interface PluginViewProps {
     openResultsConversation?(): Promise<unknown>;
     updateConfig(patch: Record<string, unknown>): Promise<void>;
     getAgentInfo(nodeId?: string): Promise<{ session_id: string; details?: Record<string, unknown> }>;
+    /** Live graph-derived grants; card config hints never authorize a tool. */
+    getAgentCapabilities?(nodeId: string): Promise<{ kind: string; target_id?: string }[]>;
     openLinkedCanvas?(type: string, name: string): Promise<void>;
     documentAction(action: string, arguments_: Record<string, unknown>, expectedRevision?: number, nodeId?:string): Promise<{ value: unknown; revision: number }>;
-    delegationAction(action: 'collect' | 'wait' | 'stop', arguments_: Record<string, unknown>): Promise<Record<string, unknown>>;
+    delegationAction(action: 'collect' | 'wait' | 'inspect' | 'stop' | 'cancel_defer', arguments_: Record<string, unknown>): Promise<Record<string, unknown>>;
     resourceAction(action: string, arguments_: Record<string, unknown>, confirm?: boolean): Promise<Record<string, unknown>>;
     listCards(traits?: string[]): Promise<WorldCard[]>;
     readDocument(nodeId?: string): Promise<{ value: unknown; revision: number }>;
     transform(operation: string, request: Record<string, unknown>): Promise<Record<string, unknown>>;
-    documentDownloadUrl(name: string, nodeId?:string): string;
+    documentDownloadUrl(name: string, nodeId?: string): string;
+    /** Select a card and open its normal OAW workspace surface. */
+    openWorkspace(nodeId: string): void;
+    /** Start an Agent through the ordinary OAW run lifecycle. */
+    runAgent(nodeId: string, prompt: string): Promise<void>;
+    /** Observe future node-document mutations received by the OAW event stream. */
+    onDocumentChange(listener: (change: PluginDocumentChange) => void): () => void;
+    /**
+     * Register a transient capture of this card's active plugin workspace.
+     * The host sends it only after the backend has authorized a matching
+     * visual capability; image bytes are never persisted in the document.
+     */
+    registerVisualCapture(captureKind: string, capture: PluginVisualCapture): () => void;
     readFile(reference: import("../state/openFiles").FileReference, signal?: AbortSignal): Promise<{ name: string; size_bytes: number; data: string }>;
-    openFile(reference: import("../state/openFiles").FileReference, name: string): void;
+    openFile(reference: import("../state/openFiles").FileReference, name: string, options?: import('../state/openFiles').FileOpenOptions): void;
     clearOpenedFile(): void;
     openInputNode?(type: string, name: string, source: { filename: string; source_base64: string }, relationship?: string): Promise<void>;
   };
 }
+export type { PluginVisualCaptureRequest, PluginVisualCaptureResult };
 export interface FrontendPlugin {
   apiVersion: 1;
   views: Record<string, ComponentType<PluginViewProps>>;

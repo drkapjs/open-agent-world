@@ -1,125 +1,251 @@
 # MatCreator on OAW
 
-This plugin publishes a **MatCreator research** Legion preset, a research task
-board, four portable Toolsets and an evolving Know-Do Graph.
+This plugin publishes **MatCreator research**, a dedicated **MatCreator
+Agent**, four portable Toolsets, a Know-Do Graph and the host's reusable **Jobs**
+card. If you opened an older version, browse the MatCreator Pack in the Library
+and choose **Collect new cards** to collect Jobs. Jobs retains its canonical
+`core.jobs` identity and can also be collected
+from Core essentials.
 
-## Research workspace preset
+New research Legions open Conversation on the left, the Agent and Structure
+viewer in the center, and Sandbox on the right. Agent graph, artifacts and Jobs
+sit below, alongside the knowledge graph. Existing formations keep their saved
+positions; Workspace mode retains its composed panes and tabs.
 
-Restart the OAW backend and rebuild/reload the frontend after updating. Open the
-bottom **Legions** deck and place **MatCreator research**. Open **Workspace mode**
-in its header. The preset is available without running a demo script or adding
-cards to the current world beforehand.
+**Jobs → Agent** selects the submitting Agent's jobs in the current session.
+**Observe jobs** grants read-only access; **Manage jobs** also allows status
+refresh, monitoring controls and explicit external cancellation. A job records
+its Sandbox separately as the execution environment. One Jobs card can connect
+to several Agents; grouping cards into a Legion does not grant access to jobs.
 
-The layout provides Sessions and Files on the left, Conversation in the middle,
-and Research tasks / File preview / Research knowledge / Participants
-as tabs on the right. The lower-right tabs contain Sandbox controls/settings/terminal
-and **Structure viewer**. The viewer follows structure files opened from either
-the Conversation or Sandbox through their `core.file-preview` connections.
-All scientific skills are stored directly inside Research knowledge, including their
-scripts, reference files and source snapshots. No external Toolset cards are deployed.
-The MatCreator Agent stays available in the workspace's bottom bar. Edit layout with the standard Legion controls;
-saving to the library preserves its arrangement and remaps owners on deployment.
+## Native MatCreator Agent
 
-The plugin requires the bundled `science.structure-viewer` plugin (loaded first
-through its declared plugin dependency). New deployments include this viewer;
-existing canvas formations keep their user-edited layout and connections.
+Use **MatCreator research** for the Pack-owned planner, execution
+orchestrator and recursive step executors. Their maintained Python source lives
+in `oaw_matcreator_engine/` and is included in the Pack wheel alongside the
+`oaw_matcreator/` host adapter. Editing that source takes effect in the next
+worker; no upstream checkout, MatCreator PyPI/Git installation, source fingerprint
+update or separate service is required.
 
-The preset connects one native OAW Agent to a Conversation, a stopped Sandbox,
-the task board, and the prepopulated Know-Do Graph with **Use and learn**. It uses the user's default model. Configure that model and the Sandbox
-runtime/environment before a real computation. No host path, credentials, package
-installation or automatic Sandbox startup is embedded in the preset. Files use
-the ordinary Sandbox workspace; the Agent is instructed to use a separate output
-directory for each plan/session.
+Context compression uses OAW's [shared budget policy](../../docs/developers/context-compaction.md).
+The planner, execution orchestrator and each recursive executor check their own
+assembled request before calling the model. Catalog context/output limits take
+priority; compression triggers on budget pressure, not every three turns.
+Checkpoints are private to each native session/branch/agent and preserve the
+original event history. A normal final reply does not start a post-turn summary.
 
-The research loop follows [AI4MS/MatCreator devel's planning/execution
-orchestrator](https://github.com/AI4MS/MatCreator/blob/75c705c3c2bae7f2392c2d4bc9e90ca618a37f4a/src/matcreator/agents/orchestrator/agent.py)
-(inspected commit `75c705c3c2bae7f2392c2d4bc9e90ca618a37f4a`): clarify the goal,
-plan dependent steps, execute, verify results, revise blocked work and record
-experience. OAW owns model calls, tools, Runs, cancellation, conversations and
-files. This preset uses a scientific system instruction on the existing Agent;
-it does not launch the upstream ADK server. Revision 4 includes equipped Summoning,
-a Research Executors Barracks and an Executor blueprint sharing the research
-Sandbox and Know-Do Graph, which owns all skills from the four scientific packages. OAW supplies asynchronous Run
-dispatch and collection; the coordinator chooses tasks and verifies results.
-Remote-job reconciliation remains outside this workflow.
+The engine was adapted from AI4MS/MatCreator revision
+`0328c8b814499cbf3e49116323cee050145fa08f`. Its import provenance is recorded in
+[`oaw_matcreator_engine/UPSTREAM.json`](oaw_matcreator_engine/UPSTREAM.json);
+this is historical attribution, not a runtime lock. See
+[engine ownership](oaw_matcreator_engine/UPSTREAM.md) for the retained modules
+and the OAW adaptations.
 
-### Research tasks
+Normal OAW setup and development startup prepare third-party orchestration
+libraries through the Pack's `open_agent_world.setup` hook. Desktop packaging
+uses the same hook. Google ADK, LiteLLM and JSON Repair are declared in
+`oaw_matcreator/native-requirements.txt` and installed in an isolated directory
+under the destination Python's `oaw-runtimes/matcreator/`. Scientific libraries
+remain in connected Sandboxes. These dependencies are not added to OAW core.
 
-The board supports multiple named plans within each conversation session, task
-dependencies, **To do / In progress / Awaiting review / Blocked / Done**, acceptance criteria, result notes and output
-paths. OAW automatically binds plans, progress and execution attempts to the
-active conversation session: a new session starts with an empty board, and
-returning to an earlier session restores its plans. The card, its configuration
-and connections stay the same. No session field or persistence setting is needed.
-**Research plans** chooses among plans in the current session. Output paths are
-recorded references; inspect files in the Files and File preview sections.
-Sandbox files and the Know-Do Graph retain their shared behavior.
+Setup reuses verified installations, serializes concurrent calls and retries
+partial installs. Hosts older than Python 3.12 receive a managed interpreter.
+Workers use `-I -S` and explicitly load the Pack source plus its third-party
+libraries. Execution never downloads dependencies. The dependency cache identity
+is independent of engine source edits. Previous runtime caches are left intact;
+new setup installs only the current third-party requirements.
 
-Existing board documents and execution attempts are lazily retained in the
-workspace's default conversation session. Old plan `session_id` labels remain
-readable for compatibility but are not namespace keys or displayed in the UI;
-new Agent tool schemas do not request them. The host handles namespace creation,
-deletion and recovery. Switching sessions never redirects pending results, and
-live delegated work blocks deleting its card or originating session.
+Existing `matcreator.agent` cards, the `matcreator.native` provider ID, session
+storage paths and checkpoint format are retained. Obsolete `python_executable`
+and `source_directory` config fields are discarded on validation; external
+engine/interpreter override paths are no longer exposed or executed. Existing
+saved workspace layouts remain user-owned.
 
-Both human edits and `task_board_*` Agent tools use the same revision-checked
-document. Live updates are polled every three seconds. A concurrent edit retains
-the local draft and offers an explicit reload. Unknown/cyclic dependencies and
-starting a task before its prerequisites finish are rejected. **Done** requires
-a result note; the Agent/user remains responsible for verifying that evidence.
-Changing a status never starts or cancels a Run. **Read tasks** grants inspection
-only; **Manage tasks** grants editing, and removing the connection revokes access
-immediately. Saving a reusable Legion keeps task structure and descriptions, but
-clears session references, results and output references and resets all tasks in
-the copy. The new Sandbox does not contain the source project's computed files.
-Ordinary reloads and backend restarts preserve the live board's progress.
+On Windows, `scripts/dev.ps1` prepares and launches the persistent
+`backend/.venv/Scripts/python.exe`, matching normal setup. A `uv run
+--with-editable` overlay has its own installation prefix and cannot see that
+runtime. Missing-runtime errors report the backend interpreter and expected
+directory; Agent details expose the managed environment's availability.
 
-### Delegating research
+Only orchestration dependencies are installed in this environment. Materials
+libraries, CLI tools, remote-compute credentials and licensed programs belong to
+the connected Sandbox. The native runtime supports ADK/LiteLLM model connections
+(OpenAI, Anthropic, Gemini and legacy); the host's TypeSafe-only adapter is not
+supported by this ADK execution engine.
 
-The coordinator discovers Executor IDs using Summoning `list`, then uses
-`task_board_execute` with `action=collect` to read runnable work IDs and attempts.
-`delegate` takes `item_id`, `library_id`, `agent_id`, `expected_revision` and a
-unique `request_id`. Admission persists a stable attempt and supplies the Executor
-with task inputs, verified dependency results, acceptance criteria and its own
-`research/<board>/<task>/<attempt>/` output folder. Repeat the same request ID
-only to recover an uncertain dispatch response; a deliberate retry gets a new ID.
+In **normal** mode, MatCreator first presents its plan and waits for approval in
+Conversation. **flash** mode delegates directly without a DAG. The Legion
+connects the Agent to Conversation, Sandbox, Research knowledge, Research
+artifacts. The separate **Agent graph** observes the Agent through a read-only
+connection. Structure viewer follows files from
+Conversation and Sandbox. No OAW Barracks or second task scheduler is deployed.
 
-Launch independent tasks, then use `wait` with `instance_ids`, `wait_mode=any|all`
-and a bounded `timeout_seconds` (0–60). A timeout leaves work running. Continue
-waiting or doing useful independent work until the results arrive. `collect`
-reconciles terminal Runs and retains failures. Success enters **Awaiting review**;
-the coordinator must inspect actual files, record evidence/output paths and mark
-**Done**. Return inadequate results to **Blocked** before retrying. The task detail
-shows each attempt, report, output directory and a targeted **Stop task** button.
-Stopping the coordinator propagates through dependent child Runs. Collection
-never restarts cancelled work. Restart recovery reconciles existing attempts,
-including admissions interrupted before their handles reached the board.
+The planner owns user communication in both normal and Flash modes. Execution
+orchestrators and recursive step executors return internal reports and artifact
+references to their caller. Their text remains in native checkpoints for review;
+only planner text becomes Conversation replies, while tool activity stays visible.
+`to_planner` ends the execution stream after its tool response, before another
+executor model round. The planner then reviews the report and, when needed,
+presents a revised plan for confirmation. Internal executors cannot send
+Conversation messages or request another Conversation turn through the resource
+bridge, including capability IDs remembered in older plans or checkpoints.
+Model error events, including `MAX_TOKENS` with only reasoning and no visible
+answer, fail the Run with a specific diagnosis. Ending an ADK stream does not
+make an unsuccessful model response a successful Run; earlier tools are not
+automatically replayed. Each new worker uses the selected connection's saved
+output token limit, which includes reasoning tokens on compatible providers.
 
-Each summoned Executor has a private retained context. It does not join the main
-Conversation or receive its whole history; supply necessary scientific details in
-the task. Its shared connections retain normal live graph authorization. Bare
-Executor snapshots do not wait for unrelated shared Sandbox commands to finish.
+The Pack owns its orchestration tools, graph validation, recursive runner,
+result schemas and recovery ledger. Planner and child agents are constructed
+with the same explicit OAW resource bridge; they never construct standalone
+Shell/Python, remote-provider or knowledge-store tools:
 
-Restart the backend/frontend and place **MatCreator research** from the Legions
-deck to use revision 3. Existing placed Legions retain their configured Agents and
-layout; they are not silently replaced. The updated task tools also work on old
-boards when their coordinator has Summoning connected to a suitable Barracks and
-uses the new coordination instructions.
+| Resource | Connected OAW tool/view |
+| --- | --- |
+| Shell/Python and files | Sandbox inspection, execution, operation waiting and file browser |
+| Skills and memory | Know-Do Graph search/inspection, skill resources/scripts, save memory |
+| Output files | Publish/inspect immutable OAW artifact versions; Structure viewer |
+| Plans and subagents | Host Agent graph through the public execution-source contract |
+| Conversation and stop | OAW Conversation and Run controls |
 
-This release keeps the coordinator active through explicit bounded waits. It does
-not yet inject messages into running providers or automatically reopen a finished
-coordinator turn. Remote calculations must still be checked through their actual
-job tools. Suggested acceptance request: “Build 2×2×2 and 3×3×3 copper supercells,
-verify the atom counts independently, then compare the results.”
+Tools are discovered through `oaw_list_tools` and invoked through
+`oaw_invoke_tool`; each call rechecks current graph authorization. Removing an
+edge revokes the tool for all internal subagents. Native host shell tools, native
+knowledge databases, native remote-job submission tools and configured remote
+A2A agents are not exposed. Existing scientific commands may be run through an
+authorized Sandbox; remote job monitoring must use those connected tools and
+retain operation/job IDs, rather than assuming the upstream web server's job
+monitor is running.
 
-Host integration tests: `backend/tests/test_matcreator_workspace.py`;
-delegation tests: `plugins/matcreator/tests/test_delegation.py`;
-rendered workspace tests: `frontend/e2e/matcreator-workspace.spec.ts`.
+Unknown function names return tool feedback in the same model loop. Planning,
+execution orchestration and every recursive Step agent share this behavior.
+Native function arguments are validated before invocation; execution, result
+encoding and tool-local cancellation failures are contained per call. One bad
+call does not cancel unrelated calls in the same batch. Failed calls are never
+automatically replayed: an operation may already have produced side effects.
+Run cancellation still cancels and joins the active tool work.
 
-Example request: “Plan a copper supercell study. Inspect the available scientific
-environment, record the steps in the task board, generate the structure when
-ready, verify its atom count and publish the output paths.” Actual scientific
-execution requires the relevant Sandbox dependencies and an available model.
+Each card/conversation pair has its own private worker state and atomic session
+checkpoint under the host data root. New turns load that checkpoint in a fresh
+worker; stopping a Run cancels/join its OAW tool calls and closes the worker.
+Interrupted work never restarts automatically. Pack attempt recovery runs
+on the next requested turn. Private runtime paths, credentials, checkpoint data
+and execution snapshots are excluded from saved Legion templates. The execution
+view is a projection; an unavailable view does not abort scientific work.
+On restore, unanswered tool calls receive matching responses that explicitly
+report an unknown outcome. Existing results are retained and no operation is
+replayed by this repair. Model/transport failures outside tool dispatch and
+worker/persistence faults remain Run failures.
+
+Artifacts are verified through the current OAW artifact read capability, using
+`oaw:artifact:<collection>:<version>` references. Sandbox paths are never treated
+as host files. Native `success` and OAW Run success remain execution claims, not
+proof of scientific correctness.
+
+Validation includes host deployment/template/session/revocation checks and a
+real Pack-engine + ADK test with a deterministic local model endpoint. Set
+`OAW_MATCREATOR_MANAGED=1` after normal plugin setup. It exercises planning,
+checkpoint reload, execution, recursive child tools and final graph status.
+An additional isolated test rejects imports of external MatCreator, OAW core,
+and the old standalone knowledge stack, and checks dependency joins, recovery,
+artifact references and revoked access. This is not a real-model or scientific
+calculation benchmark.
+
+The source-plugin setup hook and `.oawpack` archive installation are distinct
+host mechanisms. This change packages the engine in the wheel and validates
+source setup; it does not add a new generic archive runtime installer.
+
+## Workspace layout (revision 2)
+
+- Left: **Agent graph**, a vertical execution history with bounded parallel
+  tracks, folded completed history and expandable execution steps. Select a
+  node to follow typed dependencies, inspect outputs or focus its local DAG.
+- Center: **Conversation**, **Skills & knowledge**, **Structure viewer**,
+  **File preview**, **Research artifacts**, and **Research files & compute** tabs.
+- Right: **Sessions** above **Files**. Both stay visible while changing center tabs.
+
+**Agent graph** belongs to Core essentials and also works outside MatCreator.
+Connect it to ordinary Agents, Agent Barracks, equipped Summoning cards or a
+custom execution source, then select the source in its toolbar. History tracks
+show recorded time overlap, never dependencies. In the local DAG, solid edges
+mean control dependencies, dashed edges mean observed data delivery or artifact
+inspection, and dotted edges mean retry/replanning. Parentage remains containment. Runtime producers and other Packs
+can use the public [execution source API](../../docs/developers/execution-graph.md).
+
+Clicking a file reveals the detached File preview. A newly opened, valid structure
+from Sandbox or Conversation reveals Structure viewer after parsing succeeds;
+its temporary attachment preview then closes. Unsupported/invalid files keep the
+normal preview. Pinned views, reloads and background refreshes do not navigate.
+
+This uses the public `host.workspace.activate()` API. Activation is local to the
+open workspace and does not save or recompose the layout. User-hidden sections,
+layout editing and deployed section permissions are respected. Conversation
+drafts, file selections and plugin state retain their original React owner.
+See [workspace navigation](../../docs/developers/workspace-design.md#activate-content-after-an-operation).
+
+Revision 2 is the default for new deployments. Existing saved layouts remain
+user-owned; redeploy the preset or arrange its tabs with **Edit layout**.
+
+## Execution history and dependency evidence
+
+Pack 0.9 requires OAW plugin API 1.33. The Pack records immutable Step attempts,
+plan identities, timestamps, retry/replan links and versioned artifact producers.
+The host stores a full read-only projection with each Run and exposes authorized,
+revision-consistent pages. A completed Conversation turn does not turn unfinished
+Steps into successes. New turns retain the previous graph until their first
+projection arrives; the stable history ID preserves selection across these turns.
+
+The default view uses at most three chronological tracks. Older completed groups
+fold automatically; running, failed and waiting work remains visible. Cross-execution
+references name their real sources without drawing long lines through unrelated
+history. Clicking one reveals its actual target Step and local dependencies.
+Execution expansion, Step graph, additional dependency hops, focus and return all
+use the same node identities. Virtualized history rows and a bounded local graph
+keep 300?500px panels usable. The local lens shows at most 160 nodes with an
+explicit limit notice; continue by selecting a related node.
+
+`consumed_inputs` explicitly names a successful `step_id`, a same-plan predecessor
+`node_id`, or a versioned `artifact_ref`. A data edge is recorded when the result
+is delivered, not merely when the plan declares it. Successful artifact inspection
+records access evidence; it does not prove that the model used the data in its
+reasoning. Free-form contextual references are not reconstructed. Sources outside
+this private Agent/session history have no fabricated producer node. Older records
+lack evidence that was never recorded; migration preserves known identities and
+explicit control dependencies without inventing historical provenance.
+
+The host accepts up to 10,000 nodes, 50,000 edges and 8 MiB per projection. The Pack
+preserves complete history on disk and declares presentation limits when necessary.
+History folding does not aggregate or rewrite real edges. Runtime scheduling,
+resource access and scientific execution remain Pack-owned.
+
+## Long computations
+
+Native steps can now return `waiting` with host `job_ids`. Submission identities
+are recorded before the remote call, and the host saves the provider ID before
+returning it to the model. A waiting workflow checkpoints and releases its worker.
+When external work settles, the host starts a bounded continuation that restores
+the same approved plan, inspects the existing jobs, and collects outputs. A changed
+plan still needs approval. Known jobs are supplied to the resumed step explicitly.
+
+Discover `matcreator.bohrium-batch` with `inspect_background_jobs`. It submits
+through the installed `bohr batchjob` CLI in the connected Sandbox, performs a
+dry run, requires explicit project/image/machine and compute budget, and records
+a searchable `oaw-<host-job-id>` in the remote job name. A lost submission response
+requires inspecting existing provider jobs and attaching the matching ID; it is
+never automatically retried. Stage input files before submission; download results
+into the Sandbox and publish artifacts after completion. Existing deployed skills
+retain their saved content; reimport the updated package to receive runtime notes.
+
+Missing `submit_step_result` triggers one report-only repair invocation, limited to
+two model calls and 60 seconds. It cannot rerun resource or child-agent tools.
+Persistent failure is classified as `result_missing`, separately from an executor
+timeout or exception. Partial diagnostic events remain available. Provider success
+does not prove trajectory quality or scientific acceptance.
+
+See the host's [waiting and recovery contract](../../docs/execution.md#long-computations-and-durable-waiting-api-133)
+for Stop, cancellation, resource deletion and restart behavior. Controlled tests
+cover host persistence and native worker recovery; real Bohrium service behavior,
+multi-day computation and installed desktop operation require separate validation.
 
 ## Skill package provenance
 
@@ -134,77 +260,6 @@ Remote Compute contains database/search and remote-provider skills, including th
 complete Tavily family. Nested SKILL.md files, scripts, references, binary assets,
 frontmatter and source hashes are retained. OAW's internal Skill resource members
 remain inside their Toolset; there is no separate published card type per skill.
-
-## Start the demo
-
-From the OAW repository:
-
-```powershell
-backend/.venv/Scripts/python.exe plugins/matcreator/create_demo.py
-$env:OPEN_AGENT_WORLD_DATA_ROOT = (Resolve-Path .open-agent-world/matcreator-demo).Path
-./scripts/dev.ps1
-```
-
-Restart the frontend and backend after adding the plugin. Local plugin discovery
-loads it automatically; no MatCreator runtime, ADK tools, graph database or remote
-provider is installed by importing the plugin. The demo creation command creates
-new cards each time; use a fresh data root for an isolated repeat.
-
-The wheel contains the backend and all four packages. The frontend extension is
-included in the source distribution; keep its `frontend/` folder under the local
-plugin directory and rebuild OAW, as with other OAW frontend plugins.
-
-Configure an actual Agent model in OAW before asking it to work. The creation
-script uses the mock provider only to create the world without calling an LLM;
-the acceptance test invokes the real Agent capability provider directly and is
-not a claim of autonomous LLM task completion.
-
-Choose Ubuntu WSL for the first scientific demo. Bind a dedicated existing
-Windows folder as the Sandbox's read/write workspace. Provision Python/ASE
-explicitly. The validated test copies already installed Ubuntu packages into
-`python-libs` inside that folder using `provision_science.py`; it does not install
-dependencies or grant access to the host home. For example, when Ubuntu already
-has ASE, NumPy and SciPy:
-
-```powershell
-wsl -d Ubuntu -- python3 /mnt/d/AI/open-agent-world/plugins/matcreator/provision_science.py --destination /mnt/d/your-demo-workspace/python-libs
-```
-
-Select the connected Local ASE Environment when executing. It sets
-`OPENBLAS_NUM_THREADS=1` and `OMP_NUM_THREADS=1`. This profile is an explicit
-invocation choice. Start the Sandbox after configuring its runtime and folder.
-
-1. Connect Materials Agent to Materials Core using **Use skills**, to KDG using
-   **Use and learn**, and to Sandbox using **Execute**. The creation script sets
-   these links and the Environment link.
-2. Ask: “Use Local structure demo to build a 2×2×2 copper supercell. Run its
-   `scripts/build_structure.py` through the Sandbox with interpreter `python3`,
-   the Local ASE Environment and argv `['--repeat','2','--output','copper2',
-   '--library-path','python-libs']`. Verify the report and publish all three
-   output files as an Artifact.” Expected atom count: **32**.
-3. Open the KDG's **Open workspace** Window. This switches the container itself
-   to an inline circular relationship graph that moves and scales with the world
-   canvas. **Show member cards** restores its spatial Skill members. Drag a Toolset
-   directly from the Tools deck into the KDG body to preview and confirm importing
-   its package; no temporary world Toolbox is created. Alternatively use **Assimilate a Toolset**, choose
-   Materials Core, preview and confirm. Alternatively drag the Toolset header
-   into the KDG body, away from its connection boundary, and confirm. Ordinary
-   connections never assimilate anything.
-4. Search `copper` or `structure`; click an entry to inspect it and double-click
-   to expand its neighborhood. The consumed Toolset and its old relationship
-   are removed after commit. No manual source deletion is necessary.
-5. Ask for the related **3×3×3** task. The Agent uses `knowledge_search` and
-   `knowledge_inspect`, then passes the returned `skill_node_id` to OAW's normal
-   `run_skill_script`. Expected atom count: **108**. Publish CIF, extxyz and JSON.
-6. **Use and learn** permits recording experience. **Curate knowledge** is a
-   separate explicit relationship granting durable edits and distillation. The
-   Window's Review mode also supports explicit memory promotion with evidence.
-
-The native acceptance test verified both structure roundtrips, real Artifact
-publication, and denial after revoking KDG access. The Windows AppContainer
-baseline test also passed, but this ASE distribution's ctypes/SciPy dependency
-did not load under its existing isolation mitigations. The scientific demo is
-therefore validated on WSL; Windows isolation settings were not weakened.
 
 ## Knowledge and resource lifecycle
 
@@ -238,26 +293,28 @@ Search/expansion responses are bounded (default 60, maximum 200 plus explicitly
 requested roots), with type, relationship, source, trust and memory filters.
 Full bodies and resources load only on inspection. Backend queries currently scan
 the host-owned document; they do not require a second persistence database.
-The Window renders the progressive working subgraph using OAW's existing React
-Flow, preserves node positions while expanding and culls offscreen nodes. A
+The Window renders the progressive working subgraph with the host's shared
+NetworkMap (Sigma/Graphology), preserving graph ownership and inspection. A
 1,200-entry contract fixture verifies bounded paging; it is not a performance
 benchmark of all possible graph shapes.
 
 ## Verification commands
 
 ```powershell
-backend/.venv/Scripts/python.exe -m pytest backend/tests/test_matcreator.py
-$env:OAW_MATCREATOR_PYTHON = 'python3'
-$env:OAW_TEST_SANDBOX_RUNTIME = 'wsl:Ubuntu'
-backend/.venv/Scripts/python.exe -m pytest backend/tests/test_matcreator.py::test_native_ase_before_after_assimilation_and_artifact
+backend/.venv/Scripts/python.exe -m pytest backend/tests/test_matcreator.py backend/tests/test_matcreator_native.py backend/tests/test_matcreator_workspace.py plugins/matcreator/tests
+$env:OAW_MATCREATOR_MANAGED = '1'
+backend/.venv/Scripts/python.exe -m pytest plugins/matcreator/tests/test_native_runtime.py plugins/matcreator/tests/test_owned_engine.py
+cd frontend
+npx vitest run src/cards/ExecutionGraph.test.tsx src/plugins/StructureViewer.test.tsx src/legions/LegionWorkspace.test.tsx
+node scripts/run-e2e.mjs --builtin-ui e2e/matcreator-native.spec.ts
 ```
 
-The native test needs a real desktop account with WSL access and provisioned
-Ubuntu packages. It creates a bound temporary workspace, copies those packages,
-uses normal capability calls, publishes actual artifacts and destroys its Sandbox
-after successful validation. It never calls an LLM or sends data to a remote
-compute/search provider. UI acceptance: `frontend/e2e/matcreator.spec.ts` against
-isolated OAW backend/frontend servers on ports 8017/5177.
+The native runtime test uses the Pack engine/real ADK with a deterministic local
+model endpoint. The browser test uses a fixture execution snapshot and real
+Conversation attachment/Structure viewer APIs. These are not real-model or
+remote-science acceptance tests. Generic host delegation and continuation
+regressions live in `backend/tests/test_node_delegation.py` and
+`backend/tests/test_node_continuations.py`, with a test-only task plugin.
 
 Regenerate bundled source packages explicitly with:
 
@@ -265,6 +322,7 @@ Regenerate bundled source packages explicitly with:
 backend/.venv/Scripts/python.exe plugins/matcreator/build_packages.py path/to/MatCreator
 ```
 
-The maintainer importer requires PyYAML. Check out the pinned revision first;
-normal plugin startup only reads the generated JSON packages and requires no YAML
-loader, network, scientific runtime or MatCreator installation.
+The maintainer importer requires PyYAML. Check out the skill-package source
+revision first; normal startup reads generated JSON and does not install science
+dependencies. `provision_science.py` remains an optional helper for preparing ASE
+inside an explicitly configured Sandbox workspace.

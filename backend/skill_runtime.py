@@ -20,14 +20,14 @@ class RunSkillScript(BaseModel):
     model_config = ConfigDict(extra="forbid")
     environment_id: StrictStr | None = None
     target_id: StrictStr | None = None
-    timeout_seconds: float | None = Field(default=None, gt=0, le=3600, strict=True, allow_inf_nan=False)
+    timeout_seconds: float | None = Field(default=None, gt=0, le=36000, strict=True, allow_inf_nan=False)
     wait_seconds: float | None = Field(default=None, ge=0, le=60, strict=True, allow_inf_nan=False,
         description="Seconds to await the result before returning an operation_id. Wait later with wait_sandbox_operation; do not resubmit running work.")
     skill_id: StrictStr = Field(description="World node ID returned by reading an authorized Skill or listing its Toolbox.")
     script_path: StrictStr = Field(validation_alias=AliasChoices("script", "script_path"),
         description="Relative bundled file, for example scripts/check.py.")
     argv: list[StrictStr] = Field(default_factory=list, description="Script arguments as an argv array. An explicitly selected shell interpreter applies its own argument rules.")
-    interpreter: list[StrictStr] = Field(default_factory=list, description="Optional installed interpreter argv prefix, e.g. [\"python3\"]. Omit for a directly executable file. Use the Sandbox inspect tool to choose its runtime tools.")
+    interpreter: list[StrictStr] = Field(default_factory=list, description="Optional installed interpreter argv prefix, e.g. [\"python3\"]. Python (.py) entries default to the Sandbox's python3; other entries must be directly executable when omitted.")
 
     @model_validator(mode="after")
     def validate_command(self):
@@ -63,8 +63,9 @@ def resolve_skill_mount(services, agent_id: str, sandbox_id: str, request: RunSk
     files.extend((path, base64.b64decode(asset.data_base64, validate=True) if isinstance(asset, SkillAsset)
                   else asset.encode("utf-8")) for path, asset in skill.files.items())
     bundle = RuntimeBundle(f"skills/{skill_node.id}", tuple(files), tuple(skill.directories))
-    mount = RuntimeMount(bundle, len(request.interpreter))
-    argv = [*request.interpreter, request.script_path, *request.argv]
+    interpreter = request.interpreter or (["python3"] if request.script_path.endswith(".py") else [])
+    mount = RuntimeMount(bundle, len(interpreter))
+    argv = [*interpreter, request.script_path, *request.argv]
     # Membership is validated before any backend receives the request.
     from pathlib import PurePosixPath
     mount.command(argv, PurePosixPath("/.oaw") / bundle.key)

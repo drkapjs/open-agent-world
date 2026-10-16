@@ -238,7 +238,7 @@ class CardLibraryStore:
                     entry.source_pack_ids.append(pack.definition.id)
                 entry.unlocked = True
             else:
-                state.collection[cid] = CollectionEntry(card_id=cid, plugin_id=pack.definition.plugin_id,
+                state.collection[cid] = CollectionEntry(card_id=cid, plugin_id=state.card_definitions[cid].plugin_id,
                     source_pack_ids=[pack.definition.id], unlocked_at=timestamp,
                     finish=roll_card_finish() if roll_finishes else "normal")
 

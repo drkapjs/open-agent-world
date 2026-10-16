@@ -15,10 +15,18 @@ def agent_session(services, conversation_id, agent_id):
     return session.id
 
 
+def in_session(store, record, session_id):
+    if record.get('provenance', {}).get('session_id') == session_id:
+        return True
+    with store.database.locked() as db:
+        return db.execute('''SELECT 1 FROM conversation_attachment_grants
+            WHERE session_id=? AND version_id=?''', (session_id, record['version_id'])).fetchone() is not None
+
+
 def visible(store, record, session_id, agent_id):
-    if record.get('provenance', {}).get('session_id') != session_id:
+    if not in_session(store, record, session_id):
         return False
-    if record['provenance'].get('agent_id') == agent_id:
+    if record['provenance'].get('session_id') == session_id and record['provenance'].get('agent_id') == agent_id:
         return True
     with store.database.locked() as db:
         return db.execute('''SELECT 1 FROM conversation_messages m, json_each(m.attachments_json) a
@@ -33,7 +41,7 @@ def resolve(services, conversation_id, session_id, references, agent_id=None):
     for ref in references:
         store.authorize(services, conversation_id, agent_id, version_id=ref.version_id)
         record = store.get(ref.version_id)
-        if record['provenance'].get('session_id') != session_id:
+        if not in_session(store, record, session_id):
             raise PermissionDeniedError('Attachment belongs to a different session')
         if record['state'] != 'ready':
             raise ResourceValidationError('Attachment is not available')

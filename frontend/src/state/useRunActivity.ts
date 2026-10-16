@@ -7,7 +7,7 @@ export function useRunActivity(conversationId: string, sessionId: string | undef
   events: RuntimeEvent[], active: ConversationRunSummary[], summaries: Record<string, ConversationRunSummary>) {
   const scope = `${conversationId}/${sessionId ?? ""}`;
   const retained = useRef({ scope, runs: new Map<string, RunActivityState>() });
-  const runs = useMemo(() => {
+  const projection = useMemo(() => {
     const next = new Map(retained.current.scope === scope ? retained.current.runs : []);
     const scoped = events.filter(event =>
       (event.conversation_id ?? event.payload.conversation_id) === conversationId &&
@@ -24,11 +24,15 @@ export function useRunActivity(conversationId: string, sessionId: string | undef
     const activeIds = new Set(active.map(run => run.run_id));
     for (const id of next.keys()) {
       if (next.size <= 64) break;
-      if (!activeIds.has(id)) next.delete(id);
+      if (!records.has(id)) next.delete(id);
     }
-    return next;
+    // Keep event-only terminal activity while REST catches up. ActiveRuns owns
+    // liveness; a stale summary cannot resurrect a Run.
+    const visibleRuns = [...records.values()].map(run => activeIds.has(run.run_id) ? run
+      : { ...run, status: ['created', 'running', 'waiting'].includes(run.status) ? '' : run.status });
+    return { activities: next, runs: visibleRuns };
   }, [scope, conversationId, sessionId, events, active, summaries]);
   // Commit after render so abandoned/StrictMode renders do not mutate the cache.
-  useLayoutEffect(() => { retained.current = { scope, runs }; }, [scope, runs]);
-  return runs;
+  useLayoutEffect(() => { retained.current = { scope, runs: projection.activities }; }, [scope, projection]);
+  return projection;
 }

@@ -387,6 +387,9 @@ async def test_agent_requesting_own_turn_is_recoverable_and_does_not_recurse(
                 {"conversation": conversation.id, "agent_id": atlas.id, "message": "Continue"},
             )
 
+        from backend.runs import RunStore
+        RunStore(services.database).create(agent_id=atlas.id, run_id="test-run",
+            runtime_provider_id="core.mock", caller_kind="conversation", context_id=session.id)
         token = _current_invocation.set(InvocationContext(
             run_id="test-run",
             agent_id=atlas.id,
@@ -517,12 +520,14 @@ class _QueuedConversationRuntime(MockAgentRuntime):
         self.release_first = asyncio.Event()
         self.started = asyncio.Event()
         self.prompts: list[str] = []
+        self.task_prompts: list[str | None] = []
 
     async def execute(self, config, context, runtime_input):
         from backend.agents import AgentEvent, AgentEventType
         from backend.runs import RunStatus
 
         self.prompts.append(runtime_input.prompt)
+        self.task_prompts.append(runtime_input.task_prompt)
         self.started.set()
         if len(self.prompts) == 1:
             await self.release_first.wait()
@@ -601,6 +606,9 @@ async def test_busy_conversation_agent_queues_and_batches_later_messages(
         assert "Additional messages received while you were working" in runtime.prompts[1]
         assert "Do not change the schema" in runtime.prompts[1]
         assert "Also add tests" in runtime.prompts[1]
+        assert "Do not change the schema" in runtime.task_prompts[1]
+        assert "Also add tests" in runtime.task_prompts[1]
+        assert "Current speaker:" not in runtime.task_prompts[1]
         await wait_for_conversation_delivery(services, conversation.id, session.id)
         assert services.conversations.page_messages(
             conversation.id, session.id
@@ -777,6 +785,9 @@ async def test_restart_requeues_an_interrupted_claimed_delivery(
     assert services.deliveries.claim_batch(
         conversation.id, session.id, atlas.id, fake_run_id, [message.id]
     ) == [message.id]
+    services.conversations.add_message(conversation.id, session.id,
+        sender_kind='agent', sender_id=atlas.id, sender_name=atlas.name,
+        content='I am still working.', run_id=fake_run_id)
     services.close()
 
     restored = create_services(settings)
@@ -789,9 +800,11 @@ async def test_restart_requeues_an_interrupted_claimed_delivery(
             history = restored.list_conversation_messages(conversation.id, session.id)
             if history and history[-1].sender_kind == "agent":
                 break
+        await wait_for_conversation_delivery(restored, conversation.id, session.id)
         history = restored.list_conversation_messages(conversation.id, session.id)
-        assert [item.sender_kind for item in history] == ["user", "system", "agent"]
-        assert "interrupted by a backend restart" in history[1].content
+        assert [item.sender_kind for item in history] == ["user", "agent", "system", "agent"]
+        assert history[1].content == 'I am still working.'
+        assert "interrupted by a backend restart" in history[2].content
         assert "Resume this after restart" in history[-1].content
         assert restored.conversations.page_messages(
             conversation.id, session.id

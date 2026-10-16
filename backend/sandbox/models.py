@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from pathlib import Path, PurePath
+from pathlib import Path, PurePath, PureWindowsPath
 from typing import Any, Mapping
 from contextvars import ContextVar
 
@@ -37,6 +37,31 @@ class ResourceAccess(_StringEnum):
     READ_WRITE = "read_write"
 
 
+@dataclass(frozen=True, slots=True)
+class FolderMount:
+    """Host-authorized, command-scoped path. Never an Agent tool argument."""
+    name: str
+    source: str
+    access: ResourceAccess = ResourceAccess.READ_ONLY
+    kind: str = "folder"
+
+    def __post_init__(self):
+        import re
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", self.name):
+            raise ValueError("Invalid folder variable name")
+        object.__setattr__(self, "access", ResourceAccess(self.access))
+        if self.kind not in ("folder", "file"):
+            raise ValueError("Invalid environment path type")
+
+    @property
+    def linux_path(self):
+        if self.kind == "file":
+            # Keep the original filename/extension for model loaders.
+            source = PureWindowsPath(self.source) if PureWindowsPath(self.source).drive else Path(self.source)
+            return f"/sandbox/files/{self.name.upper()}/{source.name}"
+        return f"/sandbox/folders/{self.name.upper()}"
+
+
 class SandboxEventType(_StringEnum):
     STATE_CHANGED = "sandbox_state_changed"
     COMMAND_STARTED = "sandbox_command_started"
@@ -50,11 +75,11 @@ class SandboxEventType(_StringEnum):
 
 @dataclass(frozen=True, slots=True)
 class SandboxLimits:
-    """Limits applied to the complete command process tree by every runtime."""
+    """Requested command-tree limits; unsupported custom values must fail closed."""
 
-    memory_bytes: int = 512 * 1024 * 1024
+    memory_bytes: int = 2048 * 1024 * 1024
     active_process_limit: int = 64
-    default_timeout_seconds: float = 3600.0
+    default_timeout_seconds: float = 6000.0
 
     def __post_init__(self) -> None:
         if self.memory_bytes < 16 * 1024 * 1024:
@@ -82,6 +107,7 @@ class SandboxInfo:
     attachments: tuple[ResourceAttachment, ...] = ()
     security_boundary: str = "unknown"
     network_enabled: bool = False
+    network_transport: str = "none"
     supported_network_modes: tuple[str, ...] = ("disabled",)
     network_reason: str = "This runtime only enforces disabled networking"
     active_command: tuple[str, ...] | None = None
@@ -96,6 +122,8 @@ class SandboxInfo:
     runtime_locked: bool = True
     network_available: bool = False
     network_status: str = "not_implemented"
+    resource_limits_available: bool = True
+    resource_limit_reason: str = ""
 
 
 @dataclass(frozen=True, slots=True)

@@ -15,6 +15,26 @@ vi.mock('./NodeWorkspace', () => ({ WorkspaceSurface: () => <div>Agent workspace
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); useEquipmentPanel.setState({ openIds: [] }); });
 
+it('lets a card opt out of expanded title/footer bars while retaining its collectible face and actions', () => {
+  vi.stubGlobal('IntersectionObserver', class { observe() {} disconnect() {} });
+  const card: WorldCard = { id: 'content', type: 'agent', name: 'Content first', status: 'idle', config: {}, finish: 'starlight',
+    position: { x: 0, y: 0 }, size: { width: 360, height: 240 }, expanded: false };
+  const catalog = { ...TEST_CATALOG, node_types: TEST_CATALOG.node_types.map(item => item.id === 'agent'
+    ? { ...item, traits: [...item.traits, 'ui.content-surface.v1'] } : item) };
+  useWorldStore.setState({ cards: [card], edges: [], events: [], catalog });
+  useNodeSurfaceStore.getState().syncCards([card], catalog);
+  useNodeSurfaceStore.setState({ surfaceLevels: { [card.id]: 'inspector' }, baseLevels: { [card.id]: 'preview' } });
+  const props = { id: card.id, data: { card }, selected: false, dragging: false } as ComponentProps<typeof WorldCardNode>;
+  const { container } = render(<ReactFlowProvider><WorldCardNode {...props} /></ReactFlowProvider>);
+  expect(container.querySelector('.node-surface-header, .node-inspector-footer')).toBeNull();
+  expect(container.querySelector('.content-surface-grip.node-drag-region')).not.toBeNull();
+  expect(screen.getByRole('button', { name: 'Open workspace' })).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Close Content first inspector' }));
+  expect(container.querySelector('.content-surface-controls')).toBeNull();
+  expect(container.querySelector('.node-surface-header')).not.toBeNull();
+  expect(container.querySelector('.world-card')?.getAttribute('data-finish')).toBe('starlight');
+});
+
 it('shows a missing placeholder instead of dispatching a same-named installed implementation', () => {
   const card: WorldCard = { id: 'lost', type: 'agent', name: 'Old agent', status: 'idle', config: {},
     position: { x: 0, y: 0 }, size: { width: 300, height: 190 }, expanded: false,
@@ -48,12 +68,13 @@ it('keeps one working backpack across surfaces and mounts inspector actions only
     expect(surface.querySelector(':scope > .equipment-toggle')).toBe(backpack()[0]);
     expect(surface.getAttribute('data-finish')).toBe('starlight');
     expect(surface.querySelector(':scope > .card-finish-layer')?.getAttribute('data-quality')).toBe(level === 'node' ? 'thumbnail' : 'standard');
+    expect(surface.querySelector(':scope > .card-finish-layer > .card-material-canvas')).not.toBeNull();
   }
   fireEvent.click(backpack()[0]);
   expect(useEquipmentPanel.getState().openIds).toEqual([card.id]);
   act(() => useNodeSurfaceStore.getState().openInspector(card.id));
   expect(surface.querySelector(':scope > .card-finish-layer')).toBeNull();
-  expect(surface.querySelector('.card-header .card-finish-layer')?.getAttribute('data-finish')).toBe('starlight');
+  expect(surface.querySelector('.card-header .card-finish-layer')).toBeNull();
   expect(screen.getByText('Finish: Starlight')).toBeTruthy();
   expect(backpack()).toHaveLength(1);
   expect(surface.querySelector('.node-inspector-footer .equipment-toggle')).toBe(backpack()[0]);

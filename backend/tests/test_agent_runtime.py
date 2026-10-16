@@ -16,7 +16,7 @@ from backend.agents import (
     ScopedToolDefinition,
     ToolParameter,
 )
-from backend.agents.tools import build_scoped_tool_callables
+from backend.agents.tools import build_scoped_tool_callables, build_scoped_adk_tools
 from backend.capabilities.provider import WorldAgentCapabilityProvider
 from backend.config import Settings
 from backend.errors import PermissionDeniedError, ResourceValidationError
@@ -51,6 +51,33 @@ class MutableCapabilityProvider:
         values = dict(arguments)
         self.invocations.append((agent_id, capability_id, values))
         return {"content": values["content"]}
+
+
+@pytest.mark.asyncio
+async def test_adk_schema_survives_provider_conversion_and_keeps_live_authorization():
+    from google.adk.models.lite_llm import _function_declaration_to_tool_param
+    from types import SimpleNamespace
+    provider = MutableCapabilityProvider()
+    schema = {"type": "object", "properties": {
+        "content": {"type": "string", "enum": ["allowed"]},
+        "wait_seconds": {"type": "number", "minimum": 0, "maximum": 60, "default": 1},
+        "rows": {"type": "array", "items": {"type": "object", "properties": {
+            "axis": {"type": "integer", "minimum": 0, "maximum": 2}}, "required": ["axis"]}},
+    }, "required": ["content"], "additionalProperties": False}
+    definition = ScopedToolDefinition(provider.definition.capability_id, "replace_notes", "Replace notes", (
+        ToolParameter("content", str), ToolParameter("wait_seconds", float, required=False, default=1),
+        ToolParameter("rows", list, required=False, default=None)), input_schema=schema)
+    tool = build_scoped_adk_tools(provider, "agent-1", [definition])[0]
+    wire = _function_declaration_to_tool_param(tool._get_declaration())
+    assert wire["function"]["parameters"] == schema
+    # Declaration copies cannot mutate the host schema or subsequent requests.
+    wire["function"]["parameters"]["properties"]["wait_seconds"]["maximum"] = 120
+    assert tool._get_declaration().parameters_json_schema["properties"]["wait_seconds"]["maximum"] == 60
+    result = await tool.run_async(args={"content": "allowed"}, tool_context=SimpleNamespace())
+    assert result == {"content": "allowed"}
+    provider.allowed = False
+    result = await tool.run_async(args={"content": "allowed"}, tool_context=SimpleNamespace())
+    assert result["error"]["code"] == "permission_denied"
 
 
 def test_google_adk_is_the_default_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -165,7 +192,7 @@ async def test_scoped_tool_rechecks_provider_after_revocation() -> None:
 
 
 @pytest.mark.asyncio
-async def test_scoped_tool_preserves_domain_errors_but_not_cancellation() -> None:
+async def test_scoped_tool_preserves_domain_errors_and_contains_local_cancellation() -> None:
     provider = MutableCapabilityProvider()
     tool = build_scoped_tool_callables(
         provider, "agent-1", (provider.definition,)
@@ -182,20 +209,26 @@ async def test_scoped_tool_preserves_domain_errors_but_not_cancellation() -> Non
     }
 
     provider.failure = asyncio.CancelledError()
-    with pytest.raises(asyncio.CancelledError):
-        await tool(content="cancelled")
+    result = await tool(content="cancelled")
+    assert result["ok"] is False
+    assert result["error"]["code"] == "tool_cancelled"
+    assert asyncio.current_task().cancelling() == 0
 
 
 @pytest.mark.asyncio
-async def test_scoped_tool_propagates_unexpected_exceptions() -> None:
+async def test_scoped_tool_contains_unexpected_exceptions_and_can_continue() -> None:
     provider = MutableCapabilityProvider()
     tool = build_scoped_tool_callables(
         provider, "agent-1", (provider.definition,)
     )[0]
 
     provider.failure = TypeError("plugin implementation bug")
-    with pytest.raises(TypeError, match="plugin implementation bug"):
-        await tool(content="must fail the run")
+    result = await tool(content="must not fail the run")
+    assert result["ok"] is False
+    assert result["error"]["code"] == "tool_execution_error"
+    assert "plugin implementation bug" not in str(result)
+    provider.failure = None
+    assert await tool(content="recovered") == {"content": "recovered"}
 
 
 @pytest.mark.asyncio

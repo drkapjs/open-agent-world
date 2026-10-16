@@ -1,8 +1,13 @@
 import { memo, useState } from "react";
-import { Check, ChevronRight, CircleAlert, LoaderCircle, Square } from "lucide-react";
+import { LoaderCircle, Square } from "lucide-react";
 import { t, useLocale } from "../i18n";
-import type { ConversationRunSummary } from "../types/world";
-import { toolFailed, withoutFinalReply, type RunActivityItem, type RunActivityState } from "../state/runActivity";
+import type { ConversationRunSummary, SavedInvocation } from "../types/world";
+import { toolFailed, withoutFinalReply, withSavedThinking, withSavedTools, type RunActivityItem, type RunActivityState } from "../state/runActivity";
+import { useSavedThinking } from "../state/useSavedThinking";
+import { useSavedInvocations } from "../state/useSavedInvocations";
+import { useInvocationDetail } from "../state/useInvocationDetail";
+import { ToolActivity as PublicToolActivity } from "./ConversationActivity";
+import { ReasoningActivity } from "./RunReasoning";
 import { MarkdownMessage } from "./MarkdownMessage";
 import { runStatusLabel } from '../state/runPresentation';
 
@@ -11,63 +16,66 @@ function format(value: unknown): string {
   try { return JSON.stringify(value, null, 2) ?? ""; }
   catch { return t("No additional details"); }
 }
-function preview(value: unknown): string {
-  if (typeof value === "string") return value.split("\n")[0].slice(0, 100);
-  if (!value || typeof value !== "object" || Array.isArray(value)) return "";
-  const input = value as Record<string, unknown>;
-  const hint = input.path ?? input.command ?? input.query ?? input.filename;
-  return typeof hint === "string" ? hint.split("\n")[0].slice(0, 100) : "";
-}
-
-const ToolActivity = memo(function ToolActivity({ item, active }: { item: RunActivityItem; active: boolean }) {
-  useLocale();
+const ToolActivity = memo(function ToolActivity({ item, active, runId }: { item: RunActivityItem; active: boolean; runId?: string }) {
   const [open, setOpen] = useState(false);
-  const failed = toolFailed(item);
-  const completed = item.type === "tool_completed";
-  const pending = !completed && active;
-  const status = failed ? t("Failed") : completed ? t("Completed") : pending ? t("Running") : t("Stopped");
-  const Icon = failed ? CircleAlert : completed ? Check : pending ? LoaderCircle : Square;
-  const response = item.response;
-  const hasDetails = item.arguments !== undefined || response !== undefined || item.error !== undefined;
-  return <details className={`run-tool${failed ? " is-error" : ""}`} open={open}
-    onToggle={event => setOpen(event.currentTarget.open)}>
-    <summary>
-      <ChevronRight size={12} className="run-tool-chevron" aria-hidden="true" />
-      <Icon size={12} className={pending ? "run-activity-spinner" : undefined} aria-label={status} />
-      <span className="run-tool-name">{item.name}</span>
-      <code className="run-tool-preview">{preview(item.arguments)}</code>
-    </summary>
-    {open ? <div className="run-tool-details">
-      {item.arguments !== undefined ? <section><span>{t("Input")}</span><pre>{format(item.arguments)}</pre></section> : null}
-      {response !== undefined ? <section><span>{t("Output")}</span><pre>{format(response)}</pre></section> : null}
-      {item.error !== undefined && item.error !== null ? <section><span>{t("Error")}</span><pre>{format(item.error)}</pre></section> : null}
-      {!hasDetails ? <p>{t("No additional details")}</p> : null}
-      {pending ? <small>{t("Running")}</small> : null}
-      {item.truncated ? <small>{t("Details truncated")}</small> : null}
-    </div> : null}
-  </details>;
+  return <PublicToolActivity item={item} active={active} runId={runId} open={open}
+    onOpen={(_id, expanded) => setOpen(expanded)} />;
 });
 
-const ActivityRow = memo(function ActivityRow({ item, active }: { item: RunActivityItem; active: boolean }) {
-  if (item.type === "tool_started" || item.type === "tool_completed") return <ToolActivity item={item} active={active} />;
+const ActivityRow = memo(function ActivityRow({ item, active, runId }: { item: RunActivityItem; active: boolean; runId?: string }) {
+  if (item.type === "tool_started" || item.type === "tool_completed") return <ToolActivity item={item} active={active} runId={runId} />;
+  if (item.kind === "model_reasoning") return <ReasoningActivity item={item} active={active} runId={runId} />;
   return <div className={item.type === "agent_progress" ? "run-activity-progress" : "run-activity-text"}>
     {item.type === "agent_message" ? <MarkdownMessage content={item.text ?? ""} /> : <p>{item.text}</p>}
   </div>;
 });
 
-export function RunActivityStream({ activity, active = false, waiting = false, stopping = false, onStop }: {
+const ModelRequest = memo(function ModelRequest({ item, runId, active }: { item: SavedInvocation; runId: string; active: boolean }) {
+  const [open, setOpen] = useState(false);
+  const detail = useInvocationDetail(runId, "models", item.id, open, active);
+  return <details className="run-model-request" open={open} onToggle={event => {
+    if (event.target === event.currentTarget) setOpen(event.currentTarget.open);
+  }}>
+    <summary>{item.role.replaceAll("_", " ")} #{item.model_request} · {t("Model attempt")} {item.model_attempt}
+      {` · ${t("Input tokens")}: ${item.input_tokens ?? t("Unknown")} · ${t("Output tokens")}: ${item.output_tokens ?? t("Unknown")}`}
+      {` · ${item.finish_reason ?? item.state}`}</summary>
+    {open ? <div className="run-tool-details">
+      {detail.row ? <>
+        <section><span>{t("Model input")}</span><pre>{format(detail.row.request)}</pre></section>
+        {detail.row.response !== undefined ? <section><span>{t("Model response")}</span><pre>{format(detail.row.response)}</pre></section> : null}
+        {detail.row.request_complete === false || detail.row.response_complete === false ? <small>{t("Details incomplete")}</small> : null}
+      </> : null}
+      {detail.error ? <p role="alert">{detail.error} <button onClick={detail.retry}>{t("Retry")}</button></p> : null}
+    </div> : null}
+  </details>;
+});
+
+export function RunActivityStream({ activity, runId, active = false, waiting = false, stopping = false, onStop, showModelRequests = true }: {
   activity?: RunActivityState;
+  runId?: string;
   active?: boolean;
   waiting?: boolean;
   stopping?: boolean;
   onStop?: () => void;
+  showModelRequests?: boolean;
 }) {
   useLocale();
+  const saved = useSavedThinking(runId, active);
+  const tools = useSavedInvocations(runId, "tools", active);
+  const models = useSavedInvocations(showModelRequests ? runId : undefined, "models", active);
+  const restored = withSavedTools(withSavedThinking(activity, saved.rows), tools.rows);
   return <div className="run-activity-stream">
     {activity?.truncated ? <small className="run-activity-note">{t("Earlier activity is no longer in this live view")}</small> : null}
     <div className="run-activity-items">
-      {activity?.items.map(item => <ActivityRow key={item.id} item={item} active={active} />)}
+      {restored.items.map(item => <ActivityRow key={item.id} item={item} active={active} runId={runId} />)}
+      {saved.error ? <p role="alert">{saved.error}</p> : null}
+      {tools.error ? <p role="alert">{tools.error}</p> : null}
+      {showModelRequests && models.error ? <p role="alert">{models.error}</p> : null}
     </div>
+    {showModelRequests && runId && models.rows.length ? <details className="run-model-requests">
+      <summary>{t("Model requests")} · {models.rows.length}</summary>
+      {models.rows.map(item => <ModelRequest key={item.id} item={item} runId={runId} active={active} />)}
+    </details> : null}
     {active ? <div className="run-activity-footer">
       {onStop ? <button type="button" className="run-stop-button" disabled={stopping} onClick={onStop}>
         <Square size={10} aria-hidden="true" />{stopping ? t("Stopping…") : t("Stop")}
@@ -80,10 +88,11 @@ export function RunActivityStream({ activity, active = false, waiting = false, s
   </div>;
 }
 
-export function RunActivityDetails({ run, activity, finalReply }: {
+export function RunActivityDetails({ run, activity, finalReply, showModelRequests = true }: {
   run?: ConversationRunSummary;
   activity?: RunActivityState;
   finalReply?: string;
+  showModelRequests?: boolean;
 }) {
   useLocale();
   const [open, setOpen] = useState(false);
@@ -91,13 +100,16 @@ export function RunActivityDetails({ run, activity, finalReply }: {
   const count = run?.tool_count ?? activity?.items.filter(item => item.type.startsWith("tool_")).length ?? 0;
   const seconds = run?.started_at && run.finished_at
     ? Math.max(0, Math.round((Date.parse(run.finished_at) - Date.parse(run.started_at)) / 1000)) : undefined;
+  const importedBeforeFailure = run?.delivery_state === "failed"
+    && Object.values(run.structure_outcomes ?? {}).some(outcome => outcome.phase === "confirmed");
   if (!run && detailsActivity && !detailsActivity.items.length && !detailsActivity.truncated && !count) return null;
   return <details className="run-activity-history" open={open} onToggle={event => {
     // Ignore toggle events from nested tool disclosures.
     if (event.target === event.currentTarget) setOpen(event.currentTarget.open);
   }}>
-    <summary>{run ? `${t(runStatusLabel(run.status))} · ` : ''}{seconds === undefined ? t("Execution details") : t("Worked for {v0}s", { v0: seconds })}
+    <summary>{run ? `${importedBeforeFailure ? t("Structure verified; final reply failed") : t(runStatusLabel(run.status))} · ` : ''}{seconds === undefined ? t("Execution details") : t("Worked for {v0}s", { v0: seconds })}
       {count ? ` · ${count} ${t("tool calls")}` : ""}</summary>
-    {open ? <RunActivityStream activity={detailsActivity} /> : null}
+    {importedBeforeFailure ? <p>{t("Structure write verified; final reply failed. Inspect the current structure before retrying.")}</p> : null}
+    {open ? <RunActivityStream activity={detailsActivity} runId={run?.run_id} showModelRequests={showModelRequests} /> : null}
   </details>;
 }

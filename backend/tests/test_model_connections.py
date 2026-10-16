@@ -35,6 +35,14 @@ def test_catalog_api_encrypts_keeps_and_clears_keys(client):
     assert cleared["connections"][1]["api_key_configured"]
 
 
+def test_runtime_connection_carries_the_explicit_image_capability(client):
+    payload = {"revision": 0, "connections": [connection()], "default_model": "oaw:model:work"}
+    payload["connections"][0]["models"][0]["supports_images"] = True
+    assert client.put("/api/settings/models", json=payload).status_code == 200
+    store = ModelConnectionStore(client.app.state.services.llm_settings)
+    assert store.resolve_runtime("oaw:model:work").supports_images is True
+
+
 def test_catalog_rejects_stale_edits_and_preserves_references(client):
     payload = dict(revision=0, connections=[connection()], default_model="oaw:model:work")
     saved = client.put("/api/settings/models", json=payload).json()
@@ -52,6 +60,7 @@ def test_model_limit_defaults_upgrade_old_catalog_and_edits_survive_restart(tmp_
     old = dict(revision=1, default_model="oaw:model:work", connections=[connection(), connection("personal")])
     for item in old["connections"]:
         item.pop("api_key")
+        item['auth_mode'] = 'none'
     with db.transaction() as sql:
         sql.execute("INSERT INTO application_settings VALUES (?,?)", ("model_connections", json.dumps(old)))
     store = ModelConnectionStore(LlmSettingsStore(db, tmp_path))
@@ -70,6 +79,13 @@ def test_model_limit_defaults_upgrade_old_catalog_and_edits_survive_restart(tmp_
         assert store.context_limits("oaw:model:personal") == (32000, 2048)
         assert runtime._context_budget("oaw:model:work", "openai/same-model").output == 16384
         assert runtime._context_budget("oaw:model:personal", "openai/same-model").limit == 32000
+        from types import SimpleNamespace
+        from backend.capabilities.provider import WorldAgentCapabilityProvider
+        provider = WorldAgentCapabilityProvider(SimpleNamespace(llm_settings=store.secrets))
+        selected = provider.resolve_model('oaw:default')
+        assert (selected.context_window, selected.max_output_tokens) == (1_000_000, 16384)
+        other = provider.resolve_model('oaw:model:personal')
+        assert (other.context_window, other.max_output_tokens) == (32000, 2048)
     finally:
         db.close()
 

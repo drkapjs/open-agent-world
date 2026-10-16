@@ -34,6 +34,32 @@ def edit(store, action, **kwargs):
     return store.edit(LibraryEdit(expected_revision=store.read().revision, action=action, **kwargs))
 
 
+def test_bundled_packaging_presets_are_published(client):
+    packs = client.get('/api/card-library').json()['packs']
+    assert packs['open-agent-world.core.default']['definition']['packaging'] == 'collector'
+    assert packs['openai.codex.default']['definition']['packaging'] == 'premium'
+    assert packs['research.library.default']['definition']['packaging'] == 'paper'
+
+
+def test_new_packaging_refreshes_old_metadata_without_resetting_ownership(tmp_path):
+    db = Database(tmp_path / 'world.db')
+    try:
+        registry = create_builtin_registry()
+        store = CardLibraryStore(db, registry)
+        opened = edit(store, 'open_pack', id='open-agent-world.core.default')
+        payload = opened.model_dump(mode='json')
+        payload['packs']['open-agent-world.core.default']['definition']['packaging'] = 'standard'
+        with db.transaction(immediate=True) as connection:
+            connection.execute('UPDATE application_settings SET value_json=? WHERE key=?', (json.dumps(payload), KEY))
+        refreshed = CardLibraryStore(db, registry).read()
+        pack = refreshed.packs['open-agent-world.core.default']
+        assert pack.definition.packaging == 'collector'
+        assert pack.opened and pack.opened_at == opened.packs[pack.definition.id].opened_at
+        assert refreshed.collection == opened.collection
+    finally:
+        db.close()
+
+
 def test_legacy_empty_pack_snapshot_survives_restart(tmp_path):
     db = Database(tmp_path / "world.db")
     registry = create_builtin_registry()
@@ -379,6 +405,35 @@ def test_shared_card_provenance_does_not_duplicate_collection(tmp_path):
     revision = store.read().revision
     assert store.read().revision == revision  # Read/reconcile must not fabricate a change.
     db.close()
+
+
+@pytest.mark.parametrize('core_first', [False, True])
+def test_bundled_pack_can_collect_host_cards_without_changing_owner(tmp_path, core_first):
+    registry = create_builtin_registry()
+    registry.install(PluginDefinition(
+        PluginDescriptor(id='example', version='1', plugin_api_version='1.33'),
+        lambda r: r.register_pack(PackDefinition(id='example.default', name='Example', cards=('core.jobs',))),
+    ))
+    db = Database(tmp_path / 'world.db')
+    try:
+        store = CardLibraryStore(db, registry)
+        order = ['open-agent-world.core.default', 'example.default']
+        if not core_first:
+            order.reverse()
+        edit(store, 'open_pack', id=order[0])
+        original = store.read().collection['core.jobs']
+        edit(store, 'open_pack', id=order[1])
+        entry = store.assert_collected('core.jobs')
+        assert entry.plugin_id == 'open-agent-world.core'
+        assert entry.source_pack_ids == order
+        assert (entry.finish, entry.unlocked_at) == (original.finish, original.unlocked_at)
+        edit(store, 'update_deck', id='starter', entries=[{'id': 'core.jobs'}])
+        edit(store, 'set_plugin_enabled', id='example', enabled=False)
+        assert store.assert_collected('core.jobs') == entry
+        revision = store.read().revision
+        assert CardLibraryStore(db, registry).read().revision == revision
+    finally:
+        db.close()
 
 
 def test_move_entry_is_atomic_deduplicated_and_preserves_other_memberships(tmp_path):

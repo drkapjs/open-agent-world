@@ -1,19 +1,42 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type APIRequestContext } from '@playwright/test';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 
 test.use({ deviceScaleFactor: 1.5 });
 
+const fixtureTypes:Record<string,string> = {
+  'Structure files':'conversation', 'Crystal viewer':'science.structure-viewer',
+  'Structure workspace':'sandbox', 'Sandbox viewer':'science.structure-viewer',
+};
+async function clearStructureFixtures(request:APIRequestContext) {
+  const world=await(await request.get('/api/world')).json();
+  const ids=world.nodes.filter((node:{id:string;name:string;type:string})=>fixtureTypes[node.name]===node.type).map((node:{id:string})=>node.id);
+  if(ids.length)expect((await request.post('/api/nodes/batch-delete',{data:{node_ids:ids}})).ok()).toBe(true);
+}
+test.beforeEach(async({request})=>{
+  await clearStructureFixtures(request);
+  const app=await(await request.get('/api/application')).json();
+  expect((await request.patch('/api/application/preferences',{data:{profile_id:app.profile_id,generation:app.generation,changes:{
+    'oaw-canvas-viewport-v1':null,'oaw-node-surfaces-v1':null,'oaw.locale':'en','oaw-theme':'light',
+    'oaw-onboarding-v1':JSON.stringify({version:1,state:{status:'skipped'}}),
+    'oaw-progressive-tutorials-v1':JSON.stringify({version:1,state:{enabled:false,progress:{}}}),
+  }}})).ok()).toBe(true);
+});
+test.afterEach(async({playwright},testInfo)=>{
+  // A timed-out test may already have disposed its request fixture.
+  const cleanup=await playwright.request.newContext({baseURL:testInfo.project.use.baseURL});
+  try{await clearStructureFixtures(cleanup);}finally{await cleanup.dispose();}
+});
+
 test('MatterViz renders Conversation structures, pins selection, rotates locally and clears on disconnect', async ({ page, request }) => {
   test.setTimeout(110_000);
   await page.setViewportSize({ width: 2400, height: 1200 });
-  const created: string[] = [];
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
   const create = async (type: string, name: string, x: number) => {
     const response = await request.post('/api/nodes', { data: { type, name, position: { x, y: 350 } } });
     expect(response.status()).toBe(201);
-    const card = await response.json(); created.push(card.id); return card;
+    return await response.json();
   };
   try {
     const room = await create('conversation', 'Structure files', 600);
@@ -44,13 +67,40 @@ test('MatterViz renders Conversation structures, pins selection, rotates locally
     }
     const source = page.locator(`[data-workspace-node-id="${room.id}"]`);
     const display = page.locator(`[data-workspace-node-id="${viewer.id}"]`);
+    const openAttachment = async (name:string) => {
+      await source.getByRole('button', { name: `Open ${name}`, exact: true }).click();
+      const preview = page.getByRole('dialog', { name: `Preview ${name}`, exact: true });
+      await expect(preview).toBeVisible();
+      await preview.getByRole('button', { name: 'Close', exact: true }).click();
+      await expect(preview).not.toBeVisible();
+    };
     await page.locator('.react-flow__controls-zoomout').click();
     await page.locator('.react-flow__controls-zoomout').click();
-    await source.getByRole('button', { name: 'Open helium.xyz', exact: true }).click();
+    await openAttachment('helium.xyz');
     await expect(display.locator('.structure-canvas')).toHaveAttribute('data-atom-count', '1', { timeout: 75_000 });
+    const tutorialHint = page.getByRole('button', { name: 'Dismiss this tutorial', exact: true });
+    if (await tutorialHint.isVisible()) await tutorialHint.click();
+    const waitForCamera = async () => {
+      const canvas = display.locator('.viewport-cell canvas').first();
+      // Canvas and cell can agree while the world camera is still interpolating.
+      // Wait for their screen-space geometry before sampling a pointer position.
+      await expect.poll(() => canvas.evaluate(element => new Promise<number>(resolve => {
+        const first = element.getBoundingClientRect();
+        let frames = 0;
+        let movement = 0;
+        const sample = () => {
+          const next = element.getBoundingClientRect();
+          movement = Math.max(movement, ...(['x', 'y', 'width', 'height'] as const).map(key => Math.abs(next[key] - first[key])));
+          if (++frames === 5) resolve(movement);
+          else requestAnimationFrame(sample);
+        };
+        requestAnimationFrame(sample);
+      }))).toBeLessThan(.1);
+    };
     const assertAlignedPicking = async () => {
       const canvas = display.locator('.viewport-cell canvas').first();
       await expect(canvas).toBeVisible();
+      await waitForCamera();
       await expect.poll(async () => canvas.evaluate(element => {
         const actual = element.getBoundingClientRect();
         const expected = element.closest('.viewport-cell')!.getBoundingClientRect();
@@ -80,11 +130,11 @@ test('MatterViz renders Conversation structures, pins selection, rotates locally
     await page.locator('.react-flow__controls-zoomin').click();
     await assertAlignedPicking();
     // Moving and resizing a mounted workspace must preserve the same local space.
-    const heading = (await display.locator('.workspace-titlebar').boundingBox())!;
+    const heading = (await display.locator('.content-surface-grip').boundingBox())!;
     const oldWindow = (await display.boundingBox())!;
-    await page.mouse.move(heading.x + 150, heading.y + 15);
+    await page.mouse.move(heading.x + heading.width / 2, heading.y + 50);
     await page.mouse.down();
-    await page.mouse.move(heading.x + 210, heading.y + 65, { steps: 8 });
+    await page.mouse.move(heading.x + heading.width / 2 + 60, heading.y + 100, { steps: 8 });
     await page.mouse.up();
     expect((await display.boundingBox())!.y).toBeGreaterThan(oldWindow.y + 20);
     const grip = page.locator(`[data-resize-node="${viewer.id}"][data-resize-corner="bottom-right"]`);
@@ -98,23 +148,30 @@ test('MatterViz renders Conversation structures, pins selection, rotates locally
     await expect.poll(() => display.evaluate(el => el.clientWidth)).toBeGreaterThan(oldWidth + 10);
     await assertAlignedPicking();
     await page.screenshot({ path: '../.outputs/structure-viewer-picking.png' });
-    for (let i = 0; i < 3; i++) await page.locator('.react-flow__controls-zoomin').click();
-    await expect.poll(() => display.locator('.viewport-cell canvas').first().evaluate(el => el.getBoundingClientRect().width / el.clientWidth)).toBeGreaterThan(1);
+    const zoomRatio = () => display.locator('.viewport-cell canvas').first().evaluate(el => el.getBoundingClientRect().width / el.clientWidth);
+    let zoomSteps=0;
+    while(await zoomRatio()<=1&&zoomSteps<12){
+      await page.locator('.react-flow__controls-zoomin').click();
+      await waitForCamera();
+      zoomSteps++;
+    }
+    expect(await zoomRatio()).toBeGreaterThan(1);
     await assertAlignedPicking();
     // Restore the overview so both source and viewer controls stay on screen.
-    for (let i = 0; i < 3; i++) await page.locator('.react-flow__controls-zoomout').click();
-    await source.getByRole('button', { name: 'Open water.xyz', exact: true }).click();
+    for (let i = 0; i < zoomSteps; i++) await page.locator('.react-flow__controls-zoomout').click();
+    await waitForCamera();
+    await openAttachment('water.xyz');
     await expect(display.locator('.structure-canvas')).toHaveAttribute('data-atom-count', '3', { timeout: 75_000 });
     await expect(display.locator('canvas').first()).toBeVisible();
     await expect(display.locator('.structure-empty[role=alert]')).toHaveCount(0);
     expect(errors).toEqual([]);
     await display.getByRole('button', { name: 'Following', exact: true }).click();
-    await source.getByRole('button', { name: 'Open POSCAR', exact: true }).click();
+    await openAttachment('POSCAR');
     await expect(display.locator('.structure-toolbar strong')).toHaveText('water.xyz');
     await display.getByRole('button', { name: 'Pinned', exact: true }).click();
     await expect(display.locator('.structure-toolbar strong')).toHaveText('POSCAR');
     await expect(display.locator('.structure-canvas')).toHaveAttribute('data-atom-count', '2');
-    await source.getByRole('button', { name: 'Open salt.cif', exact: true }).click();
+    await openAttachment('salt.cif');
     await expect(display.locator('.structure-toolbar strong')).toHaveText('salt.cif');
     await expect(display.locator('.structure-canvas')).toHaveAttribute('data-atom-count', '2');
     // A renderer gesture must not move the world or the viewer window.
@@ -137,8 +194,6 @@ test('MatterViz renders Conversation structures, pins selection, rotates locally
     await page.screenshot({ path: '../.outputs/structure-viewer-error.png' });
     await test.info().attach('browser-errors', { body: JSON.stringify(errors), contentType: 'application/json' });
     throw error;
-  } finally {
-    for (const id of created.reverse()) await request.delete(`/api/nodes/${id}`);
   }
 });
 
@@ -155,7 +210,6 @@ test('a connected viewer reads a real Sandbox workspace file without starting a 
   const viewerResponse = await request.post('/api/nodes', { data: { type: 'science.structure-viewer', name: 'Sandbox viewer', position: { x: 1700, y: 350 } } });
   expect(viewerResponse.status()).toBe(201);
   const viewer = await viewerResponse.json();
-  try {
     expect((await request.post('/api/edges', { data: { source: viewer.id, target: sandbox.id, relationship: 'core.file-preview' } })).status()).toBe(201);
     await page.goto('/');
     for (const id of [sandbox.id, viewer.id]) {
@@ -176,8 +230,4 @@ test('a connected viewer reads a real Sandbox workspace file without starting a 
     const history = await (await request.get(`/api/sandboxes/${sandbox.id}/history`)).json();
     expect(history).toEqual([]);
     await page.screenshot({ path: '../.outputs/structure-viewer-sandbox.png' });
-  } finally {
-    await request.delete(`/api/nodes/${viewer.id}`);
-    await request.delete(`/api/nodes/${sandbox.id}`);
-  }
 });

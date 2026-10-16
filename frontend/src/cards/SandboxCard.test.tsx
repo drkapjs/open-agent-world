@@ -49,7 +49,7 @@ describe("sandbox configuration UI", () => {
   it("renders the backend runtime, shell, directory and isolation metadata", async () => {
     render(<Card />);
     await screen.findByText("Linux namespaces in WSL2");
-    expect(screen.getByRole("status").textContent).toBe("Stopped");
+    expect(screen.getByRole("status").textContent).toBe("Ready on demand");
     expect(screen.getByText("/bin/sh -c")).toBeTruthy();
     expect(screen.getByText("/workspace")).toBeTruthy();
     expect(screen.queryByText("Native Windows boundary")).toBeNull();
@@ -58,13 +58,13 @@ describe("sandbox configuration UI", () => {
     expect(screen.getByText(/isolated egress protecting host control services/)).toBeTruthy();
   });
 
-  it("keeps a rejected draft visible and blocks start until it is saved or reset", async () => {
+  it("keeps a rejected draft visible until it is saved or reset", async () => {
     vi.spyOn(worldApi, "updateNode").mockRejectedValue(new Error("Working folder does not exist."));
     render(<Card />);
     await screen.findByText("Linux namespaces in WSL2");
     fireEvent.change(screen.getByLabelText("Working folder"), { target: { value: "D:\\missing" } });
     expect(screen.getByText(/Edits change files in this folder directly/)).toBeTruthy();
-    expect((screen.getByRole("button", { name: "Start" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByRole("button", { name: "Start" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     expect(await screen.findByRole("alert")).toHaveProperty("textContent", "Working folder does not exist.");
     expect((screen.getByLabelText("Working folder") as HTMLInputElement).value).toBe("D:\\missing");
@@ -72,7 +72,7 @@ describe("sandbox configuration UI", () => {
     expect(useWorldStore.getState().cards[0].config.workspace_path).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Reset" }));
     expect((screen.getByLabelText("Working folder") as HTMLInputElement).value).toBe("");
-    expect((screen.getByRole("button", { name: "Start" }) as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.queryByRole("button", { name: "Start" })).toBeNull();
   });
 
   it("saves enabled networking when the runtime reports its prerequisites ready", async () => {
@@ -86,7 +86,7 @@ describe("sandbox configuration UI", () => {
     await waitFor(() => expect((screen.getByRole("option", { name: "Enabled" }) as HTMLOptionElement).disabled).toBe(false));
     expect((screen.getByRole("option", { name: "Enabled" }) as HTMLOptionElement).disabled).toBe(false);
     fireEvent.change(screen.getByLabelText("Networking"), { target: { value: "enabled" } });
-    expect((screen.getByRole("button", { name: "Start" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByRole("button", { name: "Start" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(worldApi.updateNode).toHaveBeenCalledWith(sandbox.id, {
       config: { runtime: "auto", workspace_path: null, workspace_access: "read_write", network_enabled: true },
@@ -102,8 +102,8 @@ describe("sandbox configuration UI", () => {
     render(<Card />);
     await screen.findByText(/Install slirp4netns/);
     expect((screen.getByRole("option", { name: "Enabled" }) as HTMLOptionElement).disabled).toBe(false);
-    expect((screen.getByRole("button", { name: "Start" }) as HTMLButtonElement).disabled).toBe(false);
-    expect(screen.getByRole("status").textContent).toBe("Stopped");
+    expect(screen.queryByRole("button", { name: "Start" })).toBeNull();
+    expect(screen.getByRole("status").textContent).toBe("Ready on demand");
   });
 
   it("clears an external read-only binding back to a writable managed workspace", async () => {
@@ -131,25 +131,25 @@ describe("sandbox configuration UI", () => {
     render(<Card />);
     expect(await screen.findByRole("alert")).toHaveProperty("textContent", "Install bubblewrap in this WSL distribution.");
     expect(screen.getByRole("status").textContent).toBe("Runtime unavailable");
-    expect((screen.getByRole("button", { name: "Start" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByRole("button", { name: "Start" })).toBeNull();
   });
 
-  it("blocks Start while the working folder picker is open", async () => {
+  it("keeps manual startup absent while choosing the working folder", async () => {
     let chooseFolder!: (value: { path: string | null }) => void;
     vi.spyOn(worldApi, "pickFolder").mockImplementation(() => new Promise(resolve => { chooseFolder = resolve; }));
     render(<Card />);
-    await waitFor(() => expect((screen.getByRole("button", { name: "Start" }) as HTMLButtonElement).disabled).toBe(false));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Start" })).toBeNull());
     fireEvent.click(screen.getByRole("button", { name: "Browse for Working folder" }));
-    expect((screen.getByRole("button", { name: "Start" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByRole("button", { name: "Start" })).toBeNull();
     chooseFolder({ path: null });
-    await waitFor(() => expect((screen.getByRole("button", { name: "Start" }) as HTMLButtonElement).disabled).toBe(false));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Start" })).toBeNull());
   });
 
   it("keeps the card compact and opens Settings in the sandbox window without starting", async () => {
     const start = vi.spyOn(worldApi, "startSandbox");
     useNodeSurfaceStore.setState({ surfaceLevels: {}, baseLevels: {}, drafts: {}, dragging: false, connectingNodeId: undefined });
     render(<SandboxCardBody card={sandbox} level="inspector" />);
-    await waitFor(() => expect(screen.getByRole("status").textContent).toBe("Stopped"));
+    await waitFor(() => expect(screen.getByRole("status").textContent).toBe("Ready on demand"));
     expect(screen.getByText("Managed workspace")).toBeTruthy();
     expect(screen.getByText("Configuration").parentElement?.hasAttribute("open")).toBe(false);
     expect(screen.queryByText("Environment variables")).toBeNull();
@@ -223,7 +223,7 @@ describe("sandbox configuration UI", () => {
     await waitFor(() => expect(worldApi.getSandboxRuntimes).toHaveBeenCalledWith(true));
     await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
     expect(screen.queryByText("Broker missing")).toBeNull();
-    expect((screen.getByRole("button", { name: "Start" }) as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.queryByRole("button", { name: "Start" })).toBeNull();
     expect(useWorldStore.getState().cards[0].config.network_enabled).toBe(true);
   });
 

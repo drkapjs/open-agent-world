@@ -910,6 +910,31 @@ describe("authoritative world synchronization", () => {
     expect(useWorldStore.getState().edges).toEqual([]);
   });
 
+  it("loads default equipment immediately after placing an Agent", async () => {
+    const agent = card("owner", "agent");
+    const equipment = { ...card("tools", "sandbox"), equipment: { owner_id: agent.id, relationship: "execute" } };
+    useWorldStore.setState({ catalog: { ...TEST_CATALOG, node_types: TEST_CATALOG.node_types.map(node =>
+      node.id === "agent" ? { ...node, has_default_equipment: true } : node) } });
+    vi.spyOn(worldApi, "createNode").mockResolvedValue(agent);
+    vi.spyOn(worldApi, "getWorld").mockResolvedValue({ nodes: [agent, equipment], edges: [], chunks: [] });
+    await useWorldStore.getState().createCard("agent");
+    expect(useWorldStore.getState().cards).toContainEqual(equipment);
+  });
+
+  it("preserves initialized equipment slots when undo restores an Agent", async () => {
+    const agent = card("owner", "agent");
+    const slots = { equipment: { skills: { node_id: null, type: "test.skills", relationship: "test.skills.use" } } };
+    useWorldStore.setState({ cards: [agent], catalog: { ...TEST_CATALOG, node_types: TEST_CATALOG.node_types.map(node =>
+      node.id === "agent" ? { ...node, has_default_equipment: true } : node) } });
+    vi.spyOn(worldApi, "getNodeDefaults").mockResolvedValue(slots);
+    vi.spyOn(worldApi, "deleteNode").mockResolvedValue();
+    vi.spyOn(worldApi, "restoreNode").mockResolvedValue(agent);
+    const restore = vi.spyOn(worldApi, "restoreNodeDefaults").mockResolvedValue();
+    await useWorldStore.getState().deleteCard(agent.id);
+    await useWorldStore.getState().undo();
+    expect(restore).toHaveBeenCalledWith(agent.id, slots);
+  });
+
   it("deletes an Agent and its equipment atomically and restores the whole ownership tree", async () => {
     const agent = card("owner", "agent");
     const sandbox = { ...card("private", "sandbox"), equipment: { owner_id: agent.id, relationship: "execute" } };
@@ -929,9 +954,22 @@ describe("authoritative world synchronization", () => {
     expect(useWorldStore.getState().cards).toEqual([shared]);
   });
 
-  it("returns a completed Sandbox command to ready state without a live socket", async () => {
+  it('refreshes modified resources according to their type without treating images as text', async () => {
+    useWorldStore.setState({ cards: [card('image', 'image'), card('text', 'text')] });
+    const read = vi.spyOn(worldApi, 'getText').mockResolvedValue({ content: 'updated', revision: 2 });
+    useWorldStore.getState().ingestEvent({ id: 'image-update', type: 'resource_modified', node_id: 'image', timestamp: 'now',
+      payload: { revision: 1, filename: 'plot.png', media_type: 'image/png', size_bytes: 24, width: 100, height: 80 } });
+    expect(read).not.toHaveBeenCalled();
+    expect(useWorldStore.getState().cards[0].config).toMatchObject({ filename: 'plot.png', image_width: 100, image_height: 80, mime_type: 'image/png', bytes: 24 });
+    expect(useWorldStore.getState().cards[0].config.preview_url).toContain('/resources/image/content');
+    useWorldStore.getState().ingestEvent({ id: 'text-update', type: 'resource_modified', node_id: 'text', timestamp: 'now', payload: { revision: 2 } });
+    await vi.waitFor(() => expect(useWorldStore.getState().cards[1].config.content).toBe('updated'));
+    expect(read).toHaveBeenCalledWith('text');
+  });
+
+  it.each([false, true])("returns a Sandbox command to ready without changing Activity visibility (%s)", async activityOpen => {
     const sandbox = { ...card("sandbox", "sandbox"), status: "ready" as const };
-    useWorldStore.setState({ cards: [sandbox], socketState: "closed" });
+    useWorldStore.setState({ cards: [sandbox], socketState: "closed", activityOpen });
     vi.spyOn(worldApi, "executeSandbox").mockResolvedValue({
       exit_code: 0,
       stdout: "contained output\r\n",
@@ -944,6 +982,7 @@ describe("authoritative world synchronization", () => {
     expect(updated.status).toBe("ready");
     expect(updated.config.active_command).toBe("");
     expect(updated.config.output).toContain("contained output");
+    expect(useWorldStore.getState().activityOpen).toBe(activityOpen);
   });
 
   it("refuses to directly create a managed node type", async () => {

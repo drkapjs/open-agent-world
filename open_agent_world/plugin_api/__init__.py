@@ -1,21 +1,27 @@
 """Stable contracts for trusted Open Agent World Python plugins."""
 from backend.agents.media import ToolImage, VisualToolResult, codex_tool_content
 from backend.execution_config import ComputeTarget, EnvironmentProfile, SecretRequirement
+from backend.security.execution_folders import FolderRequirement, FileRequirement, PathRequirement
 from backend.resources.artifact_models import ArtifactPublish, ArtifactMaterialize
 
 from backend.plugins.builtin import AgentNodeBehavior, AgentNodeTemplateHandler
 from backend.plugins.registry import PluginAsset, PackDefinition
+from backend.plugins.tutorials import TutorialDefinition, TutorialStep
 from backend.plugins.presets import LegionPresetDefinition, PresetNode, PresetEdge
 
 from backend.plugins.summoning import NodeSummoningDefinition, SummoningAction, SummoningPolicy
 from backend.plugins.documents import NodeDocumentAction, NodeDocumentDefinition, NodeDocumentDownload
 from backend.plugins.documents import NodeDocumentTransformation
+from backend.plugins.equipment import DefaultEquipment
 from backend.plugins.deployment import DeploymentSurface, NodeDeploymentDefinition
 from backend.plugins.resources import NodeResourceAction, NodeResourceContext
+from backend.plugins.data_sources import DataQuery, NodeDataConsumer, NodeDataSource
+from backend.plugins.execution_graph import ExecutionEdge, ExecutionNode, ExecutionSnapshot, NodeExecutionSource
 from backend.plugins.state import PluginStateSpec, ScopedStateSpec, StatelessStateSpec, CardStateStore
 from backend.plugins.containers import NodeContainerDefinition
 from backend.plugins.execution import ExecutionPolicy, NodeExecutionDefinition, WorkItem, WorkOutcome
 from backend.plugins.execution import DelegationRequest, DelegationWait, DelegationStop
+from backend.plugins.background_jobs import BackgroundJobProvider, BackgroundJobContext, JobObservation, SubmissionUncertainError
 
 from backend.agents import (
     AgentCapabilityProvider,
@@ -29,7 +35,9 @@ from backend.agents import (
     AgentRuntimeError,
     AgentStateError,
     AgentStatus,
+    ModelConnectionResolver,
     RuntimeProvider,
+    RuntimeModelConnection,
     ScopedToolDefinition,
     ToolParameter,
 )
@@ -68,7 +76,9 @@ from backend.plugins import (
     NodeTemplateRestoreContext,
     NodeTemplateRestoreResources,
     NodeTypeDefinition,
+    CardFaceSpec,
     NodePresentation,
+    WorkspaceLayoutMetadata,
     Plugin,
     PluginDescriptor,
     PluginDefinition,
@@ -83,6 +93,11 @@ from backend.runs import InvocationContext, RuntimeInput
 from backend.world.models import Card, CardCreate, CardPatch, Edge
 
 __all__ = [
+    "BackgroundJobProvider", "BackgroundJobContext", "JobObservation", "SubmissionUncertainError",
+    "DataQuery", "NodeDataConsumer", "NodeDataSource",
+    "ExecutionEdge", "ExecutionNode", "ExecutionSnapshot", "NodeExecutionSource",
+    "TutorialDefinition", "TutorialStep",
+    "DefaultEquipment",
     "PluginStateSpec", "ScopedStateSpec", "StatelessStateSpec", "CardStateStore",
     "DelegationRequest", "DelegationWait", "DelegationStop",
     "DeploymentSurface", "NodeDeploymentDefinition",
@@ -91,10 +106,11 @@ __all__ = [
     "ToolImage", "VisualToolResult", "codex_tool_content",
     "PackDefinition",
     "NodePresentation",
+    "WorkspaceLayoutMetadata",
     "NodeDocumentTransformation",
     "ArtifactPublish",
     "ArtifactMaterialize",
-    "ComputeTarget", "EnvironmentProfile", "SecretRequirement",
+    "ComputeTarget", "EnvironmentProfile", "SecretRequirement", "FolderRequirement", "FileRequirement", "PathRequirement",
     "PluginAsset",
     "AgentNodeBehavior", "AgentNodeTemplateHandler",
     "NodeSummoningDefinition", "SummoningAction", "SummoningPolicy",
@@ -119,6 +135,7 @@ __all__ = [
     "AgentRuntimeError",
     "AgentStateError",
     "AgentStatus",
+    "ModelConnectionResolver",
     "Capability",
     "CapabilityContext",
     "CapabilityGrantDefinition",
@@ -148,6 +165,7 @@ __all__ = [
     "NodeTemplateRestoreContext",
     "NodeTemplateRestoreResources",
     "NodeTypeDefinition",
+    "CardFaceSpec",
     "NotFoundError",
     "PermissionDeniedError",
     "Plugin",
@@ -161,6 +179,7 @@ __all__ = [
     "ResourceValidationError",
     "RevisionConflictError",
     "RuntimeProvider",
+    "RuntimeModelConnection",
     "RuntimeProviderFactory",
     "RuntimeInput",
     "RuntimeUnavailableError",

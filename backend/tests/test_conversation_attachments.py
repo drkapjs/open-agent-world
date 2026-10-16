@@ -8,7 +8,7 @@ from backend.main import create_app
 from backend.capabilities.provider import WorldAgentCapabilityProvider
 from backend.conversations.models import ConversationSessionCreate
 from backend.errors import PermissionDeniedError
-from backend.runs import InvocationCaller, InvocationContext
+from backend.runs import InvocationCaller, InvocationContext, RunStore
 from backend.runs.manager import _current_invocation
 from backend.tests.test_conversations import _create, _connect
 from backend.tests.test_skill_runtime import runtime_client, setup_skill
@@ -29,6 +29,19 @@ def upload(client, base, name='report.txt', data=b'hello'):
 
 def ref(file):
     return {key: file[key] for key in ('version_id', 'path')}
+
+
+def test_text_preview_is_bounded_and_authorized_to_its_session(client):
+    node, _, base = room(client)
+    file = upload(client, base, 'report.html', b'<script>alert(1)</script>\n' + b'x' * 70000)
+    response = client.get(base + '/attachments/' + file['version_id'], params={'path': file['path'], 'text_preview': True})
+    assert response.status_code == 200
+    assert response.headers['content-type'].startswith('application/json')
+    assert response.json()['state'] == 'text' and response.json()['truncated']
+    assert len(response.json()['text']) == 65536
+    other = client.post(f"/api/conversations/{node['id']}/sessions", json={'title': 'Other'}).json()
+    response = client.get(f"/api/conversations/{node['id']}/sessions/{other['id']}/attachments/{file['version_id']}", params={'path': file['path'], 'text_preview': True})
+    assert response.status_code == 403
 
 
 def test_general_admits_existing_and_new_connections_once(client):
@@ -115,6 +128,9 @@ def test_agent_attachment_tools_publish_read_materialize_and_revocation(runtime_
     provider = WorldAgentCapabilityProvider(services)
     workspace = client.portal.call(backend.get, sandbox['id']).workspace
     (workspace / 'result.png').write_bytes(b'image result')
+
+    RunStore(services.database).create(agent_id=agent["id"], run_id="attachment-test",
+        runtime_provider_id="core.mock", caller_kind="conversation", context_id=session["id"])
 
     async def invoke(name, args, session_id=session['id']):
         token = _current_invocation.set(InvocationContext(run_id='attachment-test', agent_id=agent['id'],

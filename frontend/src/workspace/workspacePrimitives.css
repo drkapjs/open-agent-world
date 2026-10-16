@@ -1,0 +1,44 @@
+/* Opt-in content templates. Never target third-party markup or card finishes. */
+.oaw-application {
+  container: oaw-application / inline-size;
+  min-width: 0; min-height: 0; height: 100%;
+  color: var(--ink); background: var(--surface-solid);
+  font: var(--font-size-body)/var(--line-height-body) var(--font-ui);
+}
+.oaw-application[data-appearance="paper"] {
+  --surface-solid: var(--surface-raised);
+  --surface-soft: color-mix(in srgb, var(--surface-raised) 92%, var(--ink));
+}
+.oaw-toolbar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2);
+  min-width: 0; padding: var(--space-2) var(--space-3);
+  color: var(--ink-soft); font-size: var(--font-size-small);
+}
+.oaw-toolbar > :is(input, select) { flex: 1 1 140px; max-width: 100%; }
+.oaw-panel { display: flex; flex-direction: column; min-width: 0; min-height: 0; height: 100%; color: var(--ink); }
+.oaw-panel-heading { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); padding: var(--space-3) var(--space-4); }
+.oaw-panel-heading h2 { margin: 0 auto 0 0; font-size: var(--font-size-title); font-weight: var(--font-weight-label); overflow-wrap: anywhere; }
+.oaw-panel-content { flex: 1; min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; }
+.oaw-empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--space-2); min-height: 120px; padding: var(--space-6); text-align: center; color: var(--ink); font: var(--font-size-body)/var(--line-height-body) var(--font-ui); overflow-wrap: anywhere; }
+.oaw-empty-icon { display: grid; place-items: center; padding: var(--space-3); border-radius: var(--radius-surface); background: var(--surface-soft); color: var(--ink-soft); }
+.oaw-empty-state strong { font-weight: var(--font-weight-label); }
+.oaw-empty-description { max-width: 42ch; color: var(--ink-soft); }
+.oaw-empty-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: var(--space-2); margin-top: var(--space-1); }
+.oaw-empty-state[aria-busy="true"] { cursor: progress; }
+
+/* Reuse the host's button/field classes; templates add no second control system. */
+.oaw-application :is(.primary-button, .secondary-button),
+.workspace-content :is(.primary-button, .secondary-button),
+.legion-workspace :is(.primary-button, .secondary-button) {
+  border-radius: var(--radius-control); box-shadow: none;
+  transition: color var(--motion-fast) var(--motion-ease), background var(--motion-fast) var(--motion-ease);
+}
+:is(.oaw-application, .workspace-content, .legion-workspace) .primary-button { color: var(--on-accent); background: var(--action-fill); box-shadow: var(--shadow-surface); }
+:is(.oaw-application, .workspace-content, .legion-workspace) :is(.primary-button, .secondary-button):not(:disabled):hover { transform: none; filter: none; border-color: var(--accent); }
+.oaw-application :is(.field-label input, .field-label textarea, .field-label select, .oaw-input) { min-width: 0; max-width: 100%; padding: var(--space-2); border: 1px solid var(--line-strong); border-radius: var(--radius-control); color: var(--ink); background: var(--surface-raised); font: inherit; }
+.oaw-application .field-label { color: var(--ink-soft); font-size: var(--font-size-small); }
+.oaw-table { width: 100%; border-collapse: collapse; font-size: var(--font-size-small); }
+.oaw-table :is(th, td) { padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--line); text-align: start; vertical-align: top; }
+.oaw-table th { color: var(--ink-soft); font-weight: var(--font-weight-label); }
+.oaw-list { list-style: none; margin: 0; padding: 0; }
+.oaw-list > li { padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--line); }

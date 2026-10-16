@@ -17,7 +17,7 @@ On Windows, install the generated `Open Agent World_*_x64-setup.exe`, then open 
 
 The desktop shell shows startup progress, waits for backend readiness, and opens the world in a separate window. Opening the app again focuses its existing window. Closing the final window asks the backend to shut down; a Windows Job Object also owns the backend process tree for crash/forced-exit cleanup. Backend logs rotate at 5 MB. Formal launch logs use `%LOCALAPPDATA%\OpenAgentWorld.logs\launcher.log`, outside the relocatable data store; development and explicitly configured stores use `logs/launcher.log` inside their profile. The startup window reports the log path.
 
-Application installation and Sandbox provisioning remain separate. Scientific plugin dependencies and platform-specific execution prerequisites may still require a first-use download or OS configuration. macOS still has no local Sandbox runtime. The release pipeline targets **Windows x64**, **macOS Apple Silicon**, and **macOS Intel**; macOS packages are previews. Build macOS packages on a Mac with `bash scripts/build-desktop.sh`.
+Application installation and Sandbox provisioning remain separate. Scientific plugin dependencies and platform-specific execution prerequisites may still require a first-use download or OS configuration. macOS provides native Seatbelt isolation; Apple Silicon hosts on macOS 26+ can additionally install Apple Container for the preferred VM boundary. The release pipeline targets **Windows x64**, **macOS Apple Silicon**, and **macOS Intel**; macOS packages are previews. Build macOS packages on a Mac with `bash scripts/build-desktop.sh`.
 
 Formal data keeps its existing default location (`%LOCALAPPDATA%\OpenAgentWorld` on Windows), including any relocation already selected in Settings. An application upgrade does not replace this directory. Uninstalling the application leaves user data available for a later reinstall. Source launches continue to support `OPEN_AGENT_WORLD_DATA_ROOT`; the installed desktop uses the formal user location and its storage settings.
 
@@ -110,6 +110,36 @@ The build retains previous payloads under `.open-agent-world/desktop-previous-*`
 `scripts/package-backend.py --cache-dir <uv-cache>` can reuse an existing download
 cache while still enforcing the locked wheel hashes. See [Store acceptance](pack-store.md#acceptance)
 for testing remote Pack installation with the packaged interpreter and frontend.
+
+## Shared interface across platforms
+
+Windows, macOS and source/browser launches use the same React frontend, layout,
+theme and control behavior. Buttons and fields use application styling, and
+single-value select menus use a shared popup instead of an OS menu. This also
+covers controls loaded by Packs while keeping their native form values and
+`onChange` handlers. Keyboard navigation, disabled options and focus are retained.
+
+Tauri uses WebView2 on Windows and the system WKWebView on macOS; Linux source
+launches use the selected browser. The build adds WebKit prefixes for backdrop
+blur, masks and related styles. The CSS compatibility baseline is Chromium 109,
+Firefox 115 and Safari/WebKit 16.4. On older macOS installations, keep Safari
+updated: runtime color mixing depends on WebKit support and cannot be converted
+at build time when it uses theme variables. Font metrics can still vary by OS.
+
+Production UI acceptance runs the same settings, theme and dynamic-control
+checks in Chromium and WebKit:
+
+```sh
+npm --prefix frontend run build
+cd frontend
+npx --no-install playwright install chromium webkit
+npm run test:e2e:ui
+```
+
+The tests use an isolated preview profile and save screenshots and failure traces
+under `.tmp/ui-playwright`. Run the installed `.app` on macOS as part of release
+verification; Playwright WebKit is a compatibility check, not the installed
+WKWebView itself.
 
 ## Verification
 

@@ -1,11 +1,17 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { apiErrorMessage, worldApi } from "../api/client";
-import type { ConversationMessagePage, RuntimeEvent } from "../types/world";
+import type { ConversationMessage, ConversationMessagePage, RuntimeEvent } from "../types/world";
 import { activeConversationAgentIds, activeConversationRuns } from "./conversationActivity";
 
 export const CONVERSATION_WINDOW_SIZE = 150;
 const emptyPage: ConversationMessagePage = { items: [], has_before: false, has_after: false };
 type Direction = "latest" | "before" | "after" | "refresh";
+
+function visibleSummaries(current: ConversationMessagePage, incoming: ConversationMessagePage, items: ConversationMessage[]) {
+  const ids = new Set([...items.map(item => item.run_id), ...(incoming.active_runs ?? []).map(run => run.run_id)]);
+  return Object.fromEntries(Object.entries({ ...current.run_summaries, ...incoming.run_summaries })
+    .filter(([id]) => ids.has(id)));
+}
 
 /** REST is authoritative. Keep a bounded contiguous window, including after reconnect. */
 export function useConversationTimeline(conversationId: string, sessionId: string | undefined,
@@ -54,7 +60,7 @@ export function useConversationTimeline(conversationId: string, sessionId: strin
           active_agent_ids: incoming.active_agent_ids,
           active_runs: incoming.active_runs,
           deliveries: incoming.deliveries,
-          run_summaries: incoming.run_summaries,
+          run_summaries: visibleSummaries(current, incoming, current.items),
           has_after: current.has_after || (incoming.items.at(-1)?.sequence ?? 0) > (current.items.at(-1)?.sequence ?? 0) };
         pageRef.current = next;
         setState({ scope, page: next, activityBoundary });
@@ -77,7 +83,7 @@ export function useConversationTimeline(conversationId: string, sessionId: strin
         active_agent_ids: incoming.active_agent_ids,
         active_runs: incoming.active_runs,
         deliveries: incoming.deliveries,
-        run_summaries: incoming.run_summaries,
+        run_summaries: visibleSummaries(current, incoming, items),
         items,
         has_before: direction === "before" || direction === "latest" || tailGap ? incoming.has_before : current.has_before || trimmed,
         has_after: direction === "before" ? current.has_after || trimmed : incoming.has_after,

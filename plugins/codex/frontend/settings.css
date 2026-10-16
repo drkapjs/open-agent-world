@@ -1,14 +1,11 @@
 .codex-settings { display: grid; gap: 14px; min-width: 0; container-type: inline-size; }
 .codex-settings-section { display: grid; gap: 10px; min-width: 0; }
-.codex-settings-heading { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 12px; font-weight: 650; }
-.codex-settings-heading small { color: var(--accent-strong); font-size: 10px; font-weight: 500; }
 .codex-settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 10px; }
 .codex-settings .field-label { min-width: 0; align-content: start; }
 .codex-settings .field-label > span { color: var(--ink-soft); font-size: 11px; letter-spacing: 0; text-transform: none; }
 .codex-settings .field-label input, .codex-settings .field-label select { height: 34px; font-size: 12px; border-radius: 8px; }
 .codex-settings .field-label textarea { min-height: 76px; font-size: 12px; border-radius: 8px; }
 .codex-settings .field-label small, .codex-settings-help { margin: 0; color: var(--ink-faint); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
-.codex-project-field > span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 .codex-settings-advanced { border-top: 1px solid var(--line); padding-top: 10px; }
 .codex-settings-advanced > summary { cursor: pointer; color: var(--ink-soft); font-size: 11px; font-weight: 600; }
 .codex-settings-advanced[open] > summary { margin-bottom: 12px; }

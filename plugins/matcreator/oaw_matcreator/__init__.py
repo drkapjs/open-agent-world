@@ -7,15 +7,17 @@ from open_agent_world.plugin_api import (
 )
 from open_agent_world.skill_packages import SkillPackage, register_skill_package, register_skill_node, SkillContainerDefinition, ToolboxConfig
 from . import knowledge as k
-from . import tasks, preset
+from . import preset, native_card
 
 READ = "matcreator.kdg.read"
 
 class MatCreatorPlugin:
-    descriptor = PluginDescriptor(id="matcreator", version="0.3.0", plugin_api_version="1.23", name="MatCreator",
-                                  requires_plugins=("science.structure-viewer", "oaw.barracks"))
+    descriptor = PluginDescriptor(id="matcreator", version="0.9.0", plugin_api_version="1.33", name="MatCreator",
+                                  requires_plugins=("science.structure-viewer",))
 
     def register(self, registration):
+        from .background_jobs import definition as bohrium_jobs
+        registration.register_background_job_provider("matcreator.bohrium-batch", bohrium_jobs)
         for name in ("core", "simulation", "ai", "research"):
             package = SkillPackage.model_validate(json.loads(files(__package__).joinpath("packages", name + ".json").read_text(encoding="utf-8")))
             register_skill_package(registration, node_type="matcreator." + name, package=package)
@@ -85,10 +87,11 @@ class MatCreatorPlugin:
             description="Explicitly authorize editing local graph knowledge and reviewing memories; source snapshots stay immutable.",
             source_traits=frozenset({"core.agent"}), target_types=frozenset({"matcreator.kdg"}),
             capabilities=tuple(CapabilityGrantDefinition(kind=kind) for kind in [READ, *["matcreator.kdg." + key for key in [*reads, *writes]]])))
-        tasks.register(registration)
-        registration.register_legion_preset(preset.definition())
+        native_card.register(registration)
+        registration.register_legion_preset(preset.native_definition())
         registration.register_pack(PackDefinition(id='matcreator.default', name='MatCreator',
-            description='Scientific skills, research tasks and a Know-Do Graph.', cards=tuple(registration.nodes)))
+            description='Native research Agent, scientific skills, Jobs and a Know-Do Graph.',
+            cards=(*registration.nodes, 'core.jobs')))
 
 def create_plugin():
     return MatCreatorPlugin()

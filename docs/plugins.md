@@ -17,9 +17,23 @@ Plugins add cards, relationships, tools, and runtime integrations. The backend d
 
 After installing a package and its dependencies, restart the backend, open **Pack & Card Library**, open the plugin's pack, and add its collected cards to your deck. Installation is separate from collection and deck selection. The Store tab is a placeholder, not an online marketplace.
 
+Trusted checkout plugins can declare no-argument setup hooks under the Python
+entry-point group `open_agent_world.setup`. `scripts/install-plugins.py` invokes
+only hooks belonging to the selected distributions, after their dependencies
+install successfully, in the destination Python. Normal setup, development
+startup and desktop packaging all use this path; `--dry-run` never calls hooks.
+Hooks must be idempotent, keep dependencies owned by the Pack and support the
+desktop payload's relocation. MatCreator uses this for its isolated native
+runtime. These hooks are not executed by plugin discovery, an Agent Run, plain
+`pip install`, or the `.oawpack` upload API.
+
 To disable a plugin, first remove its world objects, relationships, dependent Agent runtimes, and pending cleanup; the Library enforces these constraints. Uninstall by removing the package and restarting after removing its world dependencies. Collection and deck references survive unavailability. See [Card Library](card-library.md#availability-and-remaining-boundaries).
 
 ## Bundled plugin guides
+
+The [Data visualization Pack](../plugins/visualization/README.md) connects charts
+to SQL and MKB through the public [data-source protocol](developers/data-sources.md)
+introduced in Plugin API 1.27.
 
 | Plugin | Use it for |
 | --- | --- |
@@ -29,10 +43,45 @@ To disable a plugin, first remove its world objects, relationships, dependent Ag
 | [Codex](../plugins/codex/README.md) | A Codex runtime integration |
 | [Structure viewer](../plugins/structure_viewer/README.md) | Viewing connected structure files |
 | [MatCreator](../plugins/matcreator/README.md) | Materials-oriented graph and workflow tools |
+| [AtomSculptor](../plugins/atomsculptor/README.md) | Atomistic structure editing and modelling Agents |
 
-Plugin-specific documentation can remain in its own package or repository. These links are a directory, not a requirement to copy all plugin content into OAW's docs. In-app plugin documentation and tutorial delivery are not implemented; no new manifest or framework is required here.
+Plugin-specific documentation can remain in its own package or repository. These links are a directory, not a requirement to copy all plugin content into OAW's docs. Plugin API 1.26 adds optional [progressive tutorials and offline documents](developers/progressive-tutorials.md) on card and Pack definitions.
 
 ## Developing a plugin
+
+Plugin API 1.33 adds `BackgroundJobProvider`, a host-owned durable job ledger and
+model-free observation through the shared continuation loop. Providers submit or
+attach external work; the host retains identity, authorization and continuation
+admission across turns and restarts. See [long computations and durable waiting](execution.md#long-computations-and-durable-waiting-api-133).
+
+Plugin API 1.32 adds opt-in [context budgeting and compaction](developers/context-compaction.md)
+for runtime plugins, and connection-specific context/output limits on
+`RuntimeModelConnection`. Plugin runtimes retain their own context storage and
+orchestration. Run completion now retains Agent capacity until provider stream
+cleanup settles; terminal result events alone do not grant capacity.
+
+Plugin API 1.31 adds typed execution edges, history revisions, attempt metadata
+and revision-bound pagination. Plugin API 1.30 adds the built-in Agent graph, `NodeExecutionSource`,
+`ExecutionNode` / `ExecutionSnapshot`, and `AgentCapabilityProvider.publish_execution`.
+See the [execution graph contract](developers/execution-graph.md) for runtime,
+Barracks, Summoning and custom-card sources. Frontend operations can reveal their
+content through [`host.workspace.activate()`](developers/workspace-design.md#activate-content-after-an-operation).
+
+Plugin API 1.29 adds two trusted runtime services on `AgentCapabilityProvider`:
+`resolve_model(model)` returns the same run-local `RuntimeModelConnection` as
+`ModelConnectionResolver.resolve_runtime`: adapter, `model_id`, base URL,
+non-repr API key, image support and saved context/output limits. The `model`
+property remains an alias for older adapters. `runtime_state_directory(agent_id)`
+returns an Agent-specific directory under the host data root. Resolve model
+connections at invocation time; never put credentials in card config, templates,
+events or process arguments. These services do not grant access to connected
+resources: adapters must still call `list_tools` and `invoke_tool` for live graph
+authorization. Runtime checkpoints stay out of Legion templates.
+
+Plugin API 1.28 adds optional `WorkspaceLayoutMetadata` on `NodePresentation`.
+The frontend SDK exposes shared application content helpers and `composeWorkspace`
+recipes over the existing v2 layout. These leave saved layouts and runtime
+ownership unchanged; see [workspace design](developers/workspace-design.md).
 
 Plugin API 1.23 adds declarative `state` policies, bound `ctx.state` / `host.state`,
 and host-owned shared/session namespaces. Legacy plugins remain unchanged. See
@@ -54,8 +103,17 @@ Plugin API 1.21 adds opt-in deployment of existing plugin Workspace views and se
 
 Start with the installable [Greeter example](../examples/plugins/greeter/README.md), then consult [package discovery](#package-structure-and-discovery), [the public API](#public-plugin-api), and the contracts below.
 
+Plugin API 1.20 adds an opt-in, transient plugin visual-capture path. A trusted
+plugin may register an active workspace renderer with the frontend host; the
+backend sends its pixels to a model only through an explicitly granted visual
+capability. Screenshots are revision-checked and never stored in node documents
+or runtime logs.
+
 Plugin API 1.16 adds `NodePresentation` for supported surfaces, initial appearance,
-and compact-card opening behavior (see the node definition contract below).
+and compact-card opening behavior (see the node definition contract below). It also
+lets a trusted Agent runtime opt into an OAW-managed model connection resolver. The
+resolver is injected only in the backend and returns the selected adapter, model,
+base URL and secret without storing credentials in plugin card state or frontend code.
 Plugin API 1.15 adds optional pack artwork and accent colors through registered
 public image assets (see [Card Library](card-library.md#pack-appearance)).
 Plugin API 1.14 adds `PackDefinition` and `registration.register_pack(...)`.
@@ -63,6 +121,12 @@ Every card definition belongs to a pack. Opening an owned pack collects its card
 users then choose cards for persistent named decks. Registration alone never adds
 cards to a user's collection or tray. See [Packs, Card Library and Decks](card-library.md)
 for manifests, migration, persistence and disable semantics.
+
+Bundled Packs may include canonical host cards (for example `core.jobs` in
+MatCreator). Collection records keep the card's defining plugin as owner and
+track each opened Pack separately in `source_pack_ids`; including a host card
+does not transfer implementation or runtime ownership. Installed external Pack
+distributions still contain only their own cards.
 
 Plugin API 1.13 adds projected read-only document actions (`project=True`),
 document update validators and declarative `NodeDocumentTransformation`s.
@@ -232,6 +296,13 @@ authenticated control-plane API. Lifecycle handlers obtain the same directory
 from `context.resources.node_storage_path(node.id)` and own reversible creation
 and journaled post-delete cleanup. Do not create files during registration.
 
+Resource contexts also provide an optional `resolve_secret(reference)` callback
+for trusted backend handlers. It resolves the live node's encrypted binding,
+then a global environment setting, then the server environment. Resolve inside
+the executing job; never put values in card state, durable job parameters,
+responses, or logs. Credential writes use host-only settings endpoints, not
+Agent capabilities. Standalone callers may omit this callback.
+
 For native resources without a canvas snapshot, set `deletion_warning` on the
 node definition. The UI confirms permanent deletion, clears undo history after
 success, and rejects copy or undo operations that would silently lose the native
@@ -307,11 +378,16 @@ or render displays a local error instead of silently substituting another view.
 
 Views receive the current card, definition, surface level, and a card-scoped host
 adapter with `updateConfig` and `getAgentInfo`. Updates go through existing host
-actions and backend validation. `SchemaFields` is also exported for scalar schema
-controls. Import host contracts only from `@oaw/plugin-api`; React is shared with
-the host. Do not import host stores or internal components. UI extensions are
-trusted application code, not a security sandbox; error boundaries isolate
-rendering and module-load errors, not arbitrary asynchronous side effects.
+actions and backend validation. The adapter also provides document reads/actions,
+transforms, file-viewer access, `openWorkspace(nodeId)`, `runAgent(nodeId, prompt)`
+and `onDocumentChange(listener)`. The latter observes future authoritative
+`node_document` mutations and returns an unsubscribe function; it must not be
+used as a replacement for a plugin's own initial document load. `SchemaFields` is
+also exported for scalar schema controls. Import host contracts only from
+`@oaw/plugin-api`; React is shared with the host. Do not import host stores or
+internal components. UI extensions are trusted application code, not a security
+sandbox; error boundaries isolate rendering and module-load errors, not arbitrary
+asynchronous side effects.
 
 Vite discovers immediate `plugins/*/frontend` entries at startup/build time and
 loads their view modules on demand. Restart development servers after adding a
@@ -1192,6 +1268,19 @@ and their relationships. See the skill helper for this specialization.
 
 
 ## Agent equipment and Barracks (Plugin API 1.7)
+
+Plugin API 1.26 adds `NodeTypeDefinition.default_equipment`, a tuple of
+`DefaultEquipment(key="skills", type="example.tools", relationship="example.tools.use")`
+declarations. Only Agents can declare these slots. Targets and relationships
+belong to the declaring plugin; targets are inert document resources with an
+initial value, without lifecycle handlers, execution or scoped runtime state.
+The host creates ordinary private equipment and documents through native world
+and StateStore operations, with compensation on failed Agent initialization.
+Missing slots are seeded once for existing Agents on startup. Known slots are
+not reinstalled after unequipping/deletion. Existing shared resources are not
+adopted or removed. Duplicate/summon/Legion/desktop history preserve slot identities
+remapping internal node references on copy. Existing documents are not updated
+when the plugin changes; edit them manually or create new resources.
 
 World edges describe shared relationships. `Card.parent_id` describes spatial
 container membership. `Card.equipment = {owner_id, relationship}` describes

@@ -19,11 +19,11 @@ test("SQL card inspects schema, runs SQL, confirms deletion and survives reload"
     await dialog.getByLabel("Read only", { exact: true }).uncheck();
     await dialog.getByLabel("SQL editor").fill("CREATE TABLE samples (id INTEGER PRIMARY KEY, name TEXT NOT NULL, value REAL)");
     await dialog.getByRole("button", { name: "Run SQL", exact: true }).click();
-    await expect(dialog.getByRole("button", { name: "samples table" })).toBeVisible();
+    await expect(dialog.getByRole("option", { name: "samples · table" })).toBeAttached();
     await dialog.getByLabel("SQL editor").fill("INSERT INTO samples VALUES (1, 'Control', 12.4), (2, 'Treatment A', 18.7), (3, 'Treatment B', 21.2)");
     await dialog.getByRole("button", { name: "Run SQL", exact: true }).click();
     await expect(dialog.getByRole("status")).toContainText("3 changes");
-    await dialog.getByRole("button", { name: "samples table" }).click();
+    await dialog.getByLabel("Tables & views", { exact: true }).selectOption('samples');
     await expect(dialog.getByRole("tabpanel", { name: "Table schema" })).toContainText("PRIMARY KEY");
     await dialog.getByRole("button", { name: "Browse rows" }).click();
     await expect(dialog.getByRole("cell", { name: "Treatment A", exact: true })).toBeVisible();

@@ -9,13 +9,46 @@ import re
 from collections.abc import Callable, Sequence
 from typing import Any
 
-from backend.errors import DomainError
-
 from .base import AgentCapabilityProvider
 from .models import AgentConfigurationError, ScopedToolDefinition
+from .tool_execution import execute_tool
 
 
 _TOOL_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
+
+
+def build_scoped_adk_tools(
+    provider: AgentCapabilityProvider,
+    agent_id: str,
+    definitions: Sequence[ScopedToolDefinition],
+) -> list[Any]:
+    """Advertise the host's full schema while retaining live scoped execution.
+
+    Python signatures cannot express selectors, bounds or nested JSON schemas.
+    Keep FunctionTool's invocation/default handling, but supply the same JSON
+    declaration used by the other model adapters. Imports stay optional for
+    hosts which do not install ADK.
+    """
+    if not definitions:
+        return []
+    from google.adk.tools import FunctionTool
+    from google.genai import types
+
+    class ScopedFunctionTool(FunctionTool):
+        def __init__(self, function: Callable[..., Any], declaration: dict[str, Any]):
+            super().__init__(function)
+            self._scoped_declaration = types.FunctionDeclaration(
+                name=declaration["name"], description=declaration["description"],
+                parameters_json_schema=declaration["parameters"],
+            )
+
+        def _get_declaration(self):
+            return self._scoped_declaration.model_copy(deep=True)
+
+    functions = build_scoped_tool_callables(provider, agent_id, definitions)
+    schemas = build_scoped_tool_schemas(definitions)
+    return [ScopedFunctionTool(function, schema["function"])
+            for function, schema in zip(functions, schemas, strict=True)]
 
 
 def build_scoped_tool_callables(
@@ -118,21 +151,13 @@ def _build_callable(
     definition: ScopedToolDefinition,
 ) -> Callable[..., Any]:
     async def scoped_tool(**arguments: Any) -> Any:
-        try:
-            result = await provider.invoke_tool(
-                agent_id, definition.capability_id, dict(arguments)
-            )
-            from .media import adk_tool_result
-            return adk_tool_result(result)
-        except DomainError as exc:
-            return {
-                "ok": False,
-                "error": {
-                    "code": exc.code,
-                    "type": type(exc).__name__,
-                    "message": exc.message,
-                },
-            }
+        from .media import adk_tool_result
+
+        outcome = await execute_tool(
+            lambda: provider.invoke_tool(agent_id, definition.capability_id, dict(arguments)),
+            serialize=adk_tool_result,
+        )
+        return outcome.response
 
     scoped_tool.__name__ = definition.name
     scoped_tool.__qualname__ = definition.name

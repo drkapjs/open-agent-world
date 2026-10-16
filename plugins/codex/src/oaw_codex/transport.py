@@ -13,6 +13,10 @@ from typing import Any, Awaitable, Callable
 from open_agent_world.plugin_api import AgentRuntimeError
 
 
+class AppServerRequestError(AgentRuntimeError):
+    """An explicit JSON-RPC rejection, as opposed to an unknown transport outcome."""
+
+
 class AppServer:
     def __init__(self, command: list[str], cwd: str,
                  handler: Callable[[str, dict], Awaitable[dict]]) -> None:
@@ -96,7 +100,7 @@ class AppServer:
                         await self.events.put(message)
                 elif (future := self.pending.get(message.get("id"))) is not None and not future.done():
                     if "error" in message:
-                        future.set_exception(AgentRuntimeError(
+                        future.set_exception(AppServerRequestError(
                             f"Codex: {message['error'].get('message', 'request failed')}"
                         ))
                     else:

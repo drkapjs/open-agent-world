@@ -27,7 +27,7 @@ it("queries through the scoped host and renders a table", async () => {
 
 it("confirms the exact SQL and invalidates confirmation on edit", async () => {
   const action = setup();
-  await screen.findByRole("button", { name: "notes table" });
+  await screen.findByRole("option", { name: "notes · table" });
   fireEvent.click(screen.getByLabelText("Read only"));
   fireEvent.change(screen.getByLabelText("SQL editor"), { target: { value: "DELETE FROM notes" } });
   fireEvent.click(screen.getByRole("button", { name: "Run SQL" }));
@@ -43,7 +43,7 @@ it("confirms the exact SQL and invalidates confirmation on edit", async () => {
 
 it("reports malformed parameters without issuing SQL", async () => {
   const action = setup();
-  await screen.findByRole("button", { name: "notes table" });
+  await screen.findByRole("option", { name: "notes · table" });
   fireEvent.change(screen.getByLabelText("SQL parameters"), { target: { value: "null" } });
   fireEvent.click(screen.getByRole("button", { name: "Run query" }));
   expect((await screen.findByRole("alert")).textContent).toContain("Parameters must be a JSON array or object");

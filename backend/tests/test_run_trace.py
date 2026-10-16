@@ -16,6 +16,16 @@ def test_tool_arguments_results_and_errors_are_retained():
     assert "runtime_config" not in payload
 
 
+def test_native_archive_identity_survives_the_shared_public_projection():
+    payload = public_tool_payload({"name": "read", "call_id": "same", "role": "builder",
+        "run_attempt": 2, "archive_id": "tool-call:2:builder:same", "arguments": {"api_key": "secret"}})
+    assert payload["role"] == "builder"
+    assert payload["run_attempt"] == 2
+    assert payload["archive_id"] == "tool-call:2:builder:same"
+    assert "secret" not in json.dumps(payload)
+    assert public_tool_payload(payload) == payload
+
+
 def test_sensitive_fields_are_masked_recursively():
     payload = public_tool_payload({"name": "request", "arguments": {
         "headers": {"Authorization": "Bearer secret", "content-type": "application/json"},
@@ -74,3 +84,19 @@ def test_source_payload_is_not_mutated():
     before = json.dumps(source)
     public_tool_payload(source)
     assert json.dumps(source) == before
+
+
+def test_named_wrapper_identity_and_legacy_failure_survive_public_projection():
+    start = public_tool_payload({'name': 'oaw_invoke_tool', 'call_id': 'c', 'author': 'executor',
+        'subagent': True, 'arguments': {'capability_id': 'operation:execute_command', 'arguments': {'command': 'pwd'}}})
+    assert start['tool_name'] == 'execute_command'
+    assert start['capability_id'] == 'operation:execute_command'
+    assert start['author'] == 'executor' and start['subagent']
+    done = public_tool_payload({'name': 'oaw_invoke_tool', 'ok': False, 'truncated': True,
+        'response': {'ok': False}, 'response_visibility': 'summary'})
+    assert done['success'] is False and done['truncated']
+    assert done['response_visibility'] == 'summary'
+    # A second projection at the host preserves the worker's truncation marker.
+    assert public_tool_payload(done) == done
+    assert 'tool_name' not in public_tool_payload({'name': 'oaw_invoke_tool',
+        'arguments': {'capability_id': 'opaque:resource'}})

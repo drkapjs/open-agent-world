@@ -29,3 +29,10 @@ MatCreator adds task-ledger dispatch through the host's existing work-source
 contract. See [MatCreator](../matcreator/README.md#delegating-research).
 The plugin requires Plugin API 1.22. The host owns Run lifecycle, resource
 restoration, capability checks and durable instance records.
+## Execution graph
+
+The **Agent graph** card in Core essentials can observe this Barracks or an
+equipped **Summoning** card. Connect graph → source using **Observe execution**.
+The selected conversation scopes its attempts; follow-up turns remain separate
+Run nodes. The connection is read-only and grants no summoning or stop permission.
+See the [public execution-source contract](../../docs/developers/execution-graph.md).

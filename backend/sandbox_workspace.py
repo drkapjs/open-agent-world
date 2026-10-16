@@ -34,7 +34,7 @@ async def copy_skill(services, sandbox_id, skill_id, source, destination, overwr
             raise ResourceValidationError("Skill resource is missing")
         data = content.data_base64 if isinstance(content, SkillAsset) else base64.b64encode(content.encode()).decode()
         return await services._require_sandbox_backend().file_operation(sandbox_id, "write", root="workspace",
-            path=destination, data=data, overwrite=overwrite)
+            path=destination, data=data, overwrite=overwrite, create_parents=True)
 
 
 async def diagnostics(services, sandbox_id, destination=None):
@@ -46,7 +46,9 @@ async def diagnostics(services, sandbox_id, destination=None):
             raise ResourceValidationError("Use an HTTP(S) destination without credentials, query or fragment")
         if not info.network_enabled:
             raise ResourceValidationError("Networking is disabled; enable a supported mode in settings first")
-        argv = ["curl", "--disable", "--noproxy", "*", "--silent", "--show-error", "--output",
+        argv = ["curl", "--disable",
+            *([] if info.network_transport == "proxy_tcp" else ["--noproxy", "*"]),
+            "--silent", "--show-error", "--output",
             "NUL" if info.platform == "windows" else "/dev/null", "--max-time", "8",
             "--write-out", "%{http_code}", "--", destination]
         try:

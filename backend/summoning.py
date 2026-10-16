@@ -252,7 +252,7 @@ class SummoningService:
     def snapshot(self, node_id, capability=None):
         self.authorize(node_id, capability)
         value = read_document(self.services, node_id)["value"]
-        return {"instructions": value.get("instructions", ""), "policy": value.get("policy", {}),
+        return {"library_id": node_id, "instructions": value.get("instructions", ""), "policy": value.get("policy", {}),
                 "agents": [self.describe(item) for item in self.agents(node_id)],
                 "instances": [self.view(r) for r in self.records() if r["library_id"] == node_id
                               and (capability is None or r["caller_agent_id"] == capability.agent_id)]}
@@ -273,7 +273,7 @@ class SummoningService:
             raise ConflictError("This root task reached its concurrent summon limit")
         return policy
 
-    async def action(self, node_id, request, *, capability=None, dispatch_id=None, task_id=None, _capture_held=False):
+    async def action(self, node_id, request, *, capability=None, dispatch_id=None, task_id=None, _capture_held=False, _work_context=None):
         services = self.services
         manager = services.run_manager
         if request.action == "list":
@@ -385,7 +385,8 @@ class SummoningService:
                     raise RuntimeUnavailableError("The calling Run ended before summon admission")
                 run = await manager.start_run(record["entry_agent_id"], request.prompt, caller_kind="summon",
                                               caller_id=capability.agent_id if capability else None,
-                                              context_id=record.get("context_id"), task_id=task_id)
+                                              context_id=record.get("context_id"), task_id=task_id,
+                                              initial_lifecycle={"delegation_context": _work_context} if _work_context else None)
             except RuntimeUnavailableError as error:
                 record["admission_error"] = str(error)
                 self.save(record)
@@ -408,12 +409,13 @@ class SummoningService:
         records = [self.find_instance(node_id, key, capability) for key in ids]
         manager = self.services.run_manager
         pending = [record for record in records if record["attempts"] and
-                   manager.get_run(record["attempts"][-1]["run_id"]).status not in TERMINAL_RUN_STATUSES]
+                   (manager.get_run(record["attempts"][-1]["run_id"]).status not in TERMINAL_RUN_STATUSES
+                    or manager.execution_in_progress(record["attempts"][-1]["run_id"]))]
         already_done = len(pending) != len(records)
         waiters = []
         try:
             if pending and request.timeout_seconds and not (request.wait_mode == "any" and already_done):
-                waiters = [asyncio.create_task(manager.wait_terminal(r["attempts"][-1]["run_id"])) for r in pending]
+                waiters = [asyncio.create_task(manager.wait_settled(r["attempts"][-1]["run_id"])) for r in pending]
                 await asyncio.wait(waiters, timeout=request.timeout_seconds,
                     return_when=asyncio.FIRST_COMPLETED if request.wait_mode == "any" else asyncio.ALL_COMPLETED)
         finally:
@@ -426,7 +428,8 @@ class SummoningService:
         self.authorize(node_id, capability)
         results = [self.view(self.find_instance(node_id, key, capability)) for key in ids]
         return {"instances": results, "pending_instance_ids": [r["id"] for r in results
-            if r["status"] not in {"succeeded", "failed", "cancelled", "interrupted", "reclaimed", "ready"}]}
+            if r["status"] not in {"succeeded", "failed", "cancelled", "interrupted", "reclaimed", "ready"}
+            or (r['run_id'] and manager.execution_in_progress(r['run_id']))]}
 
     def find_instance(self, node_id, instance_id, capability):
         record = next((r for r in self.records() if r["id"] == instance_id and r["library_id"] == node_id), None)

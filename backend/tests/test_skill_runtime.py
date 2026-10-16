@@ -82,6 +82,15 @@ def run(client, agent, sandbox, skill, **arguments):
          "interpreter": ["python"], **arguments})
 
 
+def test_python_entry_without_shebang_defaults_to_sandbox_python(runtime_client):
+    client, _, native = runtime_client
+    agent, sandbox, skill, _, _ = setup_skill(client)
+    result = run(client, agent, sandbox, skill, interpreter=[])
+    assert result["exit_code"] == 0
+    assert native.last_argv[0] == "python3"
+    assert Path(native.last_argv[1]).read_text() == "print('ok')"
+
+
 @pytest.mark.parametrize("equipment,toolbox", [(False, False), (False, True), (True, False), (True, True)])
 def test_lazy_current_bundle_uses_normal_native_backend_and_workspace(runtime_client, equipment, toolbox):
     client, backend, native = runtime_client
@@ -174,8 +183,9 @@ def test_partial_runtime_grant_failure_revokes_and_never_launches(runtime_client
         granted.append(path)
         raise SandboxSecurityError("injected grant failure")
     monkeypatch.setattr(native, "grant_runtime_path", fail_after_grant)
-    with pytest.raises(SandboxSecurityError, match="injected grant failure"):
+    with pytest.raises(PermissionDeniedError, match="injected grant failure") as denied:
         run(client, agent, sandbox, skill)
+    assert isinstance(denied.value.__cause__, SandboxSecurityError)
     assert native.last_argv == () and granted
     assert all(path in native.revocations for path in granted)
     assert client.portal.call(backend.get, sandbox["id"]).state == SandboxState.ERROR
@@ -187,8 +197,9 @@ def test_runtime_native_failure_revokes_mount_access(runtime_client, monkeypatch
     def fail(*args, **kwargs):
         raise SandboxSecurityError("injected launch failure")
     monkeypatch.setattr(native, "run_appcontainer", fail)
-    with pytest.raises(SandboxSecurityError, match="injected launch failure"):
+    with pytest.raises(PermissionDeniedError, match="injected launch failure") as denied:
         run(client, agent, sandbox, skill)
+    assert isinstance(denied.value.__cause__, SandboxSecurityError)
     script = backend._sandboxes_root / sandbox["id"] / ".oaw/skills" / skill["id"] / "scripts/check.py"
     assert (script, True) in native.grants and script in native.revocations
 
@@ -399,13 +410,13 @@ def test_agent_and_skill_timeout_reach_backend(runtime_client, monkeypatch):
     monkeypatch.setattr(native, "run_appcontainer", capture)
     provider = WorldAgentCapabilityProvider(client.app.state.services)
     result = client.portal.call(provider.invoke_tool, agent["id"], "operation:execute_command",
-        {"sandbox": sandbox["id"], "argv": ["python", "-V"], "timeout_seconds": 1200})
+        {"sandbox": sandbox["id"], "argv": ["python", "-V"], "timeout_seconds": 36000})
     assert result["exit_code"] == 0
-    run(client, agent, sandbox, skill, timeout_seconds=900)
-    assert observed == [1200, 900]
+    run(client, agent, sandbox, skill, timeout_seconds=36000)
+    assert observed == [36000, 36000]
 
 
-@pytest.mark.parametrize("value", [0, -1, 3601, float("inf"), float("nan"), True])
+@pytest.mark.parametrize("value", [0, -1, 36001, float("inf"), float("nan"), True])
 def test_invalid_agent_timeout_rejected(runtime_client, value):
     client, backend, native = runtime_client
     agent, sandbox, skill, _, _ = setup_skill(client)

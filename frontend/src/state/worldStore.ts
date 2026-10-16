@@ -1,4 +1,5 @@
 import { useConversationView } from "./conversationView";
+import type { DataSchema } from '../plugins/dataSources';
 import { useOpenFiles } from './openFiles';
 import { useLegionDeployments } from "./legionDeployments";
 import { ensureCardsCollected } from "./cardDependencies";
@@ -55,12 +56,15 @@ export interface PendingConnection {
   source: string;
   target: string;
   options: RelationshipOption[];
+  existingEdgeId?: string;
+  error?: string;
 }
 
 type RestorableCard = WorldCard & {
   restoreDocument?: Record<string, unknown>;
   restoreCardState?: { namespaces: unknown[] };
   restoreLegionState?: Record<string, unknown>;
+  restorePluginDefaults?: Record<string, unknown>;
   restoreContent?: string;
   restoreImageData?: string;
   restoreImageMediaType?: string;
@@ -83,7 +87,7 @@ export type WorldHistoryOperation =
       cards: WorldCard[];
       edges: WorldEdge[];
     }
-  | { id: number; label: string; kind: "edge-created"; edge: WorldEdge }
+  | { id: number; label: string; kind: "edge-created"; edge: WorldEdge; binding?: {before: WorldCard; after: WorldCard} }
   | { id: number; label: string; kind: "edge-deleted"; edge: WorldEdge }
   | { id: number; label: string; kind: "edge-updated"; before: WorldEdge; after: WorldEdge };
 
@@ -164,6 +168,10 @@ async function restoreCard(card: RestorableCard): Promise<WorldCard> {
     try { await worldApi.saveLegionState(restored.id, card.restoreLegionState, 0); }
     catch (error) { await worldApi.deleteNode(restored.id); throw error; }
   }
+  if (card.restorePluginDefaults && Object.keys(card.restorePluginDefaults).length) {
+    try { await worldApi.restoreNodeDefaults(restored.id, card.restorePluginDefaults); }
+    catch (error) { await worldApi.deleteNode(restored.id); throw error; }
+  }
   return restored;
 }
 
@@ -171,6 +179,10 @@ async function snapshotCardForHistory(card: WorldCard, strict = false): Promise<
   const warning = useWorldStore.getState().catalog.node_types.find((definition) => definition.id === card.type)?.deletion_warning;
   if (warning) throw new Error(`${card.name}: ${warning} Delete this card directly to review its removal.`);
   const snapshot = copyCard(card);
+  const definition = useWorldStore.getState().catalog.node_types.find(node => node.id === card.type);
+  if (definition?.has_default_equipment) {
+    snapshot.restorePluginDefaults = await worldApi.getNodeDefaults(card.id);
+  }
   if (useWorldStore.getState().catalog.node_types.find((definition) => definition.id === card.type)?.has_scoped_state) {
     snapshot.restoreCardState = await worldApi.getCardStateSnapshot(card.id);
   } else if (useWorldStore.getState().catalog.node_types.find((definition) => definition.id === card.type)?.has_document) {
@@ -381,7 +393,7 @@ interface WorldState {
   deleteCards: (ids: string[]) => Promise<void>;
   requestConnection: (source?: string | null, target?: string | null) => void;
   closeConnectionDialog: () => void;
-  createConnection: (relationship: Relationship, direction?: EdgeDirection) => Promise<void>;
+  createConnection: (relationship: Relationship, direction?: EdgeDirection, schema?: DataSchema) => Promise<void>;
   selectEdge: (id?: string) => void;
   selectCards: (ids: string[], options?: { syncCanvas: boolean }) => void;
   updateSelectedEdge: (
@@ -398,7 +410,7 @@ interface WorldState {
   saveSandboxConfig: (id: string, config: SandboxConfig) => Promise<boolean>;
   startSandbox: (id: string) => Promise<boolean>;
   stopSandbox: (id: string) => Promise<boolean>;
-  executeSandbox: (id: string, command: string) => Promise<boolean>;
+  executeSandbox: (id: string, command: string, pythonEnvironment?: "auto" | "managed") => Promise<boolean>;
   ingestEvent: (event: RuntimeEvent) => void;
   ingestEvents: (events: RuntimeEvent[]) => void;
   setSocketState: (state: SocketState) => void;
@@ -730,7 +742,7 @@ export const useWorldStore = create<WorldState>()(persist((set, get) => ({
           }),
         redoStack: [],
       }));
-      if (isContainer(card, get().catalog)) {
+      if (isContainer(card, get().catalog) || definition.has_default_equipment) {
         const snapshot = await worldApi.getWorld();
         const members = ownedDescendants(snapshot.nodes, card.id);
         set((state) => ({ cards: mergeCards(state.cards, members, state.cardTombstones) }));
@@ -1229,13 +1241,16 @@ export const useWorldStore = create<WorldState>()(persist((set, get) => ({
       });
       return;
     }
+    const existingDataEdge = get().edges.find(edge => (
+      (edge.source === source && edge.target === target) || (edge.source === target && edge.target === source)
+    ) && get().catalog.relationships.some(relation => relation.id === edge.relationship && relation.data_read));
     const validation = validateConnection(
       get().catalog,
       source,
       target,
       sourceCard?.type,
       targetCard?.type,
-      get().edges,
+      get().edges.filter(edge => edge.id !== existingDataEdge?.id),
       get().cards,
     );
     if (!validation.valid || !validation.source || !validation.target) {
@@ -1251,34 +1266,57 @@ export const useWorldStore = create<WorldState>()(persist((set, get) => ({
         source: validation.source,
         target: validation.target,
         options: validation.options,
+        existingEdgeId: existingDataEdge?.id,
       },
     });
   },
 
   closeConnectionDialog: () => set({ pendingConnection: undefined }),
 
-  createConnection: (relationship, direction = "forward") => withHistoryTransaction(async () => {
+  createConnection: (relationship, direction = "forward", schema) => withHistoryTransaction(async () => {
     const pending = get().pendingConnection;
     if (!pending) return;
     set({ syncState: "syncing" });
     try {
-      const edge = await worldApi.createEdge({
+      const dataRead = get().catalog.relationships.some(item => item.id === relationship && item.data_read);
+      const before = get().cards.find(card => card.id === pending.source);
+      const consumer = get().catalog.node_types.find(item => item.id === before?.type)?.data_consumer;
+      if (dataRead && consumer) {
+        if (!schema || !before) throw new Error('Choose a schema before connecting.');
+        const available = await worldApi.dataSourceSchemas(pending.source, pending.target, relationship);
+        if (!available.schemas.some(item => item.id === schema.id && consumer.kinds.includes(item.kind))) throw new Error('This schema is no longer available. Choose it again.');
+      }
+      const existing = pending.existingEdgeId ? get().edges.find(edge => edge.id === pending.existingEdgeId && edge.relationship === relationship) : undefined;
+      const edge = existing ?? await worldApi.createEdge({
         source: pending.source,
         target: pending.target,
         relationship,
         direction,
       });
+      let after: WorldCard | undefined;
+      try {
+        if (dataRead && consumer && before && schema) after = await worldApi.updateNode(before.id, {
+          config: {[consumer.source_field]: pending.target, [consumer.schema_field]: schema.id}, expected_revision: before.revision,
+        });
+      } catch (error) {
+        if (!existing) await worldApi.deleteEdge(edge.id);
+        throw error;
+      }
       markWorldMutation();
       set((state) => ({
         edges: mergeEdges(state.edges, [edge], state.edgeTombstones),
+        cards: after ? mergeCards(state.cards, [after], state.cardTombstones) : state.cards,
         pendingConnection: undefined,
         selectedEdgeId: edge.id,
         syncState: "online",
-        undoStack: appendHistory(state.undoStack, {
+        undoStack: appendHistory(state.undoStack, existing && before && after ? {
+          id: ++historySequence, label: 'Choose data schema', kind: 'card-updated', before: copyCard(before), after: copyCard(after),
+        } : {
             id: ++historySequence,
             label: "Create relationship",
             kind: "edge-created",
             edge: copyEdge(edge),
+            ...(before && after ? {binding:{before:copyCard(before),after:copyCard(after)}} : {}),
           }),
         redoStack: [],
       }));
@@ -1288,7 +1326,7 @@ export const useWorldStore = create<WorldState>()(persist((set, get) => ({
         detail: "The backend accepted this relationship and updated effective permissions.",
       });
     } catch (error) {
-      set({ syncState: "online" });
+      set({ syncState: "online", pendingConnection: {...pending, error: apiErrorMessage(error)} });
       get().pushToast({
         tone: "error",
         title: "Capability was not granted",
@@ -1323,6 +1361,11 @@ export const useWorldStore = create<WorldState>()(persist((set, get) => ({
     const ids = new Map(clipboard.cards.map(card => [card.id, crypto.randomUUID()]));
     const drafts = clipboard.cards.map(card => ({
       ...structuredClone(card), id: ids.get(card.id)!,
+      restorePluginDefaults: card.restorePluginDefaults ? {
+        ...structuredClone(card.restorePluginDefaults),
+        equipment: Object.fromEntries(Object.entries((card.restorePluginDefaults.equipment ?? {}) as Record<string, Record<string, unknown>>)
+          .map(([key, slot]) => [key, { ...slot, node_id: typeof slot.node_id === 'string' ? ids.get(slot.node_id) ?? null : null }])),
+      } : undefined,
       parent_id: card.parent_id ? ids.get(card.parent_id) ?? null : null,
       equipment: card.equipment && ids.has(card.equipment.owner_id)
         ? { ...card.equipment, owner_id: ids.get(card.equipment.owner_id)! } : null,
@@ -1682,7 +1725,7 @@ export const useWorldStore = create<WorldState>()(persist((set, get) => ({
     }
   },
 
-  executeSandbox: async (id, command) => {
+  executeSandbox: async (id, command, pythonEnvironment = "auto") => {
     if (get().sandboxBusy[id]) return false;
     const previousEventIds = new Set(get().events.map((event) => event.id));
     const revision = (get().sandboxRevisions[id] ?? 0) + 1;
@@ -1692,10 +1735,11 @@ export const useWorldStore = create<WorldState>()(persist((set, get) => ({
       sandboxRevisions: { ...state.sandboxRevisions, [id]: revision },
       cards: state.cards.map((card) => card.id === id
         ? mergeCardPatch(card, { config: { active_command: command, output: [...(Array.isArray(card.config.output) ? card.config.output : []), `$ ${command}`].slice(-100) } }) : card),
-      activityOpen: true,
     }));
     try {
-      const result = await worldApi.executeSandbox(id, command);
+      const result = pythonEnvironment === "managed"
+        ? await worldApi.executeSandbox(id, command, "managed")
+        : await worldApi.executeSandbox(id, command);
       if (get().sandboxRevisions[id] !== revision) return true;
       const receivedOutput = (channel: "stdout" | "stderr") => get().events.some((event) => (
         !previousEventIds.has(event.id)
@@ -1829,7 +1873,14 @@ export const useWorldStore = create<WorldState>()(persist((set, get) => ({
       }
     }
     set((state) => ({
-      events: [event, ...state.events].slice(0, 160),
+      // Each live reasoning update is a cumulative snapshot. Keep only its
+      // newest event so token streaming cannot evict operational history.
+      events: [event, ...state.events.filter((previous) =>
+        event.payload.kind !== "model_reasoning" ||
+        previous.payload.kind !== "model_reasoning" ||
+        previous.run_id !== event.run_id ||
+        previous.payload.provider_message_id !== event.payload.provider_message_id,
+      )].slice(0, 160),
       cards: nodeId
         ? state.cards.map((card) => {
             if (card.id !== nodeId) return card;
@@ -1872,7 +1923,21 @@ export const useWorldStore = create<WorldState>()(persist((set, get) => ({
       void get().refreshWorld();
     }
     if (normalizedType.includes("resource_modified") && nodeId) {
-      void get().loadText(nodeId);
+      const resource = get().cards.find(card => card.id === nodeId);
+      if (resource?.type === 'text') void get().loadText(nodeId);
+      else if (resource?.type === 'image') {
+        const payload = event.payload;
+        if (typeof payload.revision === 'number' && payload.revision >= Number(resource.config.revision ?? 0)) {
+          set(state => ({ cards: state.cards.map(card => card.id === nodeId ? mergeCardPatch(card, { config: {
+            revision: payload.revision as number, preview_url: resourceContentUrl(nodeId),
+            ...(typeof payload.filename === 'string' ? { filename: payload.filename } : {}),
+            ...(typeof payload.media_type === 'string' ? { mime_type: payload.media_type } : {}),
+            ...(typeof payload.size_bytes === 'number' ? { bytes: payload.size_bytes } : {}),
+            ...(typeof payload.width === 'number' ? { image_width: payload.width } : {}),
+            ...(typeof payload.height === 'number' ? { image_height: payload.height } : {}),
+          } }) : card) }));
+        }
+      }
     }
     if (nodeId && ["sandbox_command_finished", "sandbox_state_changed"].includes(normalizedType)) {
       void get().refreshSandbox(nodeId);
@@ -2013,13 +2078,16 @@ export const useWorldStore = create<WorldState>()(persist((set, get) => ({
           }));
           break;
         }
-        case "edge-created":
+        case "edge-created": {
           await worldApi.deleteEdge(operation.edge.id);
+          const restored = operation.binding ? await worldApi.updateNode(operation.binding.before.id, {config:operation.binding.before.config}) : undefined;
           set((state) => ({
+            cards: restored ? mergeCards(state.cards, [restored], state.cardTombstones) : state.cards,
             edges: state.edges.filter((edge) => edge.id !== operation.edge.id),
             selectedEdgeId: state.selectedEdgeId === operation.edge.id ? undefined : state.selectedEdgeId,
           }));
           break;
+        }
         case "edge-deleted": {
           const edge = await worldApi.createEdge(copyEdge(operation.edge));
           set((state) => ({ edges: mergeEdges(state.edges, [edge], state.edgeTombstones) }));
@@ -2167,7 +2235,12 @@ export const useWorldStore = create<WorldState>()(persist((set, get) => ({
         }
         case "edge-created": {
           const edge = await worldApi.createEdge(copyEdge(operation.edge));
-          set((state) => ({ edges: mergeEdges(state.edges, [edge], state.edgeTombstones) }));
+          let restored: WorldCard | undefined;
+          try {
+            if (operation.binding) restored = await worldApi.updateNode(operation.binding.after.id, {config:operation.binding.after.config});
+          } catch (error) {await worldApi.deleteEdge(edge.id); throw error;}
+          set((state) => ({edges: mergeEdges(state.edges, [edge], state.edgeTombstones),
+            cards: restored ? mergeCards(state.cards, [restored], state.cardTombstones) : state.cards}));
           break;
         }
         case "edge-deleted":
@@ -2229,7 +2302,8 @@ const unsubscribeSurfaces = useWorldStore.subscribe((state, previous) => {
     }
   }
   if (state.catalog !== previous.catalog || cards.length !== before.length
-    || cards.some((card, i) => card.id !== before[i]?.id || card.type !== before[i]?.type)) {
+      || cards.some((card, i) => card.id !== before[i]?.id || card.type !== before[i]?.type
+        || (card.config !== before[i]?.config && state.catalog.node_types.find(type => type.id === card.type)?.traits.includes('ui.factory-card.v1')))) {
     useNodeSurfaceStore.getState().syncCards(cards, state.catalog);
   }
 });

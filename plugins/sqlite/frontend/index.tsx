@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FrontendPlugin, PluginViewProps } from "@oaw/plugin-api";
+import { WorkspaceEmptyState } from "@oaw/plugin-api";
 import "./style.css";
 
 type SchemaObject = { type: string; name: string; table: string; sql: string | null };
@@ -110,23 +111,15 @@ export function Database({ host, card }: PluginViewProps) {
   const currentObject = schema?.objects.find(item => item.name === selected);
   return <div className="sqlite-app nodrag nowheel" aria-label={`${card.name} database`}>
     <header className="sqlite-toolbar">
-      <span className="sqlite-badge">SQLite</span>
-      <span>{tables.length} tables & views</span>
+      <select aria-label="Tables & views" value={selected} disabled={!schema} onChange={event => { setSelected(event.target.value); setTab(event.target.value ? 'schema' : 'results'); }}>
+        <option value="">{!schema ? error ? 'Database unavailable' : 'Loading database…' : tables.length ? `${tables.length} tables & views` : 'No tables yet'}</option>
+        {tables.map(item => <option key={item.name} value={item.name}>{item.name} · {item.type}</option>)}
+      </select>
       <button type="button" disabled={busy} onClick={() => {
         setPending(undefined); setError(""); void refresh().catch(reason => setError(message(reason)));
       }}>Refresh</button>
     </header>
     <div className="sqlite-layout">
-      <aside className="sqlite-sidebar" aria-label="Database tables">
-        <h3>Tables & views</h3>
-        {!schema && !error && <p role="status">Loading…</p>}
-        {schema && !tables.length && <p>No tables yet. Inspect your data needs, then create a table for each distinct entity.</p>}
-        {tables.map(item => <button type="button" key={item.name} aria-pressed={selected === item.name}
-          onClick={() => { setSelected(item.name); setTab("schema"); }} title={item.name}>
-          <span>{item.name}</span><small>{item.type}</small>
-        </button>)}
-        {schema?.truncated && <p>Schema list limited to 500 objects.</p>}
-      </aside>
       <main className="sqlite-main">
         <label className="sqlite-sql-label" htmlFor={`sql-${card.id}`}>SQL editor</label>
         <textarea id={`sql-${card.id}`} value={sql} spellCheck={false} disabled={busy}
@@ -170,8 +163,7 @@ export function Database({ host, card }: PluginViewProps) {
             </tr></thead><tbody>{result.rows?.map((row, index) => <tr key={index}>
               {row.map((value, column) => <td key={column} className={value === null ? "sqlite-null" : ""}>{valueText(value)}</td>)}
             </tr>)}</tbody></table></div>}
-          </> : <p className="sqlite-empty">Run a query or select a table to explore your database.</p> : selected ? <>
-            <h3>{selected}</h3>
+          </> : <WorkspaceEmptyState title="Explore your database" description="Run a query or select a table to explore your database." /> : selected ? <>
             {!detail ? <p>Loading schema…</p> : <>
               <div className="sqlite-table-scroll"><table><thead><tr><th>Column</th><th>Type</th><th>Constraints</th><th>Default</th></tr></thead>
                 <tbody>{detail.columns?.map(column => <tr key={column.name}><td>{column.name}</td><td>{column.type || "—"}</td>
@@ -187,6 +179,7 @@ export function Database({ host, card }: PluginViewProps) {
         </section>
       </main>
     </div>
+    {schema?.truncated && <p className="sqlite-result-meta">Schema list limited to 500 objects.</p>}
   </div>;
 }
 

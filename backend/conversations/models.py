@@ -11,6 +11,8 @@ from backend.agents.context import ContextStatus
 class ConversationSessionCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    restart_before_message_id: str | None = None
+
     title: Annotated[str, Field(min_length=1, max_length=200)] = "New session"
     group_id: str | None = None
     group_title: Annotated[str, Field(min_length=1, max_length=200)] | None = None
@@ -25,6 +27,8 @@ class ConversationParticipantsAdd(BaseModel):
 
 class ConversationSession(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+    restart_before_message_id: str | None = None
 
     id: str
     conversation_id: str
@@ -120,10 +124,18 @@ class ConversationRunSummary(BaseModel):
     status: str
     started_at: datetime | None = None
     finished_at: datetime | None = None
+    final_message_id: str | None = None
     awaiting: str | None = None
     progress: str | None = None
+    recovery_kind: str | None = None
+    recovery_classification: str | None = None
+    recovery_receipts: list[dict[str, Any]] = Field(default_factory=list)
+    confirmed_tool_count: int | None = None
     tool_count: int = 0
     tool_trace: list[dict[str, Any]] = Field(default_factory=list)
+    tool_trace_truncated: bool = False
+    structure_outcomes: dict[str, Any] = Field(default_factory=dict)
+    delivery_state: str | None = None
 
 
 class ConversationDeliveryState(BaseModel):

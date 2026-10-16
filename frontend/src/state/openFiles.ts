@@ -5,26 +5,40 @@ import { useWorldStore } from "./worldStore";
 export type FileReference =
   | { kind: "sandbox"; source_id: string; root: string; path: string }
   | { kind: "conversation"; source_id: string; session_id: string; version_id: string; path: string };
-export interface OpenedFile { reference: FileReference; name: string; sequence: number }
+export interface FileOpenOptions { reveal?: boolean; onReveal?: () => void }
+export interface OpenedFile extends FileOpenOptions { reference: FileReference; name: string; sequence: number }
 
 interface OpenFilesState {
   sequence: number;
   sources: Record<string, OpenedFile>;
   pins: Record<string, OpenedFile | undefined>;
-  open(reference: FileReference, name: string): void;
+  open(reference: FileReference, name: string, options?: FileOpenOptions): void;
   clear(sourceId: string): void;
+  changeSandboxPath(sourceId: string, path: string, destination?: string): void;
   pin(viewerId: string, file?: OpenedFile): void;
 }
 
 // UI intent is local to this browser; neither bytes nor paths are persisted in card config.
 export const useOpenFiles = create<OpenFilesState>((set) => ({
   sequence: 0, sources: {}, pins: {},
-  open: (reference, name) => set(state => ({ sequence: state.sequence + 1,
-    sources: { ...state.sources, [reference.source_id]: { reference, name, sequence: state.sequence + 1 } } })),
+  open: (reference, name, options) => set(state => ({ sequence: state.sequence + 1,
+    sources: { ...state.sources, [reference.source_id]: { reference, name, sequence: state.sequence + 1, reveal: options?.reveal ?? true, onReveal: options?.onReveal } } })),
   clear: sourceId => set(state => ({
     sources: Object.fromEntries(Object.entries(state.sources).filter(([id]) => id !== sourceId)),
     pins: Object.fromEntries(Object.entries(state.pins).filter(([, file]) => file?.reference.source_id !== sourceId)),
   })),
+  changeSandboxPath: (sourceId, path, destination) => set(state => {
+    function update(file: OpenedFile | undefined): OpenedFile | undefined {
+      const reference = file?.reference;
+      if (!file || reference?.kind !== 'sandbox' || reference.source_id !== sourceId || reference.root !== 'workspace'
+        || (reference.path !== path && !reference.path.startsWith(`${path}/`))) return file;
+      return destination === undefined ? undefined : { ...file, reference: { ...reference, path: destination + reference.path.slice(path.length) } };
+    }
+    return {
+      sources: Object.fromEntries(Object.entries(state.sources).flatMap(([id, file]) => { const next = update(file); return next ? [[id, next]] : []; })),
+      pins: Object.fromEntries(Object.entries(state.pins).map(([id, file]) => [id, update(file)])),
+    };
+  }),
   pin: (viewerId, file) => set(state => ({ pins: { ...state.pins, [viewerId]: file } })),
 }));
 

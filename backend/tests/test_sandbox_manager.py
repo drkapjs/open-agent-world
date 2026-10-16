@@ -91,6 +91,40 @@ def make_manager(tmp_path, *, available=True):
 
 
 @pytest.mark.asyncio
+async def test_optional_python_environment_dispatch(tmp_path):
+    manager, backend = make_manager(tmp_path)
+    backend.supports_optional_python_runtime = True
+    selected = []
+    original_execute = backend.execute
+
+    async def capture(sandbox_id, argv, *, managed_python, **options):
+        selected.append(managed_python)
+        return await original_execute(sandbox_id, argv, **options)
+
+    backend.execute = capture
+    await manager.create("lab")
+    await manager.start("lab")
+    await manager.execute("lab", ["/usr/bin/curl", "https://example.com"])
+    await manager.execute("lab", ["python3", "script.py"])
+    await manager.execute("lab", ["/bin/sh", "-c", "python script.py"],
+        python_environment="managed")
+    await manager.execute("lab", ["python3", "script.py"],
+        python_environment="none")
+    assert selected == [False, True, True, False]
+    with pytest.raises(SandboxValidationError, match="python_environment"):
+        await manager.execute("lab", ["/usr/bin/curl"], python_environment="invalid")
+
+
+@pytest.mark.asyncio
+async def test_nonoptional_runtime_rejects_python_bypass(tmp_path):
+    manager, _ = make_manager(tmp_path)
+    await manager.create("lab")
+    await manager.start("lab")
+    with pytest.raises(SandboxValidationError, match="cannot omit"):
+        await manager.execute("lab", ["/usr/bin/curl"], python_environment="none")
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("existing_binding", [False, True])
 async def test_legacy_windows_auto_config_keeps_pinned_runtime(tmp_path, existing_binding):
     manager, backend = make_manager(tmp_path)
@@ -272,6 +306,41 @@ async def test_failed_world_save_restores_native_binding(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_commands_prepare_sandbox_without_a_separate_start(tmp_path):
+    manager, backend = make_manager(tmp_path)
+    services = create_services(Settings.for_data_root(manager.root), sandbox_backend=manager)
+    try:
+        card = await services.create_card(CardCreate(type='sandbox'))
+        assert (await manager.get(card.id)).state == SandboxState.STOPPED
+        result = await services.execute_sandbox(card.id, command='echo first')
+        assert result.exit_code == 0 and len(backend.commands) == 1
+        await services.stop_sandbox(card.id)
+        result = await services.execute_sandbox(card.id, argv=['echo', 'second'])
+        assert result.exit_code == 0 and len(backend.commands) == 2
+        assert (await manager.get(card.id)).state == SandboxState.READY
+    finally:
+        await services.shutdown()
+        services.close()
+
+
+@pytest.mark.asyncio
+async def test_python_install_prepares_sandbox_without_a_separate_start(tmp_path, monkeypatch):
+    manager, backend = make_manager(tmp_path)
+    async def install(sandbox_id, requirements):
+        assert (await manager.get(sandbox_id)).state == SandboxState.READY
+        return {'requirements': requirements}
+    monkeypatch.setattr(manager, 'install_python_packages', install)
+    services = create_services(Settings.for_data_root(manager.root), sandbox_backend=manager)
+    try:
+        card = await services.create_card(CardCreate(type='sandbox'))
+        result = await services.install_python_packages(card.id, ['example'])
+        assert result['requirements'] == ['example']
+    finally:
+        await services.shutdown()
+        services.close()
+
+
+@pytest.mark.asyncio
 async def test_repeated_status_reads_do_not_reprobe_runtime_until_explicit_refresh(tmp_path):
     manager, _ = make_manager(tmp_path)
     calls = []
@@ -352,7 +421,7 @@ def test_global_sandbox_location_migrates_existing_cards_and_persists(tmp_path):
         folder.mkdir()
     services = create_services(settings, sandbox_backend=manager)
     with TestClient(create_app(settings, services=services)) as client:
-        assert client.get("/api/settings/sandbox").json() == {"workspace_root": None, "runtime": "auto", "backup_paths": [], "environment_variables": {}}
+        assert client.get("/api/settings/sandbox").json() == {"workspace_root": None, "runtime": "auto", "backup_paths": [], "environment_variables": {}, "secret_bindings": {}, "folder_bindings": {}}
         old = client.post("/api/nodes", json={"type": "sandbox"}).json()
         response = client.put("/api/settings/sandbox", json={"workspace_root": str(root), "runtime": "test-linux"})
         assert response.status_code == 200, response.text
@@ -407,7 +476,7 @@ def test_invalid_sandbox_defaults_do_not_replace_saved_settings(tmp_path):
             response = client.put("/api/settings/sandbox", json={"workspace_root": root})
             assert response.status_code == 422, response.text
         assert client.put("/api/settings/sandbox", json={"runtime": "unknown"}).status_code == 422
-        assert client.get("/api/settings/sandbox").json() == {"workspace_root": None, "runtime": "auto", "backup_paths": [], "environment_variables": {}}
+        assert client.get("/api/settings/sandbox").json() == {"workspace_root": None, "runtime": "auto", "backup_paths": [], "environment_variables": {}, "secret_bindings": {}, "folder_bindings": {}}
     services.close()
 
 
