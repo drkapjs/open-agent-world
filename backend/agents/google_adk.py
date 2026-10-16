@@ -184,10 +184,8 @@ class GoogleAdkAgentRuntime(RuntimeProvider):
             # The durable OAW checkpoint owns replay. Keep ADK's transient event
             # log bounded between invocations without discarding session state.
             session_args = dict(app_name=self._app_name, user_id=self._user_id(agent_id), session_id=session_id)
-            previous = await self._sessions.get_session(**session_args)
-            if previous and previous.events:
-                await self._sessions.delete_session(**session_args)
-                await self._sessions.create_session(**session_args, state=previous.state)
+            from open_agent_world.context.adk import reset_transient_session
+            await reset_transient_session(self._sessions, **session_args)
 
         async with record.lock:
             record.config = config
@@ -240,6 +238,13 @@ class GoogleAdkAgentRuntime(RuntimeProvider):
             trace = ModelTrace(trace_queue, run_secret, run_attempt=_network_retry,
                                checkpoint_store=checkpoint_store)
             traced = trace.callbacks("agent")
+            from .request_window import RequestWindow, ContextCapabilities
+            resolved = getattr(selected_model, "model", record.config.model)
+            window = RequestWindow(self._context_budget(record.config.model, resolved), trace, "agent",
+                                   capabilities=ContextCapabilities.for_model(selected_model))
+            if trace.invocations is not None:
+                from google.adk.tools import FunctionTool
+                tools.append(FunctionTool(window.read_tool_result))
             if self.context_store is not None:
                 from google.adk.models import LLMRegistry
                 from .context import ManagedContext
@@ -249,12 +254,15 @@ class GoogleAdkAgentRuntime(RuntimeProvider):
                                          run_id, model, prompt.strip(),
                                          budget=self._context_budget(record.config.model, model.model),
                                          input_provider=self._provider if hasattr(self._provider, "pending_conversation_input") else None)
+                managed.trace, managed.trace_role = trace, "agent"
+                window.reducer = getattr(managed, "reduce_final_request", None)
             injected = []
             async def before_model(callback_context: Any, llm_request: Any) -> None:
                 if managed is not None:
                     trace.begin("agent", llm_request, phase="context")
                     await managed.before_model(callback_context, llm_request)
-                    trace.model_ready("agent", llm_request)
+                    if "agent" not in trace.context_windows:
+                        trace.model_ready("agent", llm_request)
                 else:
                     if hasattr(self._provider, "pending_conversation_input"):
                         pending = await self._provider.pending_conversation_input(agent_id, run_id)
@@ -264,7 +272,7 @@ class GoogleAdkAgentRuntime(RuntimeProvider):
                         if pending:
                             await self._provider.acknowledge_conversation_input(
                                 agent_id, run_id, [message["id"] for message in pending])
-                    await traced["before_model_callback"](callback_context, llm_request)
+                    await trace.callbacks("agent", prepare_only="agent" in trace.context_windows)["before_model_callback"](callback_context, llm_request)
 
             async def after_model(callback_context: Any, llm_response: Any) -> None:
                 if managed is not None:
@@ -279,7 +287,7 @@ class GoogleAdkAgentRuntime(RuntimeProvider):
             if managed is not None:
                 context_options["include_contents"] = "none"
             from .request_recovery import recoverable_model
-            selected_model = recoverable_model(selected_model, trace, "agent")
+            selected_model = recoverable_model(selected_model, trace, "agent", context_window=window)
             agent = self._adk.Agent(
                 name=self._adk_agent_name(agent_id),
                 description=record.config.name,
@@ -602,4 +610,3 @@ def _runtime_error_message(error: BaseException) -> str:
             if isinstance(nested, BaseException):
                 pending.append(nested)
     return messages[0] if messages else type(error).__name__
-

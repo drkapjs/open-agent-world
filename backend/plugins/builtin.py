@@ -497,6 +497,7 @@ class AgentNodeTemplateHandler(_CoreConfigProjection, NodeTemplateHandler):
         "status",
         "runtime_provider_id",
         "max_concurrent_runs",
+        "run_execution_deadline_seconds",
         "inherit_legion_model",
         "legion_role",
     })

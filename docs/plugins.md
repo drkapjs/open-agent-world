@@ -68,8 +68,10 @@ Barracks, Summoning and custom-card sources. Frontend operations can reveal thei
 content through [`host.workspace.activate()`](developers/workspace-design.md#activate-content-after-an-operation).
 
 Plugin API 1.29 adds two trusted runtime services on `AgentCapabilityProvider`:
-`resolve_model(model)` returns a run-local `RuntimeModelConnection` (model,
-adapter, base URL and a non-repr API key), and `runtime_state_directory(agent_id)`
+`resolve_model(model)` returns the same run-local `RuntimeModelConnection` as
+`ModelConnectionResolver.resolve_runtime`: adapter, `model_id`, base URL,
+non-repr API key, image support and saved context/output limits. The `model`
+property remains an alias for older adapters. `runtime_state_directory(agent_id)`
 returns an Agent-specific directory under the host data root. Resolve model
 connections at invocation time; never put credentials in card config, templates,
 events or process arguments. These services do not grant access to connected

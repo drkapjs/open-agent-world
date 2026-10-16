@@ -86,6 +86,7 @@ nav:
       - Your first plugin: developers/first-plugin.md
       - Give an Agent a tool: developers/agent-tools.md
       - Runtime context compaction: developers/context-compaction.md
+      - Execution graph: developers/execution-graph.md
       - Add a custom interface: developers/frontend.md
       - Workspace design system: developers/workspace-design.md
       - Connected data sources: developers/data-sources.md

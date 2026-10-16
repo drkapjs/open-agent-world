@@ -264,7 +264,9 @@ class ModelConnectionStore:
             for connection in raw["connections"]
             for model in connection["models"]
         )
-        return RuntimeModelConnection(adapter, model_id, base_url, api_key, supports_images=supports_images)
+        window, output = self.context_limits(reference) or (None, None)
+        return RuntimeModelConnection(adapter, model_id, base_url, api_key, supports_images=supports_images,
+                                      context_window=window, max_output_tokens=output)
 
 
 def _provider_environment_variable(adapter: str) -> str:

@@ -14,6 +14,7 @@ from backend.agents.model_observation import (
     multiplex_adk_events,
 )
 from backend.agents.models import AgentConfig, AgentEventType, ScopedToolDefinition
+from backend.agents.tools import build_scoped_tool_callables
 from backend.persistence.database import Database
 from backend.runs.store import RunStore
 from backend.runs.tool_receipts import RunToolReceipts
@@ -143,6 +144,7 @@ class AdkModelRecoveryTests(unittest.TestCase):
                                           "backend.agents.typesafe": SimpleNamespace(
                                               TypeSafeModel=TypeSafeModel, execute_typesafe=None)}), \
                  patch("backend.agents.context.ManagedContext", return_value=Managed()), \
+                 patch("backend.agents.google_adk.build_scoped_adk_tools", side_effect=build_scoped_tool_callables), \
                  patch.object(runtime, "_adk_model", return_value=SimpleNamespace(
                      model="openai/test", _additional_args={})), \
                  patch.object(runtime, "_context_session", new=AsyncMock(return_value="session")), \

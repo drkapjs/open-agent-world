@@ -25,7 +25,7 @@ class Provider:
         self.available = True
 
     def resolve_model(self, model):
-        return RuntimeModelConnection('native-test', 'openai', self.url, 'test-secret')
+        return RuntimeModelConnection('openai', 'native-test', self.url, 'test-secret')
 
     def runtime_state_directory(self, agent):
         return self.root / agent
@@ -310,7 +310,7 @@ async def test_native_model_token_limit_fails_without_empty_success_or_tool_repl
     from open_agent_world.plugin_api import AgentDependencyError
     url, calls = scripted_model
     provider = Provider(tmp_path, url)
-    provider.resolve_model = lambda _: RuntimeModelConnection('native-test', 'openai', url, 'test-secret',
+    provider.resolve_model = lambda _: RuntimeModelConnection('openai', 'native-test', url, 'test-secret',
         context_window=1_000_000, max_output_tokens=32768)
     runtime = MatCreatorRuntime(provider)
     config = AgentConfig('agent-a', 'Native')
@@ -633,7 +633,7 @@ while sys.stdin.readline(): pass
 async def test_managed_worker_compacts_only_over_budget_context_and_keeps_native_history(tmp_path, scripted_model):
     url, calls = scripted_model
     provider = Provider(tmp_path, url)
-    provider.resolve_model = lambda _: RuntimeModelConnection('native-test', 'openai', url, 'test-secret',
+    provider.resolve_model = lambda _: RuntimeModelConnection('openai', 'native-test', url, 'test-secret',
         context_window=32768, max_output_tokens=1024)
     runtime = MatCreatorRuntime(provider)
     config = AgentConfig('agent-a', 'Native')

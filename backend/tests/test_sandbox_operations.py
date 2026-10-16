@@ -360,6 +360,9 @@ def test_real_adk_parallel_tool_batch_survives_busy_and_waits(runtime_client, mo
     runtime = GoogleAdkAgentRuntime(WorldAgentCapabilityProvider(services))
     model = ScriptedModel()
     monkeypatch.setattr(runtime, '_adk_model', lambda _: model)
+    # This scripted model has no saved connection in the test world's catalog.
+    from backend.agents.context import ContextBudget
+    monkeypatch.setattr(runtime, '_context_budget', lambda *_: ContextBudget.for_model(model.model))
     async def scenario():
         config = AgentConfig(agent_id=agent['id'], name='Recovery test')
         await runtime.create_agent(config)
@@ -367,7 +370,8 @@ def test_real_adk_parallel_tool_batch_survives_busy_and_waits(runtime_client, mo
         services.install_runtime_provider('core.mock', runtime, default=True)
         run = await services.run_manager.start_run(agent['id'], 'Run the check after installation')
         await services.run_manager.wait_execution(run.run_id)
-        assert services.run_manager.get_run(run.run_id).status == RunStatus.SUCCEEDED
+        completed = services.run_manager.get_run(run.run_id)
+        assert completed.status == RunStatus.SUCCEEDED, completed.error
         assert len(observed) == 4
         assert model.step == 4
         await runtime.delete_agent(agent['id'])

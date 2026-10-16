@@ -39,7 +39,6 @@ from backend.agents import (
     RuntimeModelConnection,
     ScopedToolDefinition,
     ToolParameter,
-    RuntimeModelConnection,
 )
 from backend.capabilities import Capability
 from backend.errors import (
@@ -94,7 +93,6 @@ from backend.world.models import Card, CardCreate, CardPatch, Edge
 
 __all__ = [
     "BackgroundJobProvider", "BackgroundJobContext", "JobObservation", "SubmissionUncertainError",
-    "RuntimeModelConnection",
     "DataQuery", "NodeDataConsumer", "NodeDataSource",
     "ExecutionEdge", "ExecutionNode", "ExecutionSnapshot", "NodeExecutionSource",
     "TutorialDefinition", "TutorialStep",

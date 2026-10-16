@@ -21,6 +21,7 @@ from backend.security.model_connections import CatalogEdit
 from backend.world.models import CardCreate, EdgeCreate
 from backend.tests.test_agent_runtime import MutableCapabilityProvider
 from backend.tests.conversation_helpers import wait_for_conversation_run, wait_for_conversation_delivery
+from open_agent_world.context import SUMMARY_INSTRUCTION as PUBLIC_SUMMARY_INSTRUCTION
 
 
 class ScriptedModel(BaseLlm):
@@ -34,7 +35,7 @@ class ScriptedModel(BaseLlm):
 
     async def generate_content_async(self, request, stream=False):
         wire = encoded([content.model_dump(mode="json", exclude_none=True) for content in request.contents])
-        if request.config.system_instruction == SUMMARY_INSTRUCTION:
+        if request.config.system_instruction in {SUMMARY_INSTRUCTION, PUBLIC_SUMMARY_INSTRUCTION}:
             self._summaries.append(wire)
             assert estimate(wire) < 8192
             if self._block:
@@ -50,7 +51,7 @@ class ScriptedModel(BaseLlm):
             if self._tool_rounds > 0:
                 self._tool_rounds -= 1
                 yield LlmResponse(content=types.Content(role="model", parts=[types.Part.from_function_call(
-                    name="replace_notes", args={"content": "cobalt-731 " + "tool data " * 1800})]))
+                    name="replace_notes", args={"content": "cobalt-731 " + "tool data " * 4000})]))
                 return
             text = "The confirmed code is cobalt-731." if "cobalt-731" in wire else "No code available."
         yield LlmResponse(content=types.Content(role="model", parts=[types.Part.from_text(text=text)]))
@@ -158,7 +159,7 @@ async def test_saved_limits_drive_pressure_output_and_next_run_compaction(servic
 def add_history(services, room, session, count=65):
     for index in range(count):
         services.conversations.add_message(room.id, session.id, sender_kind="user", sender_id=None,
-            sender_name="You", content=("Confirmed code: cobalt-731; sandbox://lab/result.csv. " if index == 0 else "") + f"Entry {index}. " + "historical detail " * 28)
+            sender_name="You", content=("Confirmed code: cobalt-731; sandbox://lab/result.csv. " if index == 0 else "") + f"Entry {index}. " + "historical detail " * 160)
 
 
 @pytest.mark.asyncio
@@ -301,8 +302,13 @@ async def test_interrupted_tool_call_is_repaired_without_reexecution(services, m
     assert "Outcome is unknown" in repaired["response"]["error"]
 
 
-def test_unknown_model_has_conservative_internal_budget():
-    assert ContextBudget.for_model("unlisted/private-model").limit == 32768
+def test_unknown_model_has_no_invented_window(monkeypatch):
+    import litellm
+    # The installed vendor catalog can retire old model IDs. Exercise known
+    # and unknown entries using controlled metadata, not a moving catalog.
+    monkeypatch.setattr(litellm, "model_cost", {name: {"max_input_tokens":32768,"max_output_tokens":8192}
+        for name in ("openai/gpt-4o","anthropic/claude-sonnet-4-20250514")})
+    assert ContextBudget.for_model("unlisted/private-model").limit == 0
     assert not ContextBudget.for_model("unlisted/private-model").known
     assert ContextBudget.for_model("openai/gpt-4o").limit > 8192
     assert ContextBudget.for_model("anthropic/claude-sonnet-4-20250514").limit > 8192
@@ -337,7 +343,7 @@ async def test_fresh_conversation_with_large_tool_catalog_uses_real_model_window
     config = replace(config, model=model.model)
     # Real ADK runner assembles a schema-heavy request (~16K estimated input).
     runtime._provider.definition = replace(runtime._provider.definition,
-        description="Available resource instructions. " * 1000)
+        description="Available resource instructions. " * 3000)
     result = [event async for event in runtime.execute(config, invocation(services, agent.id, fresh.id), RuntimeInput("Hello"))]
     assert result[-1].run_status == "succeeded"
     assert not model._summaries
@@ -413,7 +419,7 @@ class BudgetedSummaryModel(ScriptedModel):
 @pytest.mark.asyncio
 async def test_window_relative_summary_accepts_complete_checkpoint_above_old_fixed_cap(services, monkeypatch):
     agent, _, _, session, _, _, _ = await setup_context(services, monkeypatch)
-    summary = "Confirmed research result and artifact reference. " * 240
+    summary = "Confirmed research result and artifact reference. " * 600
     assert estimate(summary) > 4096
     model = BudgetedSummaryModel(replies=[summary])
     managed = ManagedContext(services.contexts, agent.id, session.id, "run", model, "Continue",
@@ -421,11 +427,11 @@ async def test_window_relative_summary_accepts_complete_checkpoint_above_old_fix
     managed.checkpoint.contents = [text_content("Historical research evidence. " * 4000)]
     await managed.compact()
     assert managed.checkpoint.summary == summary.strip()
-    assert managed.tokens() <= managed.compaction_budget().target
+    assert managed.tokens() <= managed.budget.input
     assert len(model._summaries) == 1
 
 
-@pytest.mark.parametrize("first", ["", "Overly verbose findings. " * 1000])
+@pytest.mark.parametrize("first", ["", "Overly verbose findings. " * 2500], ids=["empty", "too_verbose"])
 @pytest.mark.asyncio
 async def test_invalid_summary_retry_keeps_source_and_respects_request_budget(services, monkeypatch, first):
     agent, _, _, session, _, _, _ = await setup_context(services, monkeypatch)
@@ -439,7 +445,7 @@ async def test_invalid_summary_retry_keeps_source_and_respects_request_budget(se
     assert "cobalt-731" in managed.checkpoint.summary
 
 
-@pytest.mark.parametrize("reply,reason", [("", "empty checkpoint"), ("verbose " * 3000, "exceeds its budget")])
+@pytest.mark.parametrize("reply,reason", [("", "empty checkpoint"), ("verbose " * 9000, "exceeds its budget")], ids=["empty", "too_verbose"])
 @pytest.mark.asyncio
 async def test_invalid_summary_exhaustion_is_diagnostic_and_atomic(services, monkeypatch, reply, reason):
     from copy import deepcopy
@@ -470,7 +476,7 @@ async def test_smaller_window_rechunks_old_summary_and_escaped_unicode_history(s
     # checkpoint larger than the new model's entire input window.
     assert "".join(r.contents[0].parts[0].text.split("Next transcript fragment:\n", 1)[1]
                    for r in model._summaries) == source
-    assert managed.tokens() <= managed.compaction_budget().target
+    assert managed.tokens() <= managed.budget.input
 
 
 @pytest.mark.asyncio
@@ -479,39 +485,66 @@ async def test_existing_summary_alone_can_be_compacted_after_window_change(servi
     model = BudgetedSummaryModel(window=8192)
     managed = ManagedContext(services.contexts, agent.id, session.id, "run", model, "Continue",
                              budget=ContextBudget(8192, 1024, max_output=1024))
-    managed.checkpoint.summary = "Old model checkpoint. " * 900
+    managed.checkpoint.summary = "Old model checkpoint. " * 2000
     assert not managed.checkpoint.contents
     await managed.before_model(None, LlmRequest())
     assert managed.checkpoint.compaction_count == 1
-    assert managed.tokens() < managed.compaction_budget().target
+    assert managed.tokens() < managed.budget.input
 
 
 @pytest.mark.asyncio
-async def test_compaction_triggers_before_input_limit_with_fixed_context_reserved(services, monkeypatch):
+async def test_compaction_triggers_only_when_input_no_longer_fits(services, monkeypatch):
     agent, _, _, session, _, _, _ = await setup_context(services, monkeypatch)
     model = BudgetedSummaryModel(window=8192)
     managed = ManagedContext(services.contexts, agent.id, session.id, "run", model, "Continue",
                              budget=ContextBudget(8192, 1024, max_output=1024))
-    managed.checkpoint.contents = [text_content("evidence " * 1180)]
-    assert managed.compaction_budget().trigger < managed.tokens() < managed.budget.input
+    managed.checkpoint.contents = [text_content("evidence " * 6500)]
+    assert managed.tokens() < managed.budget.input
+    await managed.before_model(None, LlmRequest())
+    assert managed.checkpoint.compaction_count == 0
+    managed.checkpoint.contents.append(text_content("more evidence " * 4000))
     await managed.before_model(None, LlmRequest())
     assert managed.checkpoint.compaction_count == 1
-    assert managed.tokens() <= managed.compaction_budget().target
+    assert managed.tokens() <= managed.budget.input
 
 
 @pytest.mark.asyncio
-async def test_unknown_model_rolls_history_even_when_static_context_exceeds_fallback(services, monkeypatch):
+async def test_final_request_window_owns_compaction_after_host_frames_are_assembled(services, monkeypatch):
+    from backend.agents.model_observation import ModelTrace
+    from backend.agents.request_window import RequestWindow
+    agent, _, _, session, _, _, _ = await setup_context(services, monkeypatch)
+    model = BudgetedSummaryModel(window=8192)
+    managed = ManagedContext(services.contexts, agent.id, session.id, "run", model, "Continue",
+                             budget=ContextBudget(8192, 1024, max_output=1024))
+    managed.checkpoint.contents = [text_content("earlier executed evidence " * 9000)]
+    managed.trace = trace = ModelTrace(asyncio.Queue())
+    protected = lambda c: any((p.text or "").startswith("HOST current") for p in c.parts or [])
+    window = RequestWindow(managed.budget, trace, "agent",
+                           reducer=lambda req: managed.reduce_final_request(req, protected=protected))
+    trace.context_windows["agent"] = window
+    request = LlmRequest()
+    await managed.before_model(None, request)
+    assert managed.checkpoint.compaction_count == 0 and not model._summaries
+    request.contents.append(types.Content(role="user", parts=[types.Part(text="HOST current: preserve native fact 42")]))
+    stats = await window.prepare(request)
+    assert managed.checkpoint.compaction_count == 1 and stats["reduced_window"]
+    assert "HOST current: preserve native fact 42" in encoded([c.model_dump() for c in request.contents])
+    await window.prepare(request)
+    assert managed.checkpoint.compaction_count == 1
+
+
+@pytest.mark.asyncio
+async def test_unknown_model_does_not_compact_against_an_invented_quota(services, monkeypatch):
     agent, _, _, session, _, _, _ = await setup_context(services, monkeypatch)
     model = BudgetedSummaryModel(window=8192)
     managed = ManagedContext(services.contexts, agent.id, session.id, "run", model, "Continue",
                              budget=ContextBudget(8192, 1024, known=False, max_output=1024))
     request = LlmRequest(config=types.GenerateContentConfig(system_instruction="Static instructions. " * 1000))
-    managed.checkpoint.contents = [text_content("Historical evidence. " * 1200)]
+    managed.checkpoint.contents = [text_content("Historical evidence. " * 12000)]
     await managed.before_model(None, request)
-    assert managed.checkpoint.compaction_count == 1
-    assert managed.tokens() > managed.budget.input
-    assert managed.status.context_limit == 0
-    assert managed.tokens() <= managed.compaction_budget().target
+    assert managed.checkpoint.compaction_count == 0 and not model._summaries
+    assert managed.status.context_limit == 0 and managed.status.pressure == 0
+    assert "Historical evidence" in encoded(managed.rendered())
 
 
 @pytest.mark.asyncio

@@ -386,24 +386,34 @@ class ModelTrace:
 
 def model_stream_disconnected(error: BaseException) -> bool:
     """Classify a broken provider stream without masking tool/runtime errors."""
+    import errno
+    import socket
+    import ssl
     seen: set[int] = set()
     current: BaseException | None = error
+    retryable = False
     while current is not None and id(current) not in seen:
         seen.add(id(current))
+        if isinstance(current, ssl.SSLCertVerificationError):
+            return False
         if getattr(current, "request_recovery_exhausted", False):
             return False
         status = getattr(current, "status_code", None)
         if isinstance(status, int) and 400 <= status < 500 and status not in {408, 429}:
             return False
-        if isinstance(current, (ConnectionError, TimeoutError)) or type(current).__name__ in {
+        if (isinstance(current, socket.gaierror) and current.errno == socket.EAI_AGAIN) or isinstance(current, (ConnectionError, TimeoutError)) or type(current).__name__ in {
             "APIConnectionError", "APITimeoutError", "MidStreamFallbackError",
             "TransferEncodingError", "Timeout", "ReadTimeout", "ConnectTimeout", "ReadError",
             "ConnectError", "RemoteProtocolError",
+            "WriteError", "WriteTimeout", "PoolTimeout", "NetworkError", "ProtocolError",
+            "ServerDisconnectedError",
         } or (isinstance(status, int) and not isinstance(status, bool)
-              and (status in {408, 429} or 500 <= status < 600)):
-            return True
+              and (status in {408, 429} or 500 <= status < 600)) or (
+              isinstance(current, OSError) and current.errno in {errno.ENETDOWN, errno.ENETUNREACH,
+                  errno.EHOSTUNREACH, errno.ECONNRESET, errno.ECONNREFUSED, errno.ETIMEDOUT, errno.EPIPE}):
+            retryable = True
         current = current.__cause__ or current.__context__
-    return False
+    return retryable
 
 
 async def multiplex_adk_events(stream: AsyncIterator[Any], queue: asyncio.Queue[tuple[str, Any]],

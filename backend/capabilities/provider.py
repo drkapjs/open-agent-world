@@ -443,12 +443,9 @@ class WorldAgentCapabilityProvider:
         if not model:
             raise AgentConfigurationError("Choose a default model in Settings / Models.")
         if model.startswith(MODEL_REF_PREFIX):
-            adapter, model_id, base_url, api_key = store.resolve(model)
-            window, output = store.context_limits(model)
-            return RuntimeModelConnection(model_id, adapter, base_url or "", api_key or "",
-                                          context_window=window, max_output_tokens=output)
+            return store.resolve_runtime(model)
         options = store.legacy_options() or {}
-        return RuntimeModelConnection(model, base_url=options.get("api_base", ""), api_key=options.get("api_key", ""))
+        return RuntimeModelConnection("legacy", model, base_url=options.get("api_base", ""), api_key=options.get("api_key", ""))
 
     def runtime_state_directory(self, agent_id):
         import hashlib

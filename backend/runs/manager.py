@@ -274,6 +274,7 @@ class RunManager:
         run_id: str | None = None,
         initial_lifecycle: Mapping[str, Any] | None = None,
         resume_external_work: bool = False,
+        task_prompt: str | None = None,
     ) -> RunRecord:
         if not isinstance(prompt, str) or not prompt.strip():
             raise ValueError("Run prompt must be a non-empty string")
@@ -352,7 +353,7 @@ class RunManager:
             # can reserve this Agent, cancel the durable Run, and still have this
             # method launch an untracked provider coroutine afterward.
             task = asyncio.create_task(
-                self._execute(record, card, RuntimeInput(prompt=prompt)),
+                self._execute(record, card, RuntimeInput(prompt=prompt, task_prompt=task_prompt)),
                 name=f"run:{record.run_id}",
             )
             self._runtime_tasks[record.run_id] = task
@@ -734,7 +735,9 @@ class RunManager:
             stream = aiter(
                 provider.execute(self._execution_config(card, team), context, runtime_input)
             )
-            deadline = asyncio.get_running_loop().time() + self.execution_deadline_seconds
+            execution_seconds = self._execution_deadline(card)
+            deadline = (None if execution_seconds is None
+                        else asyncio.get_running_loop().time() + execution_seconds)
             active_tools = 0
             pending_event = None
             # The provider owns context variables (tracing, sessions and tool
@@ -777,10 +780,13 @@ class RunManager:
                         pending_event = asyncio.get_running_loop().create_future()
                         demands.put_nowait(pending_event)
                         while True:
-                            remaining = deadline - asyncio.get_running_loop().time()
-                            if remaining <= 0:
+                            remaining = None if deadline is None else deadline - asyncio.get_running_loop().time()
+                            if remaining is not None and remaining <= 0:
                                 raise TimeoutError('execution deadline exceeded')
-                            done, _ = await asyncio.wait({pending_event}, timeout=min(timeout or remaining, remaining))
+                            wait_seconds = timeout
+                            if remaining is not None:
+                                wait_seconds = remaining if timeout is None else min(timeout, remaining)
+                            done, _ = await asyncio.wait({pending_event}, timeout=wait_seconds)
                             if done:
                                 event = pending_event.result()
                                 break
@@ -800,9 +806,11 @@ class RunManager:
                         if done:
                             stop_task.result()
                             self.store.update_lifecycle(record.run_id, cleanup='complete')
+                        inactivity_detail = f" for {timeout:g} seconds" if timeout is not None else ""
+                        deadline_detail = (f" or exceeded its {execution_seconds:g}-second execution deadline"
+                                           if execution_seconds is not None else "")
                         raise RuntimeError(
-                            "runtime provider produced no activity for "
-                            f"{timeout or self.execution_deadline_seconds:g} seconds or exceeded its execution deadline; "
+                            f"runtime provider produced no activity{inactivity_detail}{deadline_detail}; "
                             "liveness could not be established"
                         ) from None
                     if event.agent_id != record.agent_id or event.run_id != record.run_id:
@@ -891,7 +899,9 @@ class RunManager:
                             )
                         current = self.get_run(record.run_id)
                         if current.status not in TERMINAL_RUN_STATUSES:
-                            await self.transition_run(record.run_id, event.run_status)
+                            detail = event.payload.get("error")
+                            await self.transition_run(record.run_id, event.run_status,
+                                error=detail if event.run_status == "failed" and isinstance(detail, str) else None)
                         if self.get_run(record.run_id).status in TERMINAL_RUN_STATUSES:
                             break
             finally:
@@ -1057,6 +1067,19 @@ class RunManager:
             )
         return provider_id
 
+    def _execution_deadline(self, card: Card) -> float | None:
+        """Native per-Agent deadline. Apply node defaults to existing cards too."""
+        import math
+        field_name = "run_execution_deadline_seconds"
+        configured = card.config.get(field_name)
+        if field_name not in card.config:
+            spec = self.plugins.node_type(card.type).config_model.model_fields.get(field_name)
+            configured = spec.default if spec is not None else None
+        if (isinstance(configured, (int, float)) and not isinstance(configured, bool)
+                and math.isfinite(configured) and configured >= 0):
+            return float(configured) if configured > 0 else None
+        return self.execution_deadline_seconds
+
     def _inactivity_timeout(self, card: Card) -> float | None:
         """Per-Agent override of the provider event-stream inactivity policy.
 
@@ -1131,6 +1154,7 @@ class RunManager:
                 "runtime_provider_id",
                 "max_concurrent_runs",
                 "run_inactivity_timeout_seconds",
+                "run_execution_deadline_seconds",
             }
         }
         return AgentConfig(

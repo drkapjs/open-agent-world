@@ -408,12 +408,12 @@ class RuntimeContractTests(unittest.TestCase):
 
         managed = ManagedContext(Store(), "agent", "session", "run", SimpleNamespace(model="test"),
                                  "Continue", budget=ContextBudget(32768, 4096))
-        self.assertNotIn("Long private reasoning", str(managed.rendered()))
+        self.assertEqual(str(managed.rendered()).count("Long private reasoning"), 1)
         self.assertIn("Signed reasoning", str(managed.rendered()))
         self.assertIn("function_call", str(managed.rendered()))
         self.assertIsNone(managed.checkpoint.measured_tokens)
         managed._ingest([{"role": "model", "parts": [thought, {"text": "Public answer"}]}], snapshot=False)
-        self.assertNotIn("Long private reasoning", str(managed.rendered()))
+        self.assertEqual(str(managed.rendered()).count("Long private reasoning"), 1)
         self.assertIn("Public answer", str(managed.rendered()))
         self.assertEqual(replayable_contents([{"role": "model", "parts": [thought]}]), [])
 
@@ -1151,9 +1151,9 @@ class RuntimeContractTests(unittest.TestCase):
         async def read(**arguments):
             return await handler(Context(), SimpleNamespace(), arguments)
 
-        full = asyncio.run(read(skill_id="review-node"))["skill"]
+        full = asyncio.run(read(skill_id="review-node", include_file_contents=True))["skill"]
         self.assertEqual(full["files"]["scripts/check.py"], "print('ok')")
-        compact = asyncio.run(read(skill_id="review", include_file_contents=False))["skill"]
+        compact = asyncio.run(read(skill_id="review"))["skill"]
         self.assertEqual(compact["instructions"], "Read the summary.")
         self.assertEqual(compact["files"]["scripts/check.py"],
                          {"media_type": "text/plain", "size_bytes": len("print('ok')")})

@@ -2646,6 +2646,12 @@ class ApplicationServices:
         message_ids: list[str],
         max_sequence: int,
     ) -> str:
+        latest = self._conversation_delivery_task(message_ids)
+        return self._conversation_prompt(
+            conversation_id, session, agent_id, latest, max_sequence=max_sequence
+        )
+
+    def _conversation_delivery_task(self, message_ids: list[str]) -> str:
         messages = [self.conversations.get_message(message_id) for message_id in message_ids]
         if len(messages) == 1:
             latest = messages[0].content
@@ -2663,9 +2669,7 @@ class ApplicationServices:
                 "Additional messages received while you were working:\n\n"
                 + "\n".join(chunks)
             )
-        return self._conversation_prompt(
-            conversation_id, session, agent_id, latest, max_sequence=max_sequence
-        )
+        return latest
 
     async def _drain_conversation_agent(self, agent_id: str) -> None:
         """Start at most one queued Conversation burst for an Agent.
@@ -2745,6 +2749,7 @@ class ApplicationServices:
                     caller_id=conversation_id,
                     context_id=session_id,
                     run_id=run_id,
+                    task_prompt=self._conversation_delivery_task(claimed),
                     initial_lifecycle={
                         "delivery_message_ids": claimed,
                         "conversation_max_sequence": max_sequence,
@@ -2861,6 +2866,7 @@ class ApplicationServices:
                 caller_kind="agent",
                 caller_id=source_agent_id,
                 context_id=session_id,
+                task_prompt=message,
             )
             await self._await_synchronous_turn(manager, run.run_id, target.name)
             final_text = manager.final_text(run.run_id)
