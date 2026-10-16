@@ -56,6 +56,7 @@ async def recover_request(delegate: Any, request: Any, trace: observation.ModelT
         completed = []
         content_chunks = 0
         first_content = None
+        archive_id = trace.archive_model_start(role, snapshot, model=getattr(delegate, "model", None), stream=stream)
         try:
             async with aclosing(delegate.generate_content_async(_snapshot(snapshot), stream=stream)) as source:
                 while True:
@@ -100,6 +101,8 @@ async def recover_request(delegate: Any, request: Any, trace: observation.ModelT
                 trace.queue.put_nowait(("progress", preview))
             raise
         except Exception as error:
+            if archive_id is not None:
+                trace.invocations.interrupt_model(archive_id, error_type=type(error).__name__)
             preview = trace.interrupted_reasoning(role)
             if preview:
                 trace.queue.put_nowait(("progress", preview))
@@ -140,6 +143,8 @@ async def recover_request(delegate: Any, request: Any, trace: observation.ModelT
                 ) from error
             await asyncio.sleep(retry_delay)
             continue
+        if archive_id is not None:
+            trace.invocations.finish_model(archive_id, completed)
         for response in completed:
             yield response
         return

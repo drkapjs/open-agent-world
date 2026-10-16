@@ -18,19 +18,29 @@ def _now() -> str:
 
 
 class RunModelCheckpoints:
-    def __init__(self, database: Any, run_id: str, *, api_key: str | None = None) -> None:
+    def __init__(self, database: Any, run_id: str, *, api_key: str | None = None, state_store: Any = None) -> None:
         self.database = database
         self.run_id = run_id
         self.api_key = api_key
+        from .reasoning import RunReasoning
+        self.reasoning = RunReasoning(state_store, run_id) if state_store is not None else None
+        from .invocation_logs import RunInvocationLogs
+        self.invocations = RunInvocationLogs(state_store, run_id, api_key=api_key) if state_store is not None else None
+
+    def save_reasoning(self, payload: dict) -> dict:
+        return self.reasoning.save(payload) if self.reasoning is not None else {}
 
     def start(self, role: str, request_id: int, run_attempt: int, request: Any) -> None:
         contents = [item.model_dump(mode="json", exclude_none=True)
                     for item in getattr(request, "contents", ()) or ()]
-        serialized = json.dumps(replayable_contents(contents), ensure_ascii=False,
-                                separators=(",", ":"), default=str)
+        contents = replayable_contents(contents)
+        serialized = json.dumps(contents, ensure_ascii=False, separators=(",", ":"), default=str)
         digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
-        contains_key = bool(self.api_key and self.api_key in serialized)
-        replayable = not contains_key and len(serialized.encode("utf-8")) <= MAX_SNAPSHOT_BYTES
+        from .invocation_logs import archive_value
+        safe, missing = archive_value(contents, [self.api_key] if self.api_key else [])
+        # Exact replay cannot use redacted credentials or omitted observations.
+        # Native invocation logs still retain text/tool facts and omission paths.
+        replayable = not missing and safe == contents and len(serialized.encode("utf-8")) <= MAX_SNAPSHOT_BYTES
         now = _now()
         with self.database.transaction(immediate=True) as db:
             db.execute("""INSERT INTO run_model_checkpoints (

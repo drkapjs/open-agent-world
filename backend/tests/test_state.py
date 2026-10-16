@@ -285,7 +285,7 @@ async def test_run_scopes_are_automatic_independent_and_typed(tmp_path: Path) ->
         first = await services.run_manager.start_run(  # type: ignore[union-attr]
             agent.id, "first", context_id="conversation-session-1"
         )
-        await services.run_manager.wait_terminal(first.run_id)  # type: ignore[union-attr]
+        await services.run_manager.wait_execution(first.run_id)  # type: ignore[union-attr]
         second = await services.run_manager.start_run(  # type: ignore[union-attr]
             agent.id, "second", context_id="conversation-session-1"
         )

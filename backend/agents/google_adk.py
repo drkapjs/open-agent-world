@@ -7,7 +7,7 @@ import hashlib
 import importlib.metadata
 from collections.abc import AsyncIterator, Mapping
 from contextlib import aclosing
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from ._state import AgentRecord, validate_agent_config
@@ -86,6 +86,7 @@ class GoogleAdkAgentRuntime(RuntimeProvider):
         self._litellm_connection: dict[str, str] = {}
         self.model_connections = model_connections
         self.context_store = context_store
+        self.reasoning_store = None
 
     def configure_litellm_connection(
         self, *, api_base: str | None = None, api_key: str | None = None
@@ -213,7 +214,7 @@ class GoogleAdkAgentRuntime(RuntimeProvider):
                         )
                 return
             capability_invocations = 0
-            database = getattr(self.context_store, "database", None)
+            database = getattr(self.context_store, "database", None) or getattr(self.reasoning_store, "database", None)
             from backend.runs.tool_receipts import RunToolReceipts
             receipt_baseline = (len(RunToolReceipts(database).list_run(run_id))
                                 if database is not None else 0)
@@ -232,7 +233,8 @@ class GoogleAdkAgentRuntime(RuntimeProvider):
             tools = build_scoped_adk_tools(_TrackedProvider(), agent_id, definitions)
             run_secret = getattr(selected_model, "_additional_args", {}).get("api_key")
             from backend.runs.model_checkpoints import RunModelCheckpoints
-            checkpoint_store = (RunModelCheckpoints(database, run_id, api_key=run_secret)
+            checkpoint_store = (RunModelCheckpoints(database, run_id, api_key=run_secret,
+                                                   state_store=self.reasoning_store)
                                 if database is not None else None)
             trace_queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
             trace = ModelTrace(trace_queue, run_secret, run_attempt=_network_retry,
@@ -270,7 +272,10 @@ class GoogleAdkAgentRuntime(RuntimeProvider):
                 await traced["after_model_callback"](callback_context, llm_response)
 
             context_options = {"before_model_callback": before_model,
-                               "after_model_callback": after_model}
+                               "after_model_callback": after_model,
+                               "on_tool_error_callback": on_tool_error}
+            from .tool_observation import archived_tool_callbacks
+            context_options = archived_tool_callbacks(trace, "agent", context_options)
             if managed is not None:
                 context_options["include_contents"] = "none"
             from .request_recovery import recoverable_model
@@ -281,7 +286,6 @@ class GoogleAdkAgentRuntime(RuntimeProvider):
                 model=selected_model,
                 instruction=record.config.system_instruction,
                 tools=tools,
-                on_tool_error_callback=on_tool_error,
                 **context_options,
             )
             app = self._adk.App(name=self._app_name, root_agent=agent)
@@ -318,7 +322,14 @@ class GoogleAdkAgentRuntime(RuntimeProvider):
                                 managed.observe(item)
                             if item.is_final_response():
                                 final_response_seen = True
+                            trace.observe_tool_exchange("agent", getattr(item, "content", None))
                             async for translated in self._translate_event(record, run_id, item):
+                                if translated.type in {AgentEventType.TOOL_STARTED, AgentEventType.TOOL_COMPLETED}:
+                                    from backend.runs.invocation_logs import tool_identity
+                                    identity = ({"archive_id": tool_identity("agent", translated.payload["call_id"], trace.run_attempt)}
+                                                if trace.invocations is not None and translated.payload.get("call_id") else {})
+                                    translated = replace(translated, payload={**translated.payload, "role": "agent",
+                                        "run_attempt": trace.run_attempt, **identity})
                                 if translated.type == AgentEventType.TOOL_STARTED:
                                     call_id = translated.payload.get("call_id")
                                     if isinstance(call_id, str) and call_id:

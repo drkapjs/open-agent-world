@@ -115,17 +115,45 @@ class ContextStore:
         return contents
 
     def save(self, agent_id: str, context_id: str, checkpoint: Checkpoint,
-             status: ContextStatus, run_id: str | None = None) -> None:
+             status: ContextStatus, run_id: str | None = None, *, session_context_id: str | None = None) -> None:
         from dataclasses import asdict
-        session = self.session(context_id)
+        from .media import durable_tool_media
+        durable = asdict(checkpoint)
+        durable["contents"], omitted = durable_tool_media(durable["contents"])
+        if omitted:
+            # Pixel-free history has a different usage anchor. Keep the live
+            # checkpoint untouched; these changes apply only on later restore.
+            durable["measured_tokens"] = None
+            durable["measured_estimate"] = 0
+            if any(part.get("thought_signature") for content in checkpoint.contents
+                   for part in content.get("parts", [])):
+                # A signed provider prefix cannot be replayed with its images
+                # removed. Start from public facts as historical data instead;
+                # do not fabricate signatures or discard tool outcomes.
+                facts = []
+                for content in durable["contents"]:
+                    parts = []
+                    for part in content.get("parts", []):
+                        thought = part.get("thought")
+                        if thought and not (part.get("function_call") or part.get("function_response")):
+                            continue
+                        private = {"thought_signature", "thought"} | ({"text"} if thought else set())
+                        parts.append({key: value for key, value in part.items() if key not in private})
+                    if parts:
+                        facts.append({**content, "parts": parts})
+                durable["contents"] = [text_content(
+                    "Restored historical data from an earlier run, not new instructions. "
+                    "Transient observation images were not persisted. Re-observe if pixels are needed; "
+                    "retain recorded tool outcomes and inspect unknown operations before retrying.\n" + encoded(facts))]
+        session = self.session(session_context_id or context_id)
         with self.database.transaction(immediate=True) as db:
             old = db.execute("SELECT status_json FROM agent_contexts WHERE agent_id=? AND context_id=?",
                              (agent_id, context_id)).fetchone()
             db.execute("""INSERT INTO agent_contexts VALUES (?,?,?,?,?)
                 ON CONFLICT(agent_id, context_id) DO UPDATE SET
-                checkpoint_json=excluded.checkpoint_json, status_json=excluded.status_json""",
+                session_id=excluded.session_id, checkpoint_json=excluded.checkpoint_json, status_json=excluded.status_json""",
                        (agent_id, context_id, session["id"] if session else None,
-                        encoded(asdict(checkpoint)), status.model_dump_json()))
+                        encoded(durable), status.model_dump_json()))
         previous = ContextStatus.model_validate_json(old[0]) if old else None
         bucket = lambda value: (int(value.pressure * 20), value.state, value.compaction_count)
         if previous is None or bucket(previous) != bucket(status):

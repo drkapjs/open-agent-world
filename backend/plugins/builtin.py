@@ -871,6 +871,14 @@ def _register_builtin(registry: PluginRegistration) -> None:
         ),
         "output_message_id": StateFieldDefinition(value_type=str, allowed_scope_kinds=run_only, default=""),
         "output_text": StateFieldDefinition(value_type=str, allowed_scope_kinds=run_only, default=""),
+        "execution_checkpoint": StateFieldDefinition(value_type=dict[str, Any], allowed_scope_kinds=run_only,
+            read_visibility="scope_only", host_only=True, default={}),
+        "model_reasoning": StateFieldDefinition(value_type=dict[str, Any], allowed_scope_kinds=run_only,
+            read_visibility="scope_only", host_only=True, merge_policy=MergePolicy.MERGE_DICT, default={}),
+        "model_request_logs": StateFieldDefinition(value_type=dict[str, Any], allowed_scope_kinds=run_only,
+            read_visibility="scope_only", host_only=True, merge_policy=MergePolicy.MERGE_DICT, default={}),
+        "tool_invocation_logs": StateFieldDefinition(value_type=dict[str, Any], allowed_scope_kinds=run_only,
+            read_visibility="scope_only", host_only=True, merge_policy=MergePolicy.MERGE_DICT, default={}),
     }))
     registry.register_runtime_provider(
         "google.adk",

@@ -36,6 +36,7 @@ from .models import (
     RuntimeInput,
     TERMINAL_RUN_STATUSES,
 )
+from .activity import activity_update
 from .store import RunStore
 from .trace import public_tool_payload
 
@@ -189,6 +190,8 @@ class RunManager:
             RunModelCheckpoints(self.store.database, record.run_id).interrupt_run()
             receipts = RunToolReceipts(self.store.database)
             receipts.interrupt_run(record.run_id)
+            from .reasoning import RunReasoning
+            RunReasoning(self.state, record.run_id).interrupt()
             recovery_receipts = receipts.list_run(record.run_id)
             visible_receipts = [{key: item[key] for key in (
                 'capability_kind', 'target_id', 'state', 'read_only', 'result_hints',
@@ -202,6 +205,10 @@ class RunManager:
             self._terminal_done.setdefault(record.run_id, asyncio.Event()).set()
             await self._publish_run(record, EventType.RUN_INTERRUPTED)
         for record in self.list_runs():
+            from .reasoning import RunReasoning
+            RunReasoning(self.state, record.run_id).interrupt()
+            from .invocation_logs import RunInvocationLogs
+            RunInvocationLogs(self.state, record.run_id).interrupt()
             if (record.lifecycle.get('cleanup') in {'pending', 'failed'}
                     or record.lifecycle.get('execution') in {'running', 'closing'}):
                 self.store.update_lifecycle(record.run_id, execution='interrupted', cleanup='uncertain',
@@ -227,6 +234,8 @@ class RunManager:
 
         if not isinstance(provider, RuntimeProvider):
             raise TypeError("provider must implement RuntimeProvider")
+        if hasattr(provider, "reasoning_store"):
+            provider.reasoning_store = self.state
         self._providers[provider_id] = provider
 
     def get_run(self, run_id: str) -> RunRecord:
@@ -313,6 +322,9 @@ class RunManager:
                     "execution": "running",
                     "holds_capacity": True,
                     "cleanup": "none",
+                    "tool_metrics": {"started": 0, "completed": 0, "by_name": {}},
+                    "tool_calls": [],
+                    "model_requests": [],
                     **dict(initial_lifecycle or {}),
                 },
             )
@@ -711,6 +723,8 @@ class RunManager:
             extensions={"background_job_notification": record.lifecycle.get("background_job_notification")},
         )
         token = _current_invocation.set(context)
+        from .reasoning import RunReasoning
+        reasoning = RunReasoning(self.state, record.run_id)
         try:
             provider = self._provider(record.runtime_provider_id)
             if record.agent_id not in self._agent_provider_ids:
@@ -803,9 +817,13 @@ class RunManager:
                         # the latest snapshot for terminal-result consumers.
                         self._live_output[record.run_id] = text
                     elif event_kind == "agent_progress":
-                        # Model-provided reasoning is a transient, user-visible
-                        # event; never persist it as the Run's status string.
+                        if (event.payload.get("kind") == "model_reasoning"
+                                and not event.payload.get("reasoning_persisted")):
+                            reasoning.save(dict(event.payload))
+                        # Thinking belongs to Run state, never its status string.
                         if event.payload.get("kind") != "model_reasoning":
+                            metadata = activity_update(self.get_run(record.run_id).lifecycle, event_kind,
+                                published.payload, published.id, published.timestamp.isoformat())
                             progress = text if isinstance(text, str) else event.payload.get("status")
                             if isinstance(progress, str) and progress.strip():
                                 recovery = (
@@ -816,13 +834,17 @@ class RunManager:
                                     if event.payload.get("kind") == "model_stream_interrupted" else {}
                                 )
                                 self.store.update_lifecycle(record.run_id, progress=progress.strip(),
-                                                            last_signal=event_kind, **recovery)
+                                                            last_signal=event_kind, **recovery, **metadata)
+                            elif metadata:
+                                self.store.update_lifecycle(record.run_id, **metadata)
                     elif event_kind in {"tool_started", "tool_completed"}:
                         if event_kind == "tool_started":
                             active_tools += 1
                         else:
                             active_tools = max(0, active_tools - 1)
                         current_lifecycle = self.get_run(record.run_id).lifecycle
+                        metadata = activity_update(current_lifecycle, event_kind,
+                            published.payload, published.id, published.timestamp.isoformat())
                         self.store.update_lifecycle(
                             record.run_id,
                             active_tools=active_tools,
@@ -835,6 +857,7 @@ class RunManager:
                             last_signal=event_kind,
                             tool_count=int(current_lifecycle.get("tool_count") or 0)
                                 + (1 if event_kind == "tool_started" else 0),
+                            **metadata,
                         )
                     elif event_kind not in {"agent_message"}:
                         self.store.update_lifecycle(record.run_id, last_signal=event_kind)
@@ -906,6 +929,9 @@ class RunManager:
                     record.run_id, RunStatus.FAILED, error=str(exc)
                 )
         finally:
+            reasoning.interrupt()
+            from .invocation_logs import RunInvocationLogs
+            RunInvocationLogs(self.state, record.run_id).interrupt()
             self.store.update_lifecycle(record.run_id, execution='finished', active_tools=0)
             _current_invocation.reset(token)
             self._runtime_tasks.pop(record.run_id, None)
@@ -969,6 +995,8 @@ class RunManager:
             managed_context_store=self.context_store,
             **options,
         )
+        if hasattr(provider, "reasoning_store"):
+            provider.reasoning_store = self.state
         self._providers[provider_id] = provider
         return provider
 
@@ -1148,7 +1176,9 @@ class RunManager:
             # Carry the original tool identity into the result checkpoint too.
             # Match only explicit call IDs; concurrent wrapper calls share names.
             for start in reversed(self.get_run(record.run_id).lifecycle.get('tool_trace') or []):
-                if start.get('type') == 'tool_started' and start.get('call_id') == payload['call_id']:
+                if (start.get('type') == 'tool_started' and start.get('call_id') == payload['call_id']
+                        and (not payload.get('role') or start.get('role') == payload['role'])
+                        and (payload.get('run_attempt') is None or start.get('run_attempt', 0) == payload['run_attempt'])):
                     for key in ('tool_name', 'capability_id', 'author', 'subagent'):
                         if key in start:
                             payload.setdefault(key, start[key])
@@ -1157,6 +1187,10 @@ class RunManager:
             message_id = await self.conversation_event(event, record)
             if message_id:
                 payload['conversation_message_id'] = message_id
+        payload.pop("reasoning_persisted", None)
+        if payload.get("kind") == "model_reasoning" and isinstance(payload.get("text"), str):
+            full = payload["text"]
+            payload.update(text=full[:64000], truncated=bool(payload.get("truncated") or len(full) > 64000))
         return await self.events.publish(
             EventType(event.type.value),
             node_id=record.agent_id,
@@ -1196,7 +1230,9 @@ class RunManager:
             run_id=run_id,
             conversation_id=conversation_id,
             session_id=session_id,
-            payload={"status": status, "run_id": run_id},
+            payload={"status": status, "run_id": run_id,
+                     **({"run": record.model_dump(mode="json")}
+                        if record.lifecycle.get("execution") == "finished" else {})},
         )
 
     def _conversation_scope(self, record: RunRecord) -> tuple[str | None, str | None]:

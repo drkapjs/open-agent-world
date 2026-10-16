@@ -4,7 +4,7 @@ from pathlib import PurePath
 from dataclasses import fields
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import Response
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
@@ -223,6 +223,42 @@ async def get_run(
     services: ApplicationServices = Depends(get_services),
 ) -> RunRecord:
     return services._require_run_manager().get_run(run_id)
+
+
+@router.get("/runs/{run_id}/reasoning")
+async def run_reasoning(run_id: str, offset: int = Query(default=0, ge=0),
+                        limit: int = Query(default=50, ge=1, le=100), services=Depends(get_services)):
+    from backend.runs.reasoning import RunReasoning
+    services._require_run_manager().get_run(run_id)
+    return RunReasoning(services.state, run_id).page(offset, limit)
+
+
+@router.get("/runs/{run_id}/reasoning/{provider_message_id:path}")
+async def run_reasoning_text(run_id: str, provider_message_id: str, services=Depends(get_services)):
+    from backend.runs.reasoning import RunReasoning
+    services._require_run_manager().get_run(run_id)
+    return RunReasoning(services.state, run_id).get(provider_message_id)
+
+
+@router.get("/runs/{run_id}/invocations/{kind}")
+async def run_invocations(run_id: str, kind: str, offset: int = Query(default=0, ge=0),
+                          limit: int = Query(default=50, ge=1, le=100), services=Depends(get_services)):
+    from backend.runs.invocation_logs import RunInvocationLogs, FIELDS
+    from backend.errors import NotFoundError
+    services._require_run_manager().get_run(run_id)
+    if kind not in FIELDS:
+        raise NotFoundError("Unknown invocation kind")
+    return RunInvocationLogs(services.state, run_id).page(kind, offset, limit)
+
+
+@router.get("/runs/{run_id}/invocations/{kind}/{identity:path}")
+async def run_invocation(run_id: str, kind: str, identity: str, services=Depends(get_services)):
+    from backend.runs.invocation_logs import RunInvocationLogs, FIELDS
+    from backend.errors import NotFoundError
+    services._require_run_manager().get_run(run_id)
+    if kind not in FIELDS:
+        raise NotFoundError("Unknown invocation kind")
+    return RunInvocationLogs(services.state, run_id).get(kind, identity)
 
 
 @router.get("/runs/{run_id}/children", response_model=list[RunRecord])

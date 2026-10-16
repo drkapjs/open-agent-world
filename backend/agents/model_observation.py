@@ -72,6 +72,56 @@ class ModelTrace:
         self.last_response: dict[str, dict[str, Any]] = {}
         self.request_attempts: dict[str, int] = {}
         self.recovery_roles: set[str] = set()
+        # Optional active per-attempt computation ceilings. Request recovery
+        # pauses these while backing off and resets them for a new attempt.
+        self.recovery_deadlines: dict[str, tuple[asyncio.Timeout, float]] = {}
+        self.context_windows = {}
+        self.context_stats = {}
+        self.provenance = None
+        self.invocations = getattr(checkpoint_store, "invocations", None)
+        self._archived_tools: dict[tuple[str, str], tuple[str, str]] = {}
+
+    def archive_tool_start(self, role: str, call_id: str, name: str, arguments: Any):
+        if self.invocations is None or not call_id:
+            return None
+        key = (role, call_id)
+        if key in self._archived_tools:
+            return self._archived_tools[key][0]
+        identity = self.invocations.start_tool(role, call_id, self.run_attempt, name, arguments)
+        self._archived_tools[key] = (identity, name)
+        self.invocations.tool_arguments(identity, arguments)
+        return identity
+
+    def archive_tool_response(self, role: str, call_id: str | None, name: str, response: Any):
+        if self.invocations is None:
+            return
+        known = self._archived_tools.get((role, call_id)) if call_id else None
+        if known is None:
+            candidates = [entry for (_, candidate_id), entry in self._archived_tools.items()
+                          if (candidate_id == call_id if call_id else entry[1] == name)]
+            # A response emitted by a child/user author can have a different
+            # role. Pair only a unique call identity, never guess among twins.
+            known = candidates[0] if len(candidates) == 1 else None
+        if known:
+            self.invocations.finish_tool(known[0], response)
+            return known[0]
+
+    def observe_tool_exchange(self, role: str, content: Any):
+        for part in getattr(content, "parts", None) or []:
+            call = getattr(part, "function_call", None)
+            if call is not None:
+                self.archive_tool_start(role, getattr(call, "id", None), call.name, getattr(call, "args", {}))
+            response = getattr(part, "function_response", None)
+            if response is not None:
+                self.archive_tool_response(role, getattr(response, "id", None), response.name,
+                                           getattr(response, "response", {}))
+
+    def archive_model_start(self, role: str, request: Any, *, model: str | None = None, stream=False):
+        if self.invocations is None or role not in self.pending:
+            return None
+        return self.invocations.start_model(role, self.pending[role][0], self.run_attempt,
+            self.request_attempts.get(role, 1), request, model=model, stream=stream,
+            context_stats=self.context_stats.get(role), provenance=self.provenance)
 
     def _remember_output_limit(self, role: str, request: Any) -> None:
         limit = getattr(getattr(request, "config", None), "max_output_tokens", None)
@@ -92,7 +142,7 @@ class ModelTrace:
         visible = safe if (final and not interrupted) or not withheld else safe[:-withheld]
         if not visible:
             return None
-        return {
+        payload = {
             "kind": "model_reasoning", "role": role, "model_request": request_id,
             "model_attempt": self.request_attempts.get(role, 1),
             "run_attempt": self.run_attempt,
@@ -101,9 +151,16 @@ class ModelTrace:
                                     f"model-reasoning:retry{self.run_attempt}:{role}:{request_id}")
                                    + (f":attempt{self.request_attempts[role]}"
                                       if self.request_attempts.get(role, 1) > 1 else ""),
-            "text": visible[:64_000], "truncated": len(reasoning) > 64_000 or len(visible) > 64_000,
+            "text": visible, "truncated": False, "suffix_withheld": withheld if interrupted else 0,
             "streaming": not final, "interrupted": interrupted,
         }
+        # Persist the full redacted observation before constructing its public
+        # preview. This also runs on cancellation, when nobody may drain events.
+        if self.checkpoint_store is not None and hasattr(self.checkpoint_store, "save_reasoning"):
+            self.checkpoint_store.save_reasoning(payload)
+        return {**payload, "text": visible[:64_000], "text_length": len(visible),
+                "truncated": len(visible) > 64_000,
+                "reasoning_persisted": getattr(self.checkpoint_store, "reasoning", None) is not None}
 
     def _emit_reasoning(self, role: str, request_id: int, reasoning: str, *, final: bool) -> None:
         payload = self._reasoning_event(role, request_id, reasoning, final=final)
@@ -120,6 +177,10 @@ class ModelTrace:
             return None
         if self.checkpoint_store is not None:
             self.checkpoint_store.settle(role, pending[0], "interrupted")
+        if self.invocations is not None:
+            from backend.runs.invocation_logs import model_identity
+            self.invocations.interrupt_model(model_identity(role, pending[0], self.run_attempt,
+                                                          self.request_attempts.get(role, 1)))
         if not reasoning:
             return None
         return self._reasoning_event(role, pending[0], reasoning, final=True, interrupted=True)
@@ -135,8 +196,7 @@ class ModelTrace:
         if not chunk:
             return
         previous = self._reasoning.get(role, "")
-        limit = 64_000 + len(self.api_key or "")
-        self._reasoning[role] = (previous + chunk)[:limit]
+        self._reasoning[role] = previous + chunk
         now = time.monotonic()
         if role not in self._last_reasoning_emit or now - self._last_reasoning_emit[role] >= 0.25:
             self._emit_reasoning(role, pending[0], self._reasoning[role], final=False)
@@ -221,9 +281,12 @@ class ModelTrace:
             "text": f"{role.replace('_', ' ')} · model request {request_id} started ({size} input bytes)",
         }))
 
-    def callbacks(self, role: str) -> dict[str, Any]:
+    def callbacks(self, role: str, *, prepare_only: bool = False) -> dict[str, Any]:
         async def before_model(callback_context: Any, llm_request: Any) -> None:
-            self.begin(role, llm_request)
+            # ADK callbacks run before the shared dispatch preflight. Stream
+            # chunk normalization, archive projections and compaction can all
+            # change this history before it is submitted to the provider.
+            self.begin(role, llm_request, phase="context" if prepare_only else "model")
 
         async def after_model(callback_context: Any, llm_response: Any) -> None:
             if getattr(llm_response, "partial", False):
@@ -273,7 +336,8 @@ class ModelTrace:
             self.queue.put_nowait(("progress", {
                 "kind": "status", "role": role, "model_request": request_id,
                 "model_attempt": self.request_attempts.get(role, 1), "run_attempt": self.run_attempt,
-                "phase": "model", "elapsed_ms": elapsed_ms, "input_tokens": input_tokens,
+                "phase": "context_compaction" if role.endswith(":context_compaction") else "model",
+                "context": self.context_stats.get(role), "elapsed_ms": elapsed_ms, "input_tokens": input_tokens,
                 "output_tokens": output_tokens, "max_output_tokens": output_limit,
                 "finish_reason": finish_reason, "reasoning_available": bool(reasoning),
                 "text": (f"{role.replace('_', ' ')} · model request {request_id} returned in {elapsed_ms / 1000:.1f}s"

@@ -154,6 +154,12 @@ class StateStore:
     def get(self, scope: StateScope | StateScopeRef, key: str) -> Any:
         return self.get_record(scope, key).value
 
+    def runtime_get(self, scope: StateScope | StateScopeRef, key: str) -> Any:
+        persisted = self._authoritative_scope(scope)
+        if self._field(persisted, key).host_only:
+            raise PermissionDeniedError(f"state field {key!r} is maintained by the host")
+        return self.get(persisted, key)
+
     def set(
         self,
         scope: StateScope | StateScopeRef,
@@ -307,6 +313,8 @@ class StateStore:
             schema = self.registry.state_schema(scope.schema_id)
             definition = schema.fields.get(key)
             if definition is None:
+                continue
+            if definition.host_only:
                 continue
             if definition.read_visibility == "scope_only" and scope.scope_id != local_scope_id:
                 continue
@@ -473,6 +481,8 @@ class StateStore:
         permissions: Iterable[str] | None,
         key: str,
     ) -> None:
+        if definition.host_only and permissions is not None:
+            raise PermissionDeniedError(f"state field {key!r} is maintained by the host")
         if permissions is None or "*" in definition.write_permissions:
             return
         granted = frozenset(permissions)
