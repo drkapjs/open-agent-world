@@ -1263,6 +1263,19 @@ and their relationships. See the skill helper for this specialization.
 
 ## Agent equipment and Barracks (Plugin API 1.7)
 
+Plugin API 1.26 adds `NodeTypeDefinition.default_equipment`, a tuple of
+`DefaultEquipment(key="skills", type="example.tools", relationship="example.tools.use")`
+declarations. Only Agents can declare these slots. Targets and relationships
+belong to the declaring plugin; targets are inert document resources with an
+initial value, without lifecycle handlers, execution or scoped runtime state.
+The host creates ordinary private equipment and documents through native world
+and StateStore operations, with compensation on failed Agent initialization.
+Missing slots are seeded once for existing Agents on startup. Known slots are
+not reinstalled after unequipping/deletion. Existing shared resources are not
+adopted or removed. Duplicate/summon/Legion/desktop history preserve slot identities
+remapping internal node references on copy. Existing documents are not updated
+when the plugin changes; edit them manually or create new resources.
+
 World edges describe shared relationships. `Card.parent_id` describes spatial
 container membership. `Card.equipment = {owner_id, relationship}` describes
 private ownership and an owner-to-resource capability binding. An equipped card

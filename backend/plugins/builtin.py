@@ -825,6 +825,8 @@ def _register_builtin(registry: PluginRegistration) -> None:
             read_visibility="scope_only", write_permissions=frozenset({"canvas.host"}), default={"boxes": {}, "bonds": []}),
     }))
     registry.register_state_schema(StateSchema(id="core.node_document", fields={
+        "plugin_defaults": StateFieldDefinition(value_type=dict[str, Any], allowed_scope_kinds=frozenset({"node_document"}),
+            host_only=True, read_visibility="scope_only", default={}),
         "data": StateFieldDefinition(value_type=dict[str, Any], allowed_scope_kinds=frozenset({"node_document"}), default={}),
         "document": StateFieldDefinition(value_type=dict[str, Any], allowed_scope_kinds=frozenset({"node_document"}), default={}),
         "execution": StateFieldDefinition(value_type=dict[str, Any], allowed_scope_kinds=frozenset({"node_document"}), default={}),

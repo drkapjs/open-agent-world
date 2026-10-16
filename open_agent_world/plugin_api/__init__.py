@@ -12,6 +12,7 @@ from backend.plugins.presets import LegionPresetDefinition, PresetNode, PresetEd
 from backend.plugins.summoning import NodeSummoningDefinition, SummoningAction, SummoningPolicy
 from backend.plugins.documents import NodeDocumentAction, NodeDocumentDefinition, NodeDocumentDownload
 from backend.plugins.documents import NodeDocumentTransformation
+from backend.plugins.equipment import DefaultEquipment
 from backend.plugins.deployment import DeploymentSurface, NodeDeploymentDefinition
 from backend.plugins.resources import NodeResourceAction, NodeResourceContext
 from backend.plugins.data_sources import DataQuery, NodeDataConsumer, NodeDataSource
@@ -96,6 +97,7 @@ __all__ = [
     "DataQuery", "NodeDataConsumer", "NodeDataSource",
     "ExecutionEdge", "ExecutionNode", "ExecutionSnapshot", "NodeExecutionSource",
     "TutorialDefinition", "TutorialStep",
+    "DefaultEquipment",
     "PluginStateSpec", "ScopedStateSpec", "StatelessStateSpec", "CardStateStore",
     "DelegationRequest", "DelegationWait", "DelegationStop",
     "DeploymentSurface", "NodeDeploymentDefinition",

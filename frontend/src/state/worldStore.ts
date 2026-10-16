@@ -64,6 +64,7 @@ type RestorableCard = WorldCard & {
   restoreDocument?: Record<string, unknown>;
   restoreCardState?: { namespaces: unknown[] };
   restoreLegionState?: Record<string, unknown>;
+  restorePluginDefaults?: Record<string, unknown>;
   restoreContent?: string;
   restoreImageData?: string;
   restoreImageMediaType?: string;
@@ -167,6 +168,10 @@ async function restoreCard(card: RestorableCard): Promise<WorldCard> {
     try { await worldApi.saveLegionState(restored.id, card.restoreLegionState, 0); }
     catch (error) { await worldApi.deleteNode(restored.id); throw error; }
   }
+  if (card.restorePluginDefaults && Object.keys(card.restorePluginDefaults).length) {
+    try { await worldApi.restoreNodeDefaults(restored.id, card.restorePluginDefaults); }
+    catch (error) { await worldApi.deleteNode(restored.id); throw error; }
+  }
   return restored;
 }
 
@@ -174,6 +179,10 @@ async function snapshotCardForHistory(card: WorldCard, strict = false): Promise<
   const warning = useWorldStore.getState().catalog.node_types.find((definition) => definition.id === card.type)?.deletion_warning;
   if (warning) throw new Error(`${card.name}: ${warning} Delete this card directly to review its removal.`);
   const snapshot = copyCard(card);
+  const definition = useWorldStore.getState().catalog.node_types.find(node => node.id === card.type);
+  if (definition?.has_default_equipment) {
+    snapshot.restorePluginDefaults = await worldApi.getNodeDefaults(card.id);
+  }
   if (useWorldStore.getState().catalog.node_types.find((definition) => definition.id === card.type)?.has_scoped_state) {
     snapshot.restoreCardState = await worldApi.getCardStateSnapshot(card.id);
   } else if (useWorldStore.getState().catalog.node_types.find((definition) => definition.id === card.type)?.has_document) {
@@ -733,7 +742,7 @@ export const useWorldStore = create<WorldState>()(persist((set, get) => ({
           }),
         redoStack: [],
       }));
-      if (isContainer(card, get().catalog)) {
+      if (isContainer(card, get().catalog) || definition.has_default_equipment) {
         const snapshot = await worldApi.getWorld();
         const members = ownedDescendants(snapshot.nodes, card.id);
         set((state) => ({ cards: mergeCards(state.cards, members, state.cardTombstones) }));
@@ -1352,6 +1361,11 @@ export const useWorldStore = create<WorldState>()(persist((set, get) => ({
     const ids = new Map(clipboard.cards.map(card => [card.id, crypto.randomUUID()]));
     const drafts = clipboard.cards.map(card => ({
       ...structuredClone(card), id: ids.get(card.id)!,
+      restorePluginDefaults: card.restorePluginDefaults ? {
+        ...structuredClone(card.restorePluginDefaults),
+        equipment: Object.fromEntries(Object.entries((card.restorePluginDefaults.equipment ?? {}) as Record<string, Record<string, unknown>>)
+          .map(([key, slot]) => [key, { ...slot, node_id: typeof slot.node_id === 'string' ? ids.get(slot.node_id) ?? null : null }])),
+      } : undefined,
       parent_id: card.parent_id ? ids.get(card.parent_id) ?? null : null,
       equipment: card.equipment && ids.has(card.equipment.owner_id)
         ? { ...card.equipment, owner_id: ids.get(card.equipment.owner_id)! } : null,

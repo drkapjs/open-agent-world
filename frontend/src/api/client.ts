@@ -424,6 +424,13 @@ export const worldApi = {
     return request(`/nodes/${encodeURIComponent(id)}/document?summary_only=true`, { headers: stateSessionHeaders(sessionId) });
   },
 
+  getNodeDefaults(id: string): Promise<Record<string, unknown>> {
+    return request(`/nodes/${encodeURIComponent(id)}/defaults`);
+  },
+  restoreNodeDefaults(id: string, value: Record<string, unknown>): Promise<void> {
+    return request(`/nodes/${encodeURIComponent(id)}/defaults`, { method: 'POST', body: JSON.stringify({ value }) });
+  },
+
   async nodeResourceAction(id: string, action: string, args: Record<string, unknown>, confirm = false, sessionId: string | null = cardStateSession(id) ?? null): Promise<Record<string, unknown>> {
     return request(`/nodes/${encodeURIComponent(id)}/resource/${encodeURIComponent(action)}`, {
       method: "POST", headers: stateSessionHeaders(sessionId), body: JSON.stringify({ arguments: args, confirm }),

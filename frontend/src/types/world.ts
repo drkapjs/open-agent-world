@@ -204,6 +204,7 @@ export interface NodeTypeCatalogItem {
   /** Whether a user may create this node directly from the card library. */
   user_creatable: boolean;
   has_document?: boolean;
+  has_default_equipment?: boolean;
   deletion_warning?: string | null;
   transformations?: Record<string, { label: string; source_traits: string[] }>;
   has_execution?: boolean;

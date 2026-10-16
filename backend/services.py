@@ -682,6 +682,8 @@ class ApplicationServices:
         await self.resources.artifacts.recover()
         from backend.node_containers import migrate_collections
         migrate_collections(self)
+        from backend.plugin_defaults import migrate_equipment
+        migrate_equipment(self)
         manager = self._require_run_manager()
         manager.admission_check = self.summoning.assert_admission
         await manager.startup()
@@ -812,7 +814,7 @@ class ApplicationServices:
         """Restore a previously captured node, including managed node types."""
         if request.id is None:
             raise GraphValidationError("restoring a node requires its original id")
-        return await self._create_card(request, _skip_collection_seed=True)
+        return await self._create_card(request, _skip_collection_seed=True, _skip_default_equipment=True)
 
     async def _create_card(
         self,
@@ -824,6 +826,7 @@ class ApplicationServices:
         _creation_receipts: dict[str, tuple[NodeLifecycleTransaction, ...]] | None = None,
         _publish_event: bool = True,
         _skip_collection_seed: bool = False,
+        _skip_default_equipment: bool = False,
     ) -> Card:
         async with self._node_mutation():
             if request.id is not None and self._has_pending_node_deletion(request.id):
@@ -885,16 +888,21 @@ class ApplicationServices:
                         workspace_created = True
                     except OSError as exc:
                         raise ResourceValidationError(f"Cannot create Sandbox workspace: {exc}") from exc
-                card = self.world.create_card(request, card_id=preview.id)
-                if definition.document is not None and definition.document.initial_value is not None and definition.state is None:
-                    from backend.node_documents import write_document
-                    initial = dict(definition.document.initial_value)
-                    if _skip_collection_seed and definition.container and definition.container.document_field:
-                        initial[definition.container.document_field] = []
-                    write_document(self, card.id, initial, 0)
+                from backend.plugin_defaults import ensure_equipment
+                with self.events.committed_batch(), self.database.transaction(immediate=True):
+                    card = self.world.create_card(request, card_id=preview.id)
+                    if definition.document is not None and definition.document.initial_value is not None and definition.state is None:
+                        from backend.node_documents import write_document
+                        initial = dict(definition.document.initial_value)
+                        if _skip_collection_seed and definition.container and definition.container.document_field:
+                            initial[definition.container.document_field] = []
+                        write_document(self, card.id, initial, 0)
                 for transaction in transactions:
                     attempted_transactions.append(transaction)
                     await transaction.commit()
+                if not _skip_default_equipment:
+                    with self.events.committed_batch(), self.database.transaction(immediate=True):
+                        ensure_equipment(self, card.id)
                 card = self.enrich_card(self.world.get_card(card.id))
                 if _publish_event:
                     await self._publish_card_created(card)
@@ -906,7 +914,8 @@ class ApplicationServices:
                         cleanup_errors.append(rollback_error)
                 if card is not None:
                     try:
-                        self.world.delete_card(card.id)
+                        if self.world.maybe_get_card(card.id):
+                            self.world.delete_cards([card.id, *[item.id for item in self.world.owned_descendants(card.id)]])
                     except BaseException as cleanup_error:
                         cleanup_errors.append(cleanup_error)
                 for cleanup_error in cleanup_errors:
@@ -1848,7 +1857,9 @@ class ApplicationServices:
                     )
                 payload_version = definition.template_handler.payload_version
                 definition.template_handler.validate_payload(payload, payload_version)
+            from backend.plugin_defaults import capture_metadata
             template_node = LegionTemplateNode(
+                plugin_defaults=capture_metadata(self, card.id, node_keys),
                 key=node_keys[card.id],
                 parent_key=node_keys.get(card.parent_id),
                 owner_key=node_keys.get(card.equipment.owner_id) if card.equipment else None,
@@ -2057,6 +2068,7 @@ class ApplicationServices:
                     _creation_receipts=creation_receipts,
                     _publish_event=False,
                     _skip_collection_seed=node.initial_document is not None,
+                    _skip_default_equipment=True,
                 ))
                 if node.initial_document is not None and definition.state is not None:
                     scoped_document_seeds.append(node)
@@ -2077,6 +2089,16 @@ class ApplicationServices:
                 identity = (kind, self.card_state.default_session(new_id) if kind == "session" else "*")
                 revision = read_document(self, new_id, state_identity=identity)["revision"]
                 write_document(self, new_id, spec.remap_references(node.initial_document, node_ids), revision, state_identity=identity)
+            from backend.plugin_defaults import restore_metadata, ensure_equipment, adopt_equipment
+            with self.events.committed_batch(), self.database.transaction(immediate=True):
+                for node in template_nodes:
+                    restore_metadata(self, node_ids[node.key], node.plugin_defaults, node_ids)
+                for node in template_nodes:
+                    adopt_equipment(self, node_ids[node.key])
+                    added = ensure_equipment(self, node_ids[node.key])
+                    created_nodes.extend(added)
+                    for item in added:
+                        created_nodes.extend(self.world.list_members(item.id))
             for edge in record.blueprint.edges:
                 if edge.source in removed_keys or edge.target in removed_keys:
                     continue
