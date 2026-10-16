@@ -122,6 +122,12 @@ users then choose cards for persistent named decks. Registration alone never add
 cards to a user's collection or tray. See [Packs, Card Library and Decks](card-library.md)
 for manifests, migration, persistence and disable semantics.
 
+Bundled Packs may include canonical host cards (for example `core.jobs` in
+MatCreator). Collection records keep the card's defining plugin as owner and
+track each opened Pack separately in `source_pack_ids`; including a host card
+does not transfer implementation or runtime ownership. Installed external Pack
+distributions still contain only their own cards.
+
 Plugin API 1.13 adds projected read-only document actions (`project=True`),
 document update validators and declarative `NodeDocumentTransformation`s.
 Projected actions return bounded plugin query results through the same revision

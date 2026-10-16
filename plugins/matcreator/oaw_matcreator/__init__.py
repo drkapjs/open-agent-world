@@ -90,7 +90,8 @@ class MatCreatorPlugin:
         native_card.register(registration)
         registration.register_legion_preset(preset.native_definition())
         registration.register_pack(PackDefinition(id='matcreator.default', name='MatCreator',
-            description='Native research Agent, scientific skills, execution views and a Know-Do Graph.', cards=tuple(registration.nodes)))
+            description='Native research Agent, scientific skills, Jobs and a Know-Do Graph.',
+            cards=(*registration.nodes, 'core.jobs')))
 
 def create_plugin():
     return MatCreatorPlugin()
