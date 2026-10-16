@@ -189,6 +189,7 @@ def build_interface(
                 "von_mises_strain": float(match.von_mises_strain),
                 "area": area,
                 "termination_index": termination_index,
+                "registration_status": "unverified",
             })
     except Exception as exc:
         return {"error": f"Failed to write interface to file: {str(exc)}"}

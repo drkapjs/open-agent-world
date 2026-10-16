@@ -13,6 +13,10 @@ below illustrate CLI arguments, not a host-side `build_interface` tool. The
 script writes candidate files; use a fresh Atom Structure revision and
 `record_interface_candidates` for a structured candidate workflow. Do not
 import a candidate into the open Structure without an explicit selection.
+Registration stores an unverified draft, not a scientific pass. Before importing
+the selected saved file, independently validate it through structure-inspect and
+convert that same file to the document format. Geometry/strain metadata alone do
+not establish physical stability; use task-specific checks and explicit physics.
 
 ```bash
 python3 scripts/interface_builder.py build_interface \

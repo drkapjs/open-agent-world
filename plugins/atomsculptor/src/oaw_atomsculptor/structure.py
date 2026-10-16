@@ -68,6 +68,8 @@ class InterfaceCandidate(BaseModel):
     von_mises_strain: float | None = None
     area: float | None = Field(default=None, ge=0)
     termination_index: int | None = Field(default=None, ge=0)
+    registration_status: Literal["unverified"] = Field(default="unverified",
+        description="Catalogue entry only; independent file validation is a separate native receipt required before import.")
 
 
 class StructureDocument(BaseModel):

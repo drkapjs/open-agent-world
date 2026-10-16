@@ -21,7 +21,7 @@ PBC must survive a Sandbox round trip.
    document and pass `expected_revision` to `replace_atom_structure`. Preserve
    stable IDs for all retained atoms. For a larger edit, stage the document
    into an authorized Sandbox, run user-permitted code, convert its output and
-   import with the latest revision and structure digest.
+   import with the latest document revision.
 4. Verify the changed atom count and composition, defect locations, nearest
    distances, local coordination and any periodic-image interactions from the
    resulting structure. A successful file write alone is not a card update.

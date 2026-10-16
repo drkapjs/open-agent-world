@@ -1,4 +1,5 @@
 """Read and validate atomic structures — inspect a file, measure distances, detect close contacts."""
+import base64
 import json as _json
 from pathlib import Path
 from typing import Any
@@ -6,13 +7,23 @@ from typing import Any
 import numpy as np
 from ase import Atoms
 from ase.data import covalent_radii
-from ase.io import read
+from ase.io import read, write
 from ase.neighborlist import neighbor_list
 
 from oaw_runtime import build_cli_parser, run_cli
 from oaw_runtime import display_path, resolve_output_path, workspace_root
+from structure_validation import measure_structure, measure_nanotube
 
 _LARGE_CIF_SIZE_BYTES = 1_000_000
+
+
+def _unique_json_fields(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"Duplicate JSON field: {key}")
+        result[key] = value
+    return result
 
 
 def _iter_path_candidates(path_str: str) -> list[Path]:
@@ -75,6 +86,8 @@ def read_structure(folder: str, file_name: str) -> dict:
         "num_atoms": num_atoms,
         "cell_vectors_angstrom": atoms.cell.array.tolist() if atoms.cell is not None else None,
         "periodic_boundary_conditions": atoms.pbc.tolist(),
+        "atom_arrays": {name: {"shape": list(array.shape), "dtype": str(array.dtype)}
+                        for name, array in atoms.arrays.items()},
     }
     if num_atoms <= 10:
         result["atoms"] = [
@@ -98,6 +111,97 @@ def read_structures_in_text(folder: str, file_name: str) -> dict:
         return {"raw_file_text": file_path.read_text(encoding="utf-8")}
     except Exception as exc:
         return {"error": str(exc)}
+
+
+def _resolve_regions(atoms, regions):
+    """Resolve saved label selectors, then let the existing partition audit judge coverage."""
+    if not isinstance(regions, list) or not 1 <= len(regions) <= 32:
+        raise ValueError("Region checks require 1..32 named regions")
+    result = []
+    for row in regions:
+        if not isinstance(row, dict) or "selector" not in row:
+            result.append(row)
+            continue
+        if set(row) != {"name", "selector", "degree_min", "degree_max"}:
+            raise ValueError("Use indices OR selector with name and degree range")
+        selector = row["selector"]
+        if not isinstance(selector, dict) or set(selector) != {"array", "values"}:
+            raise ValueError("Selector requires array and values from saved atom labels")
+        name, values = selector["array"], selector["values"]
+        labels = atoms.arrays.get(name) if isinstance(name, str) else None
+        if labels is None or labels.shape != (len(atoms),) or labels.dtype.kind not in "biuU":
+            raise ValueError("Selector requires an actual one-dimensional discrete atom array")
+        kind = labels.dtype.kind
+        if (not isinstance(values, list) or not values or any(
+                type(v) is not bool if kind == "b" else type(v) is not int if kind in "iu" else
+                not isinstance(v, str) for v in values)):
+            raise ValueError("Selector values must match the saved label type")
+        ids = np.flatnonzero(np.isin(labels, values)).tolist()
+        result.append({**{k: v for k, v in row.items() if k != "selector"}, "indices": ids})
+    return result
+
+
+def _validate_file(folder, file_name, measure, **acceptance):
+    path = file_name if folder in ("", ".") else str(Path(folder) / file_name)
+    resolved = _resolve_existing_file(path)
+    if resolved is None:
+        return {"error": f"File not found: {path}"}
+    atoms = _load_atoms_from_path(path)
+    if isinstance(atoms, dict):
+        return atoms
+    if acceptance.get("region_checks") is not None:
+        try:
+            acceptance["region_checks"] = _resolve_regions(atoms, acceptance["region_checks"])
+        except ValueError as exc:
+            return {"passed": False, "error": str(exc)}
+    result = measure(atoms.get_chemical_symbols(), atoms.positions.tolist(),
+                     atoms.cell.array.tolist(), atoms.pbc.tolist(), **acceptance)
+    result["file"] = display_path(resolved)
+    return result
+
+
+def validate_structure(folder: str, file_name: str, expected_count: int | None = None,
+                       expected_symbol: str | None = None, min_vacuum: float | None = None,
+                       min_distance: float = 0.1, nonperiodic: bool = False,
+                       nearest_neighbor_min: float | None = None,
+                       nearest_neighbor_max: float | None = None,
+                       connectivity_cutoff: float | None = None, require_connected: bool = False,
+                       region_checks_file: str | None = None, distance_mode: str = "auto") -> dict:
+    """Independently inspect geometry with distances matching the file's PBC."""
+    rules = None
+    if region_checks_file is not None:
+        resolved = _resolve_existing_file(region_checks_file)
+        if resolved is None:
+            return {"passed": False, "error": "Region checks require an existing workspace file"}
+        with resolved.open("rb") as stream:
+            raw = stream.read(131073)
+        if len(raw) > 131072:
+            return {"passed": False, "error": "Region checks file is too large"}
+        try:
+            rules = _json.loads(raw, object_pairs_hook=_unique_json_fields)
+        except (ValueError, UnicodeError, RecursionError):
+            return {"passed": False, "error": "Region checks file must contain JSON with unique fields"}
+        if (not isinstance(rules, dict) or set(rules) != {"regions"}
+                or not isinstance(rules["regions"], list) or not rules["regions"]):
+            return {"passed": False, "error": "Region checks need a nonempty regions list"}
+    result = _validate_file(folder, file_name, measure_structure, expected_count=expected_count,
+        expected_symbol=expected_symbol, min_vacuum=min_vacuum, min_distance=min_distance,
+        nonperiodic=nonperiodic, nearest_neighbor_min=nearest_neighbor_min,
+        nearest_neighbor_max=nearest_neighbor_max, connectivity_cutoff=connectivity_cutoff,
+        require_connected=require_connected, region_checks=rules["regions"] if rules else None,
+        distance_mode=distance_mode)
+    if rules is not None:
+        result["region_checks_file"] = region_checks_file
+    return result
+
+
+def validate_nanotube(folder: str, file_name: str, n: int, m: int, axial_repeats: int,
+                      bond_length: float = 1.42, min_vacuum: float = 8.0,
+                      axis: int = 2, tolerance: float = 0.02) -> dict:
+    """Measure and verify an unrelaxed open CNT, without constructing coordinates."""
+    return _validate_file(folder, file_name, measure_nanotube, n=n, m=m,
+        axial_repeats=axial_repeats, bond_length=bond_length, min_vacuum=min_vacuum,
+        axis=axis, tolerance=tolerance)
 
 
 def calculate_distance(folder: str, file_name: str, index1: int, index2: int) -> dict:
@@ -171,6 +275,23 @@ def _json_list(value: Any, fallback: list[dict[str, Any]]) -> list[dict[str, Any
     return decoded
 
 
+def _read_strings(atoms, name):
+    encoded = atoms.arrays.get(name + "_b64")
+    if encoded is not None:
+        return [base64.b64decode(str(value).removeprefix("b64:"), altchars=b"-_", validate=True).decode("utf-8")
+                for value in encoded]
+    return atoms.arrays.get(name)
+
+
+def _write_strings(atoms, name, values):
+    # ASE extxyz uses whitespace-separated per-atom fields. Empty strings and
+    # labels/layer IDs containing spaces otherwise create unreadable rows.
+    if any(not value or any(char.isspace() for char in value) for value in values):
+        values = ["b64:" + base64.urlsafe_b64encode(value.encode("utf-8")).decode("ascii") for value in values]
+        name += "_b64"
+    atoms.new_array(name, np.asarray(values, dtype=str))
+
+
 def to_atomsculptor_document(folder: str, file_name: str, output_name: str | None = None) -> dict:
     """Convert a structure file into the AtomSculptor StructureDocument JSON.
 
@@ -178,6 +299,9 @@ def to_atomsculptor_document(folder: str, file_name: str, output_name: str | Non
     ``structure`` argument of ``replace_atom_structure``; stable
     ``atomsculptor_id`` per-atom values survive when the file carries them.
     """
+    source_path = _resolve_existing_file(file_name if folder in ("", ".") else str(Path(folder) / file_name))
+    if source_path is None:
+        return {"error": f"File not found: {file_name}"}
     atoms = _load_atoms(folder, file_name)
     if isinstance(atoms, dict) and "error" in atoms:
         return atoms
@@ -189,9 +313,12 @@ def to_atomsculptor_document(folder: str, file_name: str, output_name: str | Non
     active = [layer["id"] for layer in active_layers if layer["id"] in declared] or [layers[0]["id"]]
 
     stable_ids = atoms.arrays.get("atomsculptor_id")
-    layer_values = atoms.arrays.get("layer_id")
+    try:
+        layer_values = _read_strings(atoms, "layer_id")
+        label_values = _read_strings(atoms, "atomsculptor_label")
+    except (ValueError, UnicodeError):
+        return {"error": "Invalid encoded atom labels or layer IDs"}
     occupancy_values = atoms.arrays.get("occupancy")
-    label_values = atoms.arrays.get("atomsculptor_label")
     entries: list[dict[str, Any]] = []
     for index in range(len(atoms)):
         entry: dict[str, Any] = {
@@ -233,6 +360,7 @@ def to_atomsculptor_document(folder: str, file_name: str, output_name: str | Non
         output_path = resolve_output_path(output_name)
         output_path.write_text(_json.dumps(result["document"], ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
         return {"output_document_file": display_path(output_path),
+                "input_structure_file": display_path(source_path),
                 "atom_count": len(entries), "size_bytes": output_path.stat().st_size}
     return result
 
@@ -288,8 +416,8 @@ def from_atomsculptor_document(document: str, output_name: str = "structure.extx
     if isinstance(cell, list) and len(cell) == 3 and all(isinstance(row, list) and len(row) == 3 for row in cell):
         atoms.cell = cell
     atoms.new_array("atomsculptor_id", np.array(ids, dtype=int))
-    atoms.new_array("layer_id", np.array(layer_ids, dtype="U120"))
-    atoms.new_array("atomsculptor_label", np.array(labels, dtype="U120"))
+    _write_strings(atoms, "layer_id", layer_ids)
+    _write_strings(atoms, "atomsculptor_label", labels)
     atoms.new_array("occupancy", np.array(occupancies, dtype=float))
     atoms.info["atomsculptor_layers"] = _json.dumps(value.get("layers") or [
         {"id": "atoms", "name": "Atoms", "kind": "atoms", "visible": True}])
@@ -300,8 +428,52 @@ def from_atomsculptor_document(document: str, output_name: str = "structure.extx
     return {"output_structure_file": display_path(output_path), "atom_count": len(atoms)}
 
 
+def analyze_topology(folder: str, file_name: str, connectivity_cutoff: float,
+                     max_ring_size: int = 8, max_cycles: int = 10000) -> dict:
+    """Measure cutoff-graph rings and local geometry; never infer hybridization or acceptance."""
+    from scientific_analysis import topology
+    atoms = _load_atoms(folder, file_name)
+    return atoms if isinstance(atoms, dict) else {"file": file_name, **topology(atoms, connectivity_cutoff, max_ring_size, max_cycles)}
+
+
+def analyze_symmetry(folder: str, file_name: str, symprec: float,
+                     angle_tolerance: float, molecular_tolerance: float) -> dict:
+    """Explicit tolerances; space group for bulk, point group for finite objects."""
+    from scientific_analysis import symmetry
+    atoms = _load_atoms(folder, file_name)
+    return atoms if isinstance(atoms, dict) else {"file": file_name, **symmetry(atoms, symprec, angle_tolerance, molecular_tolerance)}
+
+
+def list_calculators() -> dict:
+    """List optional pure ASE calculators without executing or downloading a model."""
+    from scientific_analysis import calculator_inventory
+    return calculator_inventory()
+
+
+def measure_energy_forces(folder: str, file_name: str, calculator: str,
+                          parameters_file: str, parameter_source: str, reference_file: str | None = None) -> dict:
+    """Read explicit JSON calculator parameters; energy/forces do not prove stability."""
+    from scientific_analysis import _local, make_calculator, energy_forces
+    atoms = _load_atoms(folder, file_name)
+    if isinstance(atoms, dict):
+        return atoms
+    parameters = _json.loads(_local(parameters_file).read_text(), object_pairs_hook=_unique_json_fields)
+    reference = _load_atoms(folder, reference_file) if reference_file else None
+    if isinstance(reference, dict):
+        return reference
+    instance = make_calculator(calculator, parameters, parameter_source)
+    return {"file": file_name, "parameters": parameters,
+            **energy_forces(atoms, instance, parameter_source, reference)}
+
+
 _TOOLS = {
+    "analyze_topology": analyze_topology,
+    "analyze_symmetry": analyze_symmetry,
+    "list_calculators": list_calculators,
+    "measure_energy_forces": measure_energy_forces,
     "read_structure": read_structure,
+    "validate_structure": validate_structure,
+    "validate_nanotube": validate_nanotube,
     "read_structures_in_text": read_structures_in_text,
     "calculate_distance": calculate_distance,
     "check_close_atoms": check_close_atoms,

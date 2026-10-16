@@ -1112,7 +1112,7 @@ class RuntimeContractTests(unittest.TestCase):
         from oaw_atomsculptor.skill_package import atomsculptor_skills
 
         package = atomsculptor_skills()
-        self.assertEqual(package.version, "0.1.2")
+        self.assertEqual(package.version, "0.1.9")
         self.assertEqual(len(package.skills), 18)
         inspect = next(skill for skill in package.skills if skill.id == "structure-inspect")
         self.assertIn("def to_atomsculptor_document", inspect.files["scripts/structure_inspect.py"])

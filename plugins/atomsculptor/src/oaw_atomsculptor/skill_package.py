@@ -49,6 +49,10 @@ def _skill(folder) -> Skill:
             contents[relative] = raw.decode("utf-8")
         except UnicodeDecodeError:
             contents[relative] = SkillAsset(data_base64=base64.b64encode(raw).decode("ascii"))
+    if any(path.startswith("scripts/") and path.endswith(".py") and isinstance(asset, str)
+           and "from oaw_runtime import" in asset for path, asset in contents.items()):
+        # One maintained source; each materialized Skill remains standalone.
+        contents["scripts/oaw_runtime.py"] = files(__package__).joinpath("skill_cli.py").read_text(encoding="utf-8")
     return Skill(
         id=folder.name,
         name=name,
@@ -62,7 +66,7 @@ def atomsculptor_skills() -> SkillPackage:
     root = files(__package__).joinpath("skills")
     return SkillPackage(
         package_id="atomsculptor.skills",
-        version="0.1.2",
+        version="0.1.9",
         name="AtomSculptor Skills",
         description="Portable atomistic modelling, inspection, conversion, and Materials Project skills.",
         author="AtomSculptor",

@@ -20,6 +20,7 @@ export type InterfaceCandidate = {
   von_mises_strain?: number | null;
   area?: number | null;
   termination_index?: number | null;
+  registration_status?: "unverified";
 };
 export type Structure = {
   format_version?: 1;
