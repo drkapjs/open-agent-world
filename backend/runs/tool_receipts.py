@@ -17,8 +17,8 @@ from uuid import uuid4
 
 
 _HINT_KEYS = frozenset({
-    "operation_id", "command_id", "revision", "document_revision", "sha256",
-    "written", "path", "file_name", "sandbox_id", "structure_digest",
+    "operation_id", "command_id", "revision", "document_revision",
+    "written", "path", "file_name", "sandbox_id",
     "exit_code", "status", "ok",
 })
 _current_receipt: ContextVar[str | None] = ContextVar("current_tool_receipt", default=None)

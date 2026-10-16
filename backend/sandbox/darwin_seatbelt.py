@@ -653,8 +653,10 @@ class DarwinSeatbeltBackend(SandboxBackend):
             await asyncio.to_thread(self._validate_record_paths, owner)
             mount = None
             if runtime_mount is not None:
-                command = runtime_mount.command(command, owner.root / ".oaw" / runtime_mount.bundle.key)
                 source = await asyncio.to_thread(materialize_bundle, owner.root, runtime_mount.bundle.versioned())
+                # Seatbelt grants access to host paths; unlike containers it
+                # cannot bind the immutable version to a virtual stable path.
+                command = runtime_mount.command(command, source)
                 mount = (source, runtime_mount.bundle.key)
             owner.active_command = command
 

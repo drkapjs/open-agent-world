@@ -1,11 +1,9 @@
 """Recovery checks observe external state without resubmitting operations."""
 
 import asyncio
-import base64
-import hashlib
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from backend.persistence.database import Database
 from backend.runs.recovery import assess_run
@@ -70,20 +68,21 @@ class RunRecoveryTests(unittest.TestCase):
             result = asyncio.run(assess_run(self.services, "agent", self.run.run_id))
         self.assertEqual(result[0]["evidence"], "confirmed")
 
-    def test_saved_script_is_checked_by_content_hash(self) -> None:
+    def test_saved_file_requires_reconciliation_without_current_state_evidence(self) -> None:
         content = b"print('model')\n"
         receipt = self.journal.begin(run_id=self.run.run_id, agent_id="agent",
                                      capability_kind="sandbox.write_text_file", target_id="sandbox",
                                      arguments={"path": "build.py", "content": content.decode()}, read_only=False)
-        self.journal.finish(receipt, {"path": "build.py", "sha256": hashlib.sha256(content).hexdigest()})
-
-        class Backend:
-            async def file_operation(self, _sandbox_id, _operation, **_options):
-                return {"state": "ready", "data": base64.b64encode(content).decode()}
-
-        self.services._require_sandbox_backend = lambda: Backend()
+        self.journal.finish(receipt, {"path": "build.py", "written": len(content), "sha256": "legacy-digest"})
+        backend = SimpleNamespace(file_operation=AsyncMock())
+        authorize = Mock()
+        self.services.capabilities.capability_for_id = authorize
+        self.services._require_sandbox_backend = lambda: backend
         result = asyncio.run(assess_run(self.services, "agent", self.run.run_id))
-        self.assertEqual(result[0]["evidence"], "confirmed")
+        self.assertEqual(result[0]["evidence"], "unknown")
+        self.assertNotIn("sha256", result[0]["result_hints"])
+        backend.file_operation.assert_not_awaited()
+        authorize.assert_called_once_with("agent", "sandbox.write_text_file:sandbox")
 
 
 if __name__ == "__main__":

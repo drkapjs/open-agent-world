@@ -1,6 +1,7 @@
 """Workspace API/security integration. Native execution is mocked unless opted in."""
 import asyncio
 import base64
+import hashlib
 import os
 from pathlib import Path
 
@@ -15,6 +16,166 @@ from backend.sandbox.files import operate, pinned, PREVIEW_LIMIT, DIRECTORY_LIMI
 from backend.sandbox.models import SandboxSecurityError, SandboxValidationError
 from backend.sandbox.linux import bubblewrap_command, service_command, _SERVICE_GUARD
 from backend.sandbox.models import ResourceAccess, SandboxLimits
+
+
+def test_exact_text_edits_are_all_checked_before_any_write(tmp_path):
+    path = tmp_path / "build.py"
+    raw = b"x = values.ptp()\nprint(x)\n"
+    path.write_bytes(raw)
+    edits = [{"old": "values.ptp()", "new": "np.ptp(values)"}]
+    result = operate(tmp_path, "build.py", "edit", edits=edits)
+    fixed = b"x = np.ptp(values)\nprint(x)\n"
+    assert path.read_bytes() == fixed
+    assert result == {"written": len(fixed), "edits_applied": 1}
+    with pytest.raises(SandboxValidationError, match="exactly once"):
+        operate(tmp_path, "build.py", "edit", edits=edits)
+    for edits in ([{"old": "x", "new": "y"}],
+                  [{"old": "print(x)", "new": "print(y)"}, {"old": "missing", "new": "z"}],
+                  [{"old": "print(x)", "new": "x" * (256 * 1024)}]):
+        with pytest.raises(SandboxValidationError):
+            operate(tmp_path, "build.py", "edit", edits=edits)
+        assert path.read_bytes() == fixed
+    with pytest.raises(SandboxSecurityError):
+        operate(tmp_path, "build.py", "edit", edits=[], read_only=True)
+    with pytest.raises(SandboxValidationError):
+        operate(tmp_path, "../build.py", "edit", edits=[])
+    with pytest.raises(SandboxValidationError):
+        operate(tmp_path, "missing.py", "edit", edits=[])
+    assert not (tmp_path / "missing.py").exists()
+
+
+def test_exact_edit_accepts_unrelated_file_changes_without_a_digest(tmp_path):
+    path = tmp_path / "step.py"
+    path.write_text("# added by another writer\nprint('old')\n")
+    result = operate(tmp_path, "step.py", "edit", edits=[{"old": "print('old')", "new": "print('new')"}])
+    assert path.read_text() == "# added by another writer\nprint('new')\n"
+    assert result == {"written": len(path.read_bytes()), "edits_applied": 1}
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX no-follow/hardlink check")
+def test_exact_edits_do_not_follow_links_or_modify_hardlinked_files(tmp_path):
+    outside = tmp_path / "outside.py"
+    raw = b"print('unchanged')\n"
+    outside.write_bytes(raw)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "link.py").symlink_to(outside)
+    os.link(outside, workspace / "hard.py")
+    for name in ("link.py", "hard.py"):
+        with pytest.raises((OSError, SandboxSecurityError)):
+            operate(workspace, name, "edit",
+                    edits=[{"old": "unchanged", "new": "modified"}])
+        assert outside.read_bytes() == raw
+
+
+def test_exact_edits_follow_existing_sandbox_authorization(runtime_client):
+    client, backend, _ = runtime_client
+    agent, sandbox, _, _, edges = setup_skill(client)
+    provider = WorldAgentCapabilityProvider(client.app.state.services)
+    save = {"sandbox": sandbox["id"], "path": "build.py", "content": "print(1)\n"}
+    receipt = client.portal.call(provider.invoke_tool, agent["id"], "operation:write_sandbox_text_file", save)
+    patch = {"sandbox": sandbox["id"], "path": "build.py", "overwrite": True,
+             "edits": [{"old": "print(1)", "new": "print(80)"}]}
+    # Exercise the real ADK optional-argument/schema path as well as the host
+    # handler: omitted content must stay omitted when edits are supplied.
+    from backend.agents.tools import build_scoped_adk_tools
+    from types import SimpleNamespace
+    async def apply_patch_through_adk():
+        definitions = await provider.list_tools(agent["id"])
+        definition = next(d for d in definitions if d.name == "write_sandbox_text_file")
+        tool = build_scoped_adk_tools(provider, agent["id"], [definition])[0]
+        assert "oneOf" in tool._get_declaration().parameters_json_schema
+        return await tool.run_async(args=patch, tool_context=SimpleNamespace())
+    fixed = client.portal.call(apply_patch_through_adk)
+    root = backend._sandboxes_root / sandbox["id"] / "workspace"
+    assert (root / "build.py").read_text() == "print(80)\n"
+    assert fixed["written"] == len(b"print(80)\n") and "sha256" not in fixed
+    for invalid in ({**patch, "overwrite": False}, {**patch, "content": "print(0)"}, patch):
+        with pytest.raises(ResourceValidationError):
+            client.portal.call(provider.invoke_tool, agent["id"], "operation:write_sandbox_text_file", invalid)
+        assert (root / "build.py").read_text() == "print(80)\n"
+    client.delete(f"/api/edges/{edges[0]['id']}")
+    with pytest.raises(PermissionDeniedError):
+        client.portal.call(provider.invoke_tool, agent["id"], "operation:write_sandbox_text_file", patch)
+
+
+def test_full_replacement_uses_explicit_overwrite_and_live_grants(runtime_client):
+    client, backend, _ = runtime_client
+    agent, sandbox, _, _, edges = setup_skill(client)
+    provider = WorldAgentCapabilityProvider(client.app.state.services)
+    def invoke(args):
+        return client.portal.call(provider.invoke_tool, agent["id"], "operation:write_sandbox_text_file", args)
+    initial = invoke({"sandbox": sandbox["id"], "path": "probe.py", "content": "print(96)\n"})
+    root = backend._sandboxes_root / sandbox["id"] / "workspace"
+    request = {"sandbox": sandbox["id"], "path": "probe.py", "content": "print(16)\n",
+               "overwrite": True}
+    updated = invoke(request)
+    assert (root / "probe.py").read_text() == "print(16)\n"
+    assert updated["written"] == len(b"print(16)\n") and "sha256" not in updated
+    invoke({**request, "content": "print(0)\n"})
+    assert (root / "probe.py").read_text() == "print(0)\n"
+    with pytest.raises(ResourceValidationError):
+        invoke({**request, "overwrite": False})
+    (root / "probe.py").write_text("other writer\n")
+    invoke(request)
+    assert (root / "probe.py").read_text() == "print(16)\n"
+    (root / "probe.py").write_text("other writer\n")
+    assert (root / "probe.py").read_text() == "other writer\n"
+    client.delete(f"/api/edges/{edges[0]['id']}")
+    with pytest.raises(PermissionDeniedError):
+        invoke(request)
+    assert (root / "probe.py").read_text() == "other writer\n"
+
+
+def test_sandbox_inspection_includes_versions_without_install_log(runtime_client, monkeypatch):
+    client, backend, _ = runtime_client
+    agent, sandbox, *_ = setup_skill(client)
+    from backend.sandbox.manager import SandboxManager, _Binding
+    from backend.sandbox.registry import SandboxRuntimeRegistry
+    manager = SandboxManager(backend._managed_root, SandboxRuntimeRegistry())
+    manager._backends["windows"] = backend
+    manager._bindings[sandbox["id"]] = _Binding(sandbox["id"], runtime="windows", resolved_runtime="windows", provisioned=True)
+    client.app.state.services.sandbox_backend = manager
+    async def status(_):
+        return {"ready": True, "python_version": "3.12.14", "package_versions": {"numpy": "2.4.2", "ase": "3.29.0"},
+                "versions_source": "installed_metadata", "output_tail": "unrelated installer log"}
+    monkeypatch.setattr(manager, "python_status", status)
+    provider = WorldAgentCapabilityProvider(client.app.state.services)
+    result = client.portal.call(provider.invoke_tool, agent["id"], "operation:inspect_sandbox", {"sandbox": sandbox["id"]})
+    assert result["shared_python"] is None
+    assert result["python_environment"]["package_versions"]["numpy"] == "2.4.2"
+    assert "unrelated installer log" not in str(result)
+    assert "np.ptp" in str(result["python_environment"]["compatibility_notes"])
+
+
+def test_start_returns_compact_python_metadata_and_details_only_on_request(runtime_client, monkeypatch):
+    client, backend, _ = runtime_client
+    agent, sandbox, *_ = setup_skill(client)
+    from backend.sandbox.manager import SandboxManager
+    manager = SandboxManager(backend._managed_root, None)
+    client.app.state.services.sandbox_backend = manager
+    services = client.app.state.services
+    async def start(*args, **kwargs):
+        from types import SimpleNamespace
+        return SimpleNamespace(state=SimpleNamespace(value="ready"))
+    async def status(_):
+        return {"ready": True, "python_version": "3.12.14", "package_versions": {"numpy": "2.5.3"},
+                "warmup_error": None, "output_tail": "old installation details"}
+    monkeypatch.setattr(type(services), "start_sandbox", start)
+    monkeypatch.setattr(manager, "python_status", status)
+    from backend.capabilities.provider import _CapabilityContext
+    context = _CapabilityContext(services)
+    from backend.plugins.builtin import _start_sandbox
+    from types import SimpleNamespace
+    capability = SimpleNamespace(agent_id=agent["id"], target_id=sandbox["id"])
+    result = client.portal.call(_start_sandbox, context, capability, {})
+    assert result["shared_python"] is None
+    assert result["python_environment"]["python_version"] == "3.12.14"
+    assert "old installation details" not in str(result)
+    detailed = client.portal.call(_start_sandbox, context, capability, {"include_shared_python": True})
+    assert detailed["shared_python"]["output_tail"] == "old installation details"
+    with pytest.raises(ResourceValidationError):
+        client.portal.call(_start_sandbox, context, capability, {"include_shared_python": "true"})
 
 
 def test_direct_command_through_manager_does_not_write_partial_history(runtime_client):
@@ -303,6 +464,30 @@ def test_agent_saves_source_in_authorized_sandbox_workspace(runtime_client):
     with pytest.raises(PermissionDeniedError):
         client.portal.call(provider.invoke_tool, agent["id"],
             "operation:write_sandbox_text_file", {**request, "path": "other.py"})
+
+
+def test_native_text_save_creates_missing_parents_through_pinned_boundary(runtime_client):
+    client, backend, _ = runtime_client
+    agent, sandbox, _, _, edges = setup_skill(client)
+    provider=WorldAgentCapabilityProvider(client.app.state.services)
+    args={'sandbox':sandbox['id'],'path':'测量/new/probe.py','content':"print('原生目录')\n"}
+    saved=client.portal.call(provider.invoke_tool,agent['id'],'operation:write_sandbox_text_file',args)
+    root=backend._sandboxes_root/sandbox['id']/'workspace'
+    assert (root/args['path']).read_text()==args['content'] and saved['written']==len(args['content'].encode())
+    with pytest.raises(ResourceValidationError):
+        client.portal.call(provider.invoke_tool,agent['id'],'operation:write_sandbox_text_file',args)
+    patch={**{k:v for k,v in args.items() if k!='content'},'overwrite':True,
+           'edits':[{'old':'原生目录','new':'精确修改'}]}
+    client.portal.call(provider.invoke_tool,agent['id'],'operation:write_sandbox_text_file',patch)
+    assert '精确修改' in (root/args['path']).read_text()
+    outside=root.parent/'outside';outside.mkdir();(root/'link').symlink_to(outside,target_is_directory=True)
+    with pytest.raises(ResourceValidationError):
+        client.portal.call(provider.invoke_tool,agent['id'],'operation:write_sandbox_text_file',{**args,'path':'link/escape.py'})
+    assert not (outside/'escape.py').exists()
+    client.delete(f"/api/edges/{edges[0]['id']}")
+    with pytest.raises(PermissionDeniedError):
+        client.portal.call(provider.invoke_tool,agent['id'],'operation:write_sandbox_text_file',{**args,'path':'revoked/nested.py'})
+    assert not (root/'revoked').exists()
 
 
 def test_receipt_recovery_cancelled_peer_and_configuration_snapshot(runtime_client, monkeypatch):
@@ -615,7 +800,7 @@ def test_parallel_commands_dispatch_without_waiting(runtime_client, monkeypatch)
     original = backend.execute
 
     async def scenario():
-        started, release = asyncio.Event(), asyncio.Event()
+        started, second_started, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
         calls = []
 
         async def delayed(*args, **kwargs):
@@ -623,14 +808,15 @@ def test_parallel_commands_dispatch_without_waiting(runtime_client, monkeypatch)
             if len(calls) == 1:
                 started.set()
                 await release.wait()
+            else:
+                second_started.set()
             return await original(*args, **kwargs)
 
         monkeypatch.setattr(backend, 'execute', delayed)
         first = asyncio.create_task(services.execute_sandbox(sandbox['id'], ['cmd.exe', 'first']))
         await asyncio.wait_for(started.wait(), 2)
         second = asyncio.create_task(services.execute_sandbox(sandbox['id'], ['cmd.exe', 'second'], timeout_seconds=3600))
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
+        await asyncio.wait_for(second_started.wait(), 2)
         assert len(calls) == 2
         from backend.node_documents import read_document, write_document
         document = read_document(services, sandbox['id'])

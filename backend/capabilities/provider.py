@@ -14,6 +14,20 @@ if TYPE_CHECKING:
     from backend.services import ApplicationServices
 
 
+def _python_environment_summary(status):
+    if not isinstance(status, dict):
+        return None
+    packages = status.get("package_versions") or {}
+    return {"ready": status.get("ready"), "preparing": status.get("preparing", False),
+        "python_version": status.get("python_version"),
+        "package_versions": {name: packages[name] for name in ("numpy", "ase", "scipy", "pymatgen", "matplotlib")
+                             if name in packages},
+        "versions_source": status.get("versions_source"),
+        "warmup_error": status.get("warmup_error"),
+        "compatibility_notes": ["Use np.ptp(array) for range; avoid array.ptp()."]
+            if "numpy" in packages else []}
+
+
 def _validate_tool_request(model: type[BaseModel], arguments):
     """Convert caller input errors only; internal state/output errors still propagate."""
     try:
@@ -184,20 +198,24 @@ class _CapabilityContext:
                 data=base64.b64encode(data).decode("ascii"), overwrite=False,
             )
 
-    async def write_sandbox_text_file(self, capability, path: str, content: str,
-                                      overwrite: bool = False) -> dict[str, Any]:
+    async def write_sandbox_text_file(self, capability, path: str, content: str | None = None,
+                                      overwrite: bool = False, *, edits: list | None = None) -> dict[str, Any]:
         """Persist bounded UTF-8 source through the pinned Sandbox file boundary."""
         import base64
-        import hashlib
         from backend.errors import PermissionDeniedError
-        if not isinstance(content, str) or "\0" in content:
+        if edits is not None:
+            if content is not None or overwrite is not True:
+                raise ResourceValidationError("Use edits with overwrite=true, without content")
+            raw = None
+        elif not isinstance(content, str) or "\0" in content:
             raise ResourceValidationError("Sandbox text must be UTF-8 text without NUL bytes")
-        try:
-            raw = content.encode("utf-8")
-        except UnicodeEncodeError as exc:
-            raise ResourceValidationError("Sandbox text must be valid UTF-8") from exc
-        if not raw or len(raw) > 256 * 1024:
-            raise ResourceValidationError("Sandbox text must be between 1 byte and 256 KiB")
+        else:
+            try:
+                raw = content.encode("utf-8")
+            except UnicodeEncodeError as exc:
+                raise ResourceValidationError("Sandbox text must be valid UTF-8") from exc
+            if not raw or len(raw) > 256 * 1024:
+                raise ResourceValidationError("Sandbox text must be between 1 byte and 256 KiB")
         if not isinstance(overwrite, bool):
             raise ResourceValidationError("overwrite must be a boolean")
         async with self.services._node_mutation():
@@ -206,12 +224,15 @@ class _CapabilityContext:
                 raise PermissionDeniedError("Sandbox file-write capability was revoked")
             self.services.capabilities.require_sandbox_execute(capability.agent_id, live.target_id)
             self.services._require_card_type(live.target_id, "sandbox")
-            result = await self.services._require_sandbox_backend().file_operation(
-                live.target_id, "write", root="workspace", path=path,
-                data=base64.b64encode(raw).decode("ascii"), overwrite=overwrite,
-            )
-        return {"path": path, "written": result["written"],
-                "sha256": hashlib.sha256(raw).hexdigest()}
+            if edits is not None:
+                result = await self.services._require_sandbox_backend().file_operation(
+                    live.target_id, "edit", root="workspace", path=path,
+                    edits=edits)
+            else:
+                result = await self.services._require_sandbox_backend().file_operation(
+                    live.target_id, "write", root="workspace", path=path,
+                    data=base64.b64encode(raw).decode("ascii"), overwrite=overwrite, create_parents=True)
+        return {"path": path, **result}
 
     async def read_sandbox_workspace_file(self, capability, sandbox_id: str, path: str) -> bytes:
         """Read one bounded Sandbox file without echoing its body to the LLM."""
@@ -332,13 +353,14 @@ class _CapabilityContext:
         from backend.sandbox.history import stop
         return await stop(self.services, sandbox_id, agent_id=agent_id, command_id=command_id)
 
-    async def start_sandbox(self, agent_id: str, sandbox_id: str) -> dict[str, Any]:
+    async def start_sandbox(self, agent_id: str, sandbox_id: str, *, include_shared_python=False) -> dict[str, Any]:
         info = await self.services.start_sandbox(sandbox_id, agent_id=agent_id)
         from backend.sandbox.manager import SandboxManager
         backend = self.services.sandbox_backend
         python_status = await backend.python_status(sandbox_id) if isinstance(backend, SandboxManager) else None
         return {"sandbox_id": sandbox_id, "state": info.state.value,
-                "shared_python": python_status}
+                "shared_python": python_status if include_shared_python else None,
+                "python_environment": _python_environment_summary(python_status)}
 
     async def stop_sandbox(self, agent_id: str, sandbox_id: str) -> dict[str, Any]:
         info = await self.services.stop_sandbox(sandbox_id, agent_id=agent_id)
@@ -350,7 +372,7 @@ class _CapabilityContext:
         info = await self.services.get_sandbox(sandbox_id)
         from backend.sandbox.manager import SandboxManager
         backend = self.services.sandbox_backend
-        python_status = await backend.python_status(sandbox_id) if include_shared_python and isinstance(backend, SandboxManager) else None
+        python_status = await backend.python_status(sandbox_id) if isinstance(backend, SandboxManager) else None
         self.services.capabilities.require_sandbox_execute(agent_id, sandbox_id)
         from backend.execution_config import configuration_summary
         active = [dict(r) for r in self.services._sandbox_commands.values() if r["sandbox_id"] == sandbox_id]
@@ -395,7 +417,8 @@ class _CapabilityContext:
                 run_id=context.run_id if history_scope == "run" else None,
                 limit=history_limit, include_output=include_output),
             "history_scope": history_scope,
-            "shared_python": python_status,
+            "shared_python": python_status if include_shared_python else None,
+            "python_environment": _python_environment_summary(python_status),
             "console_mode": "non-interactive; each command starts in the configured workspace; cd/export/activation do not persist",
             "command_timeout": self.services.world.get_card(sandbox_id).config.get("command_timeout", 6000),
             "installation": "Use install_python_packages for the shared read-only Python environment. HOME persists (at /sandbox/home on Linux, WSL and macOS Container VM); use $HOME/.local/bin or $HOME/bin for local CLI tools, or create a private venv in HOME/workspace and invoke its interpreter explicitly. npm -g defaults to $HOME/.local, with bins on PATH. /tmp is recreated for EVERY command; use HOME or workspace for files needed by subsequent commands. Shared installer logs are optional (include_shared_python=true) and do not prove a current operation is running.",

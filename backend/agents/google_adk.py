@@ -25,7 +25,7 @@ from .models import (
     AgentStateError,
     AgentStatus,
 )
-from .tools import build_scoped_tool_callables
+from .tools import build_scoped_adk_tools
 from .adk_tool_errors import on_tool_error
 from backend.runs.models import InvocationContext, RunStatus, RuntimeInput
 
@@ -229,7 +229,7 @@ class GoogleAdkAgentRuntime(RuntimeProvider):
                     capability_invocations += 1
                     return await provider.invoke_tool(selected_agent_id, capability_id, arguments)
 
-            tools = build_scoped_tool_callables(_TrackedProvider(), agent_id, definitions)
+            tools = build_scoped_adk_tools(_TrackedProvider(), agent_id, definitions)
             run_secret = getattr(selected_model, "_additional_args", {}).get("api_key")
             from backend.runs.model_checkpoints import RunModelCheckpoints
             checkpoint_store = (RunModelCheckpoints(database, run_id, api_key=run_secret)

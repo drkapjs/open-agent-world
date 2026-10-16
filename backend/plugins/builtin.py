@@ -716,9 +716,9 @@ async def _inspect_sandbox(
 
 
 async def _start_sandbox(context, capability, values):
-    if values:
-        raise ResourceValidationError("sandbox start takes no arguments")
-    return await context.start_sandbox(capability.agent_id, capability.target_id)
+    if set(values) - {"include_shared_python"} or ("include_shared_python" in values and type(values["include_shared_python"]) is not bool):
+        raise ResourceValidationError("sandbox start accepts only include_shared_python (boolean)")
+    return await context.start_sandbox(capability.agent_id, capability.target_id, **values)
 
 
 async def _stop_sandbox(context, capability, values):
@@ -748,12 +748,13 @@ async def _execute_sandbox(
 
 
 async def _write_sandbox_text_file(context, capability, values):
-    if (set(values) - {"path", "content", "overwrite"}
+    if (set(values) - {"path", "content", "overwrite", "edits"}
             or not isinstance(values.get("path"), str)
-            or not isinstance(values.get("content"), str)):
-        raise ResourceValidationError("path and UTF-8 content are required")
+            or ("content" in values) == ("edits" in values)):
+        raise ResourceValidationError("Use path and either complete content or exact edits")
     return await context.write_sandbox_text_file(
-        capability, values["path"], values["content"], values.get("overwrite", False))
+        capability, values["path"], values.get("content"), values.get("overwrite", False),
+        **{key: values[key] for key in ("edits",) if key in values})
 
 
 async def _cancel_sandbox_command(context, capability, values):
@@ -933,9 +934,10 @@ def _register_builtin(registry: PluginRegistration) -> None:
     for operation, handler in (("start", _start_sandbox), ("stop", _stop_sandbox)):
         registry.register_capability(CapabilityDefinition(
             kind=f"sandbox.{operation}", tool_name=f"{operation}_sandbox", target_parameter="sandbox",
-            description=("Start the selected Sandbox using its saved runtime, workspace and network settings. On macOS Seatbelt, Start begins shared Python warmup in the background; check shared_python.ready/preparing through inspect_sandbox before Python commands. If warmup fails, inspect shared_python.warmup_error and call start_sandbox again to retry. A start also recovers a sandbox whose state is \"error\" once its commands have finished: if commands were rejected with 'sandbox must be ready', start it and retry once."
+            description=("Start the selected Sandbox using its saved runtime, workspace and network settings. Returns compact python_environment metadata; include_shared_python=true adds historical installer details only when needed. On macOS Seatbelt, Start begins shared Python warmup in the background; check python_environment.ready/preparing through inspect_sandbox before Python commands. If warmup fails, inspect python_environment.warmup_error and call start_sandbox again to retry. A start also recovers a sandbox whose state is \"error\" once its commands have finished: if commands were rejected with 'sandbox must be ready', start it and retry once."
                          if operation == "start" else "Stop the selected Sandbox, terminating any active command and waiting for cleanup. This affects every agent sharing this Sandbox."),
-            input_schema={"type": "object", "properties": {}, "additionalProperties": False}), handler)
+            input_schema={"type": "object", "properties": {"include_shared_python": {"type": "boolean", "default": False}}
+                          if operation == "start" else {}, "additionalProperties": False}), handler)
     registry.register_capability(CapabilityDefinition(
         kind='sandbox.execute', tool_name='execute_command', target_parameter='sandbox',
         selectors=EXECUTION_SELECTORS,
@@ -944,12 +946,19 @@ def _register_builtin(registry: PluginRegistration) -> None:
     registry.register_capability(CapabilityDefinition(
         kind='sandbox.write_text_file', tool_name='write_sandbox_text_file',
         target_parameter='sandbox', target_capabilities=frozenset({'sandbox.execute'}),
-        description='Save a UTF-8 text file in the authorized Sandbox workspace without a shell or heredoc. Use for Python modelling/analysis scripts, then execute the saved .py with a separate direct python3 argv command. Existing files require overwrite=true. Returns the byte count and SHA-256; only report success after running and checking the script.',
+        description='Save UTF-8 source in the authorized Sandbox workspace. Missing parent directories are created inside that workspace through the pinned file boundary. Create: path + content, overwrite=false. Replace: path + content + overwrite=true. Patch: path + edits + overwrite=true; each old text must match exactly once. Never combine content with edits. Returns written byte count; execute saved Python separately. Existing files are never overwritten by default.',
         input_schema={"type": "object", "properties": {
             "path": {"type": "string", "minLength": 1, "description": "Workspace-relative path using forward slashes; no traversal."},
             "content": {"type": "string", "minLength": 1, "description": "Complete UTF-8 file contents (at most 256 KiB)."},
+            "edits": {"type": "array", "minItems": 1, "maxItems": 20, "items": {
+                "type": "object", "properties": {"old": {"type": "string", "minLength": 1},
+                    "new": {"type": "string"}}, "required": ["old", "new"], "additionalProperties": False},
+                "description": "Sequential exact replacements; include enough context for each old text to occur once."},
             "overwrite": {"type": "boolean", "default": False}},
-            "required": ["path", "content"], "additionalProperties": False}), _write_sandbox_text_file)
+            "required": ["path"], "oneOf": [
+                {"required": ["content"], "not": {"required": ["edits"]}},
+                {"required": ["edits", "overwrite"], "properties": {"overwrite": {"const": True}}, "not": {"required": ["content"]}}],
+            "additionalProperties": False}), _write_sandbox_text_file)
     registry.register_capability(CapabilityDefinition(
         kind='sandbox.cancel_command', tool_name='cancel_command', target_parameter='sandbox',
         description='Cancel one command and wait for its process cleanup. Inspect active_commands and supply its id as command_id. Agents may cancel their own commands; cancelling another Agent requires sandbox.stop authority. A stale ID cannot cancel a newer command.',

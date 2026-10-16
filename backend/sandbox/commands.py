@@ -4,6 +4,38 @@ from pathlib import PureWindowsPath
 from .models import SandboxValidationError
 
 
+def python_entrypoint(argv):
+    """Recognize a direct Python entrypoint, never commands embedded in a shell.
+
+    Returns (script/code/module, value, first application argument index).
+    Shared by execution tracking and collection; not permission to execute.
+    """
+    if not isinstance(argv, (list, tuple)) or not argv or any(not isinstance(a, str) for a in argv):
+        return None
+    if not re.fullmatch(r"python(?:\d+(?:\.\d+)*)?(?:\.exe)?", PureWindowsPath(argv[0]).name.lower()):
+        return None
+    index = 1
+    while index < len(argv):
+        option = argv[index]
+        if option in {"-u", "-B", "-E", "-s", "-S", "-I", "-O", "-OO", "-b", "-bb", "-q"}:
+            index += 1
+        elif option in {"-W", "-X", "--check-hash-based-pycs"} and index + 1 < len(argv):
+            index += 2
+        elif option.startswith(("-W", "-X")) and len(option) > 2:
+            index += 1
+        else:
+            break
+    if index >= len(argv):
+        return None
+    if argv[index] in {"-c", "-m"}:
+        return ("code" if argv[index] == "-c" else "module", argv[index+1], index+2) if index+1 < len(argv) else None
+    if argv[index] == "--":
+        index += 1
+    if index >= len(argv) or argv[index].startswith("-"):
+        return None
+    return "script", argv[index], index+1
+
+
 def needs_managed_python(argv, mode="auto", *, skill=False):
     """Select Seatbelt's optional Python environment without parsing a shell.
 

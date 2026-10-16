@@ -23,6 +23,25 @@ from backend.sandbox.python_runtime import (
 )
 
 
+@pytest.mark.parametrize("version_key", ["version", "version_info"])
+def test_environment_versions_read_metadata_without_running_or_importing(tmp_path, monkeypatch, version_key):
+    runtime = SharedPythonRuntime(tmp_path)
+    runtime.venv.mkdir(parents=True)
+    (runtime.venv / "pyvenv.cfg").write_text(f"{version_key} = 3.12.14\n")
+    site = runtime.venv / "lib/python3.12/site-packages"
+    for name, version in (("numpy", "2.4.2"), ("ase", "3.29.0")):
+        folder = site / f"{name}-{version}.dist-info"
+        folder.mkdir(parents=True)
+        (folder / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n\n")
+        package = site / name
+        package.mkdir()
+        (package / "__init__.py").write_text("raise AssertionError('must not import packages')")
+    monkeypatch.setattr(subprocess, "run", lambda *_a, **_k: pytest.fail("must not run Python"))
+    assert runtime.environment_metadata() == {"python_version": "3.12.14",
+        "package_versions": {"numpy": "2.4.2", "ase": "3.29.0"}, "versions_source": "installed_metadata"}
+    assert runtime.snapshot()["package_versions"]["numpy"] == "2.4.2"
+
+
 def test_timeout_preserves_live_progress_and_uses_package_deadline(tmp_path, monkeypatch):
     from backend.sandbox.python_runtime import PACKAGE_INSTALL_TIMEOUT
     monkeypatch.setattr(sys, "platform", "linux")  # Exercise subprocess.run timeout handling.

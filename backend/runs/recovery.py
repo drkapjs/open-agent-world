@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import base64
 import asyncio
-import hashlib
 from typing import Any
 
 from .tool_receipts import RunToolReceipts
@@ -48,20 +46,6 @@ async def assess_run(services: Any, agent_id: str, run_id: str) -> list[dict[str
                             exit_code = result.get("exit_code", operation.get("exit_code"))
                             if result.get("ok") is not False and exit_code in (None, 0):
                                 evidence = "confirmed"
-                elif receipt["state"] == "finished" and isinstance(hints.get("sha256"), str) and (
-                    isinstance(hints.get("path"), str) or isinstance(hints.get("file_name"), str)
-                ):
-                    sandbox_id = hints.get("sandbox_id") or target_id
-                    services.capabilities.require_sandbox_execute(agent_id, sandbox_id)
-                    result = await asyncio.wait_for(
-                        services._require_sandbox_backend().file_operation(
-                            sandbox_id, "download", root="workspace",
-                            path=hints.get("path") or hints["file_name"],
-                        ), timeout=10,
-                    )
-                    if result.get("state") == "ready":
-                        digest = hashlib.sha256(base64.b64decode(result["data"], validate=True)).hexdigest()
-                        evidence = "confirmed" if digest == hints["sha256"] else "changed"
                 elif receipt["state"] == "finished" and isinstance(hints.get("revision"), int):
                     from backend.node_documents import read_document
                     current = read_document(services, target_id)

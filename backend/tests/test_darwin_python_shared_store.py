@@ -34,7 +34,7 @@ class DarwinSharedStoreTests(unittest.TestCase):
             root = Path(directory)
             runtime = SharedPythonRuntime(root / "checkout", darwin_store=root / "shared")
             with patch("backend.sandbox.python_runtime.sys.platform", "darwin"):
-                self.assertEqual(runtime._uv_cache(), root / "shared" / "cache")
+                self.assertEqual(runtime._uv_cache(), (root / "shared" / "cache").resolve())
 
     def test_status_reports_cached_distribution(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -89,7 +89,7 @@ class DarwinSharedStoreTests(unittest.TestCase):
 
             cached = runtime._cached_darwin_base()
 
-            self.assertEqual(cached, root / "shared" / "base")
+            self.assertEqual(cached, (root / "shared" / "base").resolve())
             self.assertIsNotNone(runtime._darwin_base_python(cached))
 
     def test_failed_download_does_not_publish_partial_distribution(self):

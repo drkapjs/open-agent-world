@@ -19,6 +19,7 @@ from backend.sandbox.darwin_seatbelt import (
     _sbpl_quote,
 )
 from backend.sandbox.commands import needs_managed_python
+from backend.sandbox.materialization import RuntimeBundle, RuntimeMount
 from backend.sandbox.models import (
     ResourceAccess, ResourceAttachment, SandboxBusyError, SandboxNotFoundError,
     SandboxState, SandboxStateError, SandboxValidationError,
@@ -402,3 +403,59 @@ async def test_native_seatbelt_proxy_profile_probe():
     assert available, reason
     network_available, network_reason = await DarwinSeatbeltBackend.probe_network()
     assert network_available, network_reason
+
+
+@pytest.mark.skipif(sys.platform != "darwin" or os.environ.get("OAW_RUN_NATIVE_MACOS_SANDBOX_TESTS") != "1",
+                   reason="set OAW_RUN_NATIVE_MACOS_SANDBOX_TESTS=1 on macOS")
+@pytest.mark.asyncio
+async def test_native_versioned_python_skill_dependencies_and_immutability(tmp_path):
+    from backend.sandbox.python_runtime import SharedPythonRuntime
+    python_root = os.environ.get("OAW_NATIVE_TEST_PYTHON_ROOT")
+    if not python_root:
+        pytest.skip("set OAW_NATIVE_TEST_PYTHON_ROOT to an already prepared runtime/python directory")
+    runtime = SharedPythonRuntime(Path(python_root).parent.parent)
+    assert runtime.python.is_file(), "Native acceptance uses a prepared Python; no installer is run"
+    async def prepared():
+        pass
+    runtime.prepare = prepared
+    backend = DarwinSeatbeltBackend(tmp_path / "managed", python_runtime=runtime)
+    available, reason = await backend.probe()
+    assert available, reason
+    await backend.create("skill")
+    await backend.start("skill")
+    source = ("from pathlib import Path\nfrom helper import VALUE\n"
+              "Path('result.txt').write_text(VALUE)\nprint(VALUE)\n"
+              "try:\n Path(__file__).write_text('corrupt')\n"
+              "except OSError:\n print('IMMUTABLE')\n"
+              "else:\n raise RuntimeError('writable bundle')\n")
+    def mount(value):
+        return RuntimeMount(RuntimeBundle("skills/check", (("scripts/check.py", source.encode()),
+            ("scripts/helper.py", f"VALUE = '{value}'\n".encode()))), 1)
+    try:
+        first = await backend.execute("skill", ["python3", "scripts/check.py"], runtime_mount=mount("first"))
+        assert first.exit_code == 0, first.stderr
+        assert "first" in first.stdout and "IMMUTABLE" in first.stdout
+        assert "versions" in Path(first.argv[1]).parts
+        second = await backend.execute("skill", ["python3", "scripts/check.py"], runtime_mount=mount("second"))
+        assert second.exit_code == 0, second.stderr
+        assert "second" in second.stdout and second.argv[1] != first.argv[1]
+        assert Path(first.argv[1]).read_text() == source
+        info = await backend.get("skill")
+        assert (Path(info.workspace) / "result.txt").read_text() == "second"
+        denied = await backend.execute("skill", list(first.argv))
+        assert denied.exit_code != 0
+        # A small custom-source repair goes through the same pinned workspace
+        # boundary and the repaired bytes execute inside actual Seatbelt.
+        import base64
+        import hashlib
+        broken = b"raise ValueError('fixture repair')\n"
+        await backend.file_operation("skill", "write", path="repair.py", data=base64.b64encode(broken).decode())
+        failed = await backend.execute("skill", ["python3", "repair.py"])
+        assert failed.exit_code != 0
+        repaired = await backend.file_operation("skill", "edit", path="repair.py",
+            edits=[{"old": "raise ValueError('fixture repair')", "new": "print('REPAIRED')"}])
+        assert repaired["edits_applied"] == 1
+        result = await backend.execute("skill", ["python3", "repair.py"])
+        assert result.exit_code == 0 and "REPAIRED" in result.stdout
+    finally:
+        await backend.destroy("skill")

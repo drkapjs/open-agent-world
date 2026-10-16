@@ -152,7 +152,7 @@ class StructureContractTests(unittest.TestCase):
         context = _CapabilityContext(Services(), capability)
         result = asyncio.run(context.write_sandbox_text_file(capability, "build.py", "print(1)\n"))
         self.assertEqual(result["written"], 9)
-        self.assertEqual(len(result["sha256"]), 64)
+        self.assertNotIn("sha256", result)
         self.assertIn(("execute", "agent", "box"), calls)
         self.assertEqual(calls[-1][0], ("box", "write"))
         self.assertEqual(calls[-1][1]["path"], "build.py")
@@ -261,6 +261,7 @@ class StructureContractTests(unittest.TestCase):
             database.close()
 
     def test_read_only_stream_disconnect_restarts_once_without_replaying_tools(self) -> None:
+        from google.genai import types as genai_types
         from backend.persistence.database import Database
         from backend.runs.store import RunStore
 
@@ -314,13 +315,13 @@ class StructureContractTests(unittest.TestCase):
         ), context_store=SimpleNamespace(database=database))
         bindings = SimpleNamespace(
             Runner=Runner, App=lambda **values: SimpleNamespace(**values),
-            types=SimpleNamespace(Content=lambda **values: SimpleNamespace(**values),
-                                  Part=SimpleNamespace(from_text=lambda text: SimpleNamespace(text=text))),
+            types=genai_types,
         )
         run_config = SimpleNamespace(RunConfig=lambda **values: SimpleNamespace(**values),
                                      StreamingMode=SimpleNamespace(SSE="SSE"))
         modules = {name: SimpleNamespace() for name in ("google", "google.adk", "google.adk.agents")}
         modules["google.adk.agents.run_config"] = run_config
+        modules["google.adk.tools"] = SimpleNamespace(FunctionTool=lambda function: function)
 
         async def exercise():
             with patch.dict(sys.modules, modules), \

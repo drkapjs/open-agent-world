@@ -345,6 +345,37 @@ class SharedPythonRuntime:
         finally:
             shutil.rmtree(staging, ignore_errors=True)
 
+    def environment_metadata(self):
+        """Read installed versions without starting Python or importing packages."""
+        python_version = None
+        try:
+            for line in (self.venv / "pyvenv.cfg").read_text(encoding="utf-8")[:8192].splitlines():
+                key, separator, value = line.partition("=")
+                if separator and key.strip() in {"version", "version_info"}:
+                    python_version = value.strip()[:64]
+        except (OSError, UnicodeError):
+            pass
+        versions = {}
+        sites = [self.venv / "Lib" / "site-packages",
+                 *sorted((self.venv / "lib").glob("python*/site-packages"))[:8]]
+        for name in ("numpy", "ase", "scipy", "pymatgen", "matplotlib"):
+            observed = set()
+            for site in sites:
+                for folder in sorted(site.glob(f"{name}-*.dist-info"))[:8]:
+                    try:
+                        with (folder / "METADATA").open("rb") as stream:
+                            metadata = stream.read(16384).decode("utf-8")
+                        headers = dict(line.split(": ", 1) for line in metadata.split("\n\n", 1)[0].splitlines()
+                                       if line.startswith(("Name: ", "Version: ")))
+                        if headers.get("Name", "").lower() == name and headers.get("Version"):
+                            observed.add(headers["Version"][:64])
+                    except (OSError, UnicodeError):
+                        continue
+            if len(observed) == 1:
+                versions[name] = observed.pop()
+        return {"python_version": python_version, "package_versions": versions,
+                "versions_source": "installed_metadata"}
+
     def snapshot(self):
         """Read bounded progress without acquiring a mutation lock or running code.
 
@@ -391,7 +422,7 @@ class SharedPythonRuntime:
         if sys.platform == "darwin":
             usable = (usable and ready.get("darwin_runtime_version") == DARWIN_RUNTIME_VERSION
                       and self._darwin_base_python() is not None)
-        return {"last_install_state": latest.get("state"),
+        return {**self.environment_metadata(), "last_install_state": latest.get("state"),
             "ready": usable,
             "distribution_cached": (self._darwin_base_python(self.darwin_store / "base") is not None
                                     if sys.platform == "darwin" else None),
