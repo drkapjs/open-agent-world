@@ -1,4 +1,10 @@
 {
+  "Model requests": ["Model requests", "模型请求"],
+  "Input tokens": ["Input tokens", "输入 token"],
+  "Output tokens": ["Output tokens", "输出 token"],
+  "Model input": ["Model input", "模型输入"],
+  "Model response": ["Model response", "模型响应"],
+  "Details incomplete": ["Details incomplete", "详情不完整"],
   "Model attempt": ["Model attempt", "请求尝试"],
   "Agent color": ["Agent color","Agent 颜色"],
   "Workstream": ["Workstream","工作脉络"],

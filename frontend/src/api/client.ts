@@ -798,6 +798,22 @@ export const worldApi = {
     return request(`/lifecycle${retry ? "/retry-cleanup" : ""}`, retry ? { method: "POST" } : undefined);
   },
   cancelRun(runId: string): Promise<unknown> { return request(`/runs/${encodeURIComponent(runId)}/cancel`, { method: "POST" }); },
+  getRunReasoning(runId: string, offset = 0): Promise<{ items: import("../types/world").SavedModelThinking[]; next_offset: number | null }> {
+    return request(`/runs/${encodeURIComponent(runId)}/reasoning?offset=${offset}&limit=50`);
+  },
+  getRunReasoningText(runId: string, identity: string): Promise<import("../types/world").SavedModelThinking> {
+    return request(`/runs/${encodeURIComponent(runId)}/reasoning/${encodeURIComponent(identity)}`);
+  },
+  getRunInvocations(runId: string, kind: "models" | "tools", offset = 0): Promise<{ items: import("../types/world").SavedInvocation[]; next_offset: number | null }> {
+    return request(`/runs/${encodeURIComponent(runId)}/invocations/${kind}?offset=${offset}&limit=50`);
+  },
+  getRunInvocation(runId: string, kind: "models" | "tools", identity: string): Promise<import("../types/world").SavedInvocation> {
+    return request(`/runs/${encodeURIComponent(runId)}/invocations/${kind}/${encodeURIComponent(identity)}`);
+  },
+  agentRuns(agentId: string): Promise<{ run_id: string; agent_id: string; status: string; started_at?: string;
+    finished_at?: string; lifecycle: Record<string, unknown> }[]> {
+    return request(`/runs?agent_id=${encodeURIComponent(agentId)}`);
+  },
 
   stopAgent(nodeId: string): Promise<Record<string, unknown>> {
     return request<Record<string, unknown>>(`/agents/${encodeURIComponent(nodeId)}/stop`, {

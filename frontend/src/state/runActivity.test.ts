@@ -1,15 +1,74 @@
 import { describe, expect, it } from "vitest";
 import type { RuntimeEvent } from "../types/world";
-import { mergeRunActivity, toolFailed } from "./runActivity";
+import { mergeRunActivity, toolFailed, withSavedThinking, withSavedTools } from "./runActivity";
+import type { SavedModelThinking, SavedInvocation } from "../types/world";
+
+it("merges native tool rows with live previews without duplication or reopening completed calls", () => {
+  const row: SavedInvocation = { id: "archive", run_id: "r", role: "builder", call_id: "same", name: "execute",
+    state: "started", run_attempt: 0, started_at: "2026-10-06T01:00:00Z", updated_at: "2026-10-06T01:00:01Z" };
+  const live = { seen: [], truncated: false, items: [{ id: "live", type: "tool_completed" as const, call_id: "same",
+    arguments: { argv: ["python3", "probe.py"] }, response: { exit_code: 0 }, success: true }] };
+  const merged = withSavedTools(live, [row]);
+  expect(merged.items).toHaveLength(1);
+  expect(merged.items[0]).toMatchObject({ id: "live", archive_id: "archive", type: "tool_completed", success: true });
+  const restored = withSavedTools(merged, [{ ...row, state: "returned" }]);
+  expect(restored.items).toHaveLength(1);
+  const retry = withSavedTools(restored, [{ ...row, id: "retry", run_attempt: 1, state: "interrupted" }]);
+  expect(retry.items).toHaveLength(2);
+  expect(retry.items[1].interrupted).toBe(true);
+});
 import { activeConversationRuns } from "./conversationActivity";
 
 const run = { run_id: "run-1", tool_trace: [] };
+
+it("keeps newer live thinking and restores separate persisted attempts", () => {
+  const row: SavedModelThinking = { run_id: run.run_id, provider_message_id: "thought:1",
+    kind: "model_reasoning", text: "old snapshot", text_length: 12, preview_truncated: false,
+    streaming: true, interrupted: false, truncated: false, revision: 1,
+    created_at: "2026-10-06T01:00:00Z", updated_at: "2026-10-06T01:00:01Z" };
+  const live = { seen: [], truncated: false, items: [{ id: "live", type: "agent_progress" as const,
+    kind: "model_reasoning", provider_message_id: "thought:1", text: "new live text",
+    timestamp: row.created_at, updated_at: "2026-10-06T01:00:02Z" }] };
+  const restored = withSavedThinking(live, [row, { ...row, provider_message_id: "thought:1:attempt2", model_attempt: 2 }]);
+  expect(restored.items).toHaveLength(2);
+  expect(restored.items[0].text).toBe("new live text");
+  const terminated = withSavedThinking(restored, [{ ...row, updated_at: "2026-10-06T01:00:03Z",
+    streaming: false, interrupted: true, text: "last received tail" }]);
+  expect(terminated.items[0].id).toBe("live");
+  expect(terminated.items[0].text).toBe("last received tail");
+  expect(terminated.items[0].interrupted).toBe(true);
+});
+
+it("preserves server trace truncation even without newer events", () => {
+  const state = mergeRunActivity(undefined, { ...run, tool_trace_truncated: true }, []);
+  expect(state.truncated).toBe(true);
+  expect(mergeRunActivity(state, { ...run, tool_trace_truncated: true }, [])).toBe(state);
+});
 function event(id: number, type: string, payload: Record<string, unknown> = {}): RuntimeEvent {
   return { id: String(id), type, payload, run_id: run.run_id, agent_id: "atlas",
     conversation_id: "room", session_id: "session", timestamp: new Date(1_800_000_000_000 + id).toISOString() };
 }
 
 describe("ordered Run activity", () => {
+  it('keeps provider-local call IDs separate across specialists and resumed attempts', () => {
+    const events = [
+      event(1, 'tool_started', { call_id: 'same', name: 'read', role: 'planner', run_attempt: 0, archive_id: 'p' }),
+      event(2, 'tool_started', { call_id: 'same', name: 'read', role: 'builder', run_attempt: 0, archive_id: 'b' }),
+      event(3, 'tool_completed', { call_id: 'same', name: 'read', role: 'builder', run_attempt: 0, archive_id: 'b', response: 'B' }),
+      event(4, 'tool_started', { call_id: 'same', name: 'read', role: 'builder', run_attempt: 1, archive_id: 'retry' }),
+    ];
+    const state = mergeRunActivity(undefined, run, [...events].reverse());
+    expect(state.items).toHaveLength(3);
+    expect(state.items.map(item => [item.archive_id, item.type, item.response])).toEqual([
+      ['p', 'tool_started', undefined], ['b', 'tool_completed', 'B'], ['retry', 'tool_started', undefined],
+    ]);
+    const restored = withSavedTools(state, [{ id: 'b', run_id: run.run_id, name: 'read', call_id: 'same', role: 'builder',
+      run_attempt: 0, state: 'returned', started_at: events[1].timestamp, updated_at: events[2].timestamp }]);
+    expect(restored.items).toHaveLength(3);
+    expect(restored.items.find(item => item.archive_id === 'b')?.response).toBe('B');
+    const ambiguous = mergeRunActivity(restored, run, [event(5, 'tool_completed', { call_id: 'same', name: 'read' })]);
+    expect(ambiguous.items).toHaveLength(4);
+  });
   it("keeps interrupted and recovered model attempts separate in recorded events", () => {
     const snapshots = [
       event(1, "agent_progress", { kind: "model_reasoning", role: "structure_builder", model_request: 2,

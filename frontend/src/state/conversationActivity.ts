@@ -1,4 +1,5 @@
 import type { ConversationRunSummary, RuntimeEvent } from "../types/world";
+import { compareTimestamp } from './activityTiming';
 
 function normalizedType(event: RuntimeEvent): string {
   return event.type.replace(/[.\s-]/g, "_").toLowerCase();
@@ -91,6 +92,12 @@ export function activeConversationRuns(
 ): ConversationRunSummary[] {
   if (!sessionId) return [];
   const runs = new Map(snapshot.map((run) => [run.run_id, { ...run, tool_trace: [...(run.tool_trace ?? [])] }]));
+  const checkpoints = new Map(snapshot.map(run => [run.run_id, {
+    ids: new Set((run.tool_trace ?? []).map(item => item.id).filter(Boolean)),
+    through: (run.tool_trace ?? []).map(item => item.timestamp).filter((value): value is string => typeof value === 'string')
+      .sort(compareTimestamp).at(-1),
+  }]));
+  const seen = new Set<string>();
   const ended = new Set<string>();
   for (const event of [...events].reverse()) {
     if (
@@ -100,7 +107,17 @@ export function activeConversationRuns(
     const id = runId(event);
     if (!id || !event.agent_id) continue;
     const type = normalizedType(event);
-    if (["run_succeeded", "run_failed", "run_cancelled", "run_interrupted"].includes(type)) {
+    if (seen.has(event.id)) continue;
+    seen.add(event.id);
+    const checkpoint = checkpoints.get(id);
+    // The snapshot count already includes its retained trace and earlier calls.
+    // Do not replay an old start over a completed tool or count it twice.
+    if ((type === 'tool_started' || type === 'tool_completed') && checkpoint &&
+      (checkpoint.ids.has(event.id) || (checkpoint.through && event.timestamp &&
+        compareTimestamp(event.timestamp, checkpoint.through) < 0))) continue;
+    const durable = eventRun(event);
+    if (["run_succeeded", "run_failed", "run_cancelled", "run_interrupted"].includes(type)
+      || (durable?.status && ["succeeded", "failed", "cancelled", "interrupted"].includes(durable.status))) {
       runs.delete(id);
       ended.add(id);
       continue;
@@ -108,7 +125,6 @@ export function activeConversationRuns(
     // Operational/status cleanup events must not resurrect a terminal Run.
     if (ended.has(id) || !["run_created", "run_started", "run_resumed", "run_waiting",
       "agent_started", "agent_message", "agent_progress", "tool_started", "tool_completed"].includes(type)) continue;
-    const durable = eventRun(event);
     const existing = runs.get(id);
     const current: ConversationRunSummary = {
       run_id: id,

@@ -428,6 +428,51 @@ export interface ConversationToolTrace {
   call_id?: string;
 }
 
+export interface SavedInvocation {
+  id: string;
+  run_id: string;
+  role: string;
+  state: "started" | "returned" | "interrupted" | "failed";
+  started_at: string;
+  updated_at: string;
+  run_attempt: number;
+  model_request?: number;
+  model_attempt?: number;
+  input_tokens?: number | null;
+  output_tokens?: number | null;
+  finish_reason?: string | null;
+  call_id?: string;
+  name?: string;
+  arguments_preview?: string;
+  arguments?: unknown;
+  effective_arguments?: unknown;
+  request?: unknown;
+  response?: unknown;
+  error?: unknown;
+  truncated?: boolean;
+  request_complete?: boolean;
+  response_complete?: boolean;
+}
+
+export interface SavedModelThinking {
+  run_id: string;
+  provider_message_id: string;
+  kind: "model_reasoning";
+  role?: string;
+  model_request?: number;
+  model_attempt?: number;
+  run_attempt?: number;
+  text: string;
+  text_length: number;
+  streaming: boolean;
+  interrupted: boolean;
+  truncated: boolean;
+  preview_truncated: boolean;
+  created_at: string;
+  updated_at: string;
+  revision: number;
+}
+
 export interface ConversationRunSummary {
   run_id: string;
   agent_id: string;
@@ -444,7 +489,7 @@ export interface ConversationRunSummary {
   confirmed_tool_count?: number | null;
   tool_count: number;
   tool_trace: ConversationToolTrace[];
-    tool_trace_truncated?: boolean;
+  tool_trace_truncated?: boolean;
   live_text?: string;
 }
 

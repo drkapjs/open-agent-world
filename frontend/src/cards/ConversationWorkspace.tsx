@@ -78,6 +78,7 @@ export function ConversationWorkspace({ card }: { card: WorldCard }) {
         || event.type === "run_failed"
         || event.type === "run_cancelled"
         || event.type === "run_interrupted"
+        || (event.type === "agent_status_changed" && Boolean(event.payload.run))
       ),
   )?.id);
   const pushToast = useWorldStore((state) => state.pushToast);
@@ -616,7 +617,8 @@ export function ConversationWorkspace({ card }: { card: WorldCard }) {
             if (entry.kind === 'execution') return <ConversationExecution key={entry.id} group={entry}
               agentName={agentName} history={inHistory} />;
             if (entry.kind === 'activity') return <div key={entry.id} className="conversation-message-bubble" data-activity-id={entry.item.id}>
-              <RunActivityText item={entry.item} />
+              <RunActivityText item={entry.item} runId={entry.run.run_id}
+                active={['created', 'running', 'waiting'].includes(entry.run.status)} />
             </div>;
             const message = entry.message;
             return (
