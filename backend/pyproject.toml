@@ -11,12 +11,11 @@ dependencies = [
     "fastapi>=0.116,<1",
     "pydantic>=2.11,<3",
     "packaging>=24,<27",
-    # Library is bundled as source; setup and desktop exports must include its host PDF reader.
-    "pymupdf>=1.25,<2",
     "uvicorn[standard]>=0.35,<1",
 ]
 
 [project.optional-dependencies]
+hosting = ["authlib>=1.7.2,<2", "itsdangerous>=2.2,<3"]
 adk = ["google-adk>=2.8,<3"]
 litellm = ["litellm>=1.74,<2"]
 

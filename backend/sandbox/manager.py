@@ -227,6 +227,8 @@ class SandboxManager(SandboxBackend):
         access = ResourceAccess(config.get("workspace_access", "read_write"))
         policy = {key: config[key] for key in ("network_enabled", "memory_bytes", "active_process_limit", "command_timeout") if key in config}
         selected = await self.registry.select(binding.resolved_runtime or (self.preferred if runtime == "auto" else runtime))
+        if config.get("workspace_path") is not None and not selected.supports_workspace:
+            raise SandboxValidationError("This runtime does not support host workspace directories")
         if policy.get("network_enabled") and "enabled" not in selected.supported_network_modes:
             raise SandboxValidationError(selected.network_reason)
         if policy.get("network_enabled") and not selected.network_available:

@@ -51,6 +51,8 @@ def create_app(
     services: ApplicationServices | None = None,
     development=None,
     frontend_directory=None,
+    profile_access=None,
+    services_factory=None,
 ) -> FastAPI:
     selected_settings = settings or Settings.from_environment()
     manifest_path = selected_settings.data_root / "deployment.json"
@@ -58,6 +60,11 @@ def create_app(
     if deployment is not None:
         from backend.deploy import validate_manifest
         validate_manifest(deployment)
+    if profile_access is not None:
+        if deployment is not None:
+            raise ValueError("Hosted profile identity cannot be combined with shared-password deployment")
+        if profile_access.tenant != selected_settings.tenant_scope:
+            raise ValueError("Hosted ingress and profile storage must use the same tenant scope")
 
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
@@ -65,9 +72,11 @@ def create_app(
         with ExitStack() as stack:
             owned = services is None
             effective_settings = prepare_storage(selected_settings, stack) if owned else selected_settings
+            if profile_access is not None:
+                profile_access.bind_storage(effective_settings.data_root)
             if deployment is None and (effective_settings.data_root / "deployment.json").exists():
                 raise RuntimeError("This storage pointer refers to a deployment. Start it with scripts/deploy.py --serve.")
-            active_services = services or create_services(effective_settings)
+            active_services = services or (services_factory or create_services)(effective_settings)
             application.state.services = active_services
             try:
                 await active_services.startup()
@@ -112,7 +121,11 @@ def create_app(
             expose_headers=[REQUEST_ID_HEADER],
         )
     if deployment is None:
-        application.add_middleware(ControlPlaneMiddleware, token=selected_settings.control_plane_token)
+        if profile_access is None:
+            application.add_middleware(ControlPlaneMiddleware, token=selected_settings.control_plane_token)
+        else:
+            from backend.hosting.identity import ProfileAccessMiddleware
+            application.add_middleware(ProfileAccessMiddleware, access=profile_access)
         application.include_router(api_router)
         application.include_router(application_router)
         from backend.deployments import router as deployments_router

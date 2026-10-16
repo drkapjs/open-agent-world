@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from backend import official_marketplace
+from backend.request_context import LOCAL_TENANT, TenantScope
 
 
 def _default_data_root() -> Path:
@@ -40,6 +41,8 @@ class Settings:
     marketplace_url: str | None = field(
         default_factory=lambda: official_marketplace.OFFICIAL_MARKETPLACE_URL
     )
+    # One profile owns one scope, not several users in a shared database.
+    tenant_scope: TenantScope = LOCAL_TENANT
 
     @classmethod
     def from_environment(cls) -> "Settings":

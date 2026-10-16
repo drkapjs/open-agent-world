@@ -120,7 +120,9 @@ def require_request_context() -> RequestContext:
     return context
 
 
-def establish_request_context(scope: Scope, actor: ActorRef, *, auth_method: str) -> RequestContext:
+def establish_request_context(
+    scope: Scope, actor: ActorRef, *, auth_method: str, tenant: TenantScope = LOCAL_TENANT,
+) -> RequestContext:
     """Called only by server authentication boundaries, after their checks.
 
     Request IDs are provided by the outer observability middleware. Generate
@@ -131,7 +133,7 @@ def establish_request_context(scope: Scope, actor: ActorRef, *, auth_method: str
     if not isinstance(request_id, str) or not request_id:
         request_id = resolve_request_id(None)
         state["request_id"] = request_id
-    context = RequestContext(request_id, actor, LOCAL_TENANT, auth_method)
+    context = RequestContext(request_id, actor, tenant, auth_method)
     state["request_context"] = context
     return context
 
