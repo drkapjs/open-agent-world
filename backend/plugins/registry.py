@@ -705,6 +705,11 @@ class PluginRegistry:
                 candidate.validate_relationship_order(nodes[edge.source].type, nodes[edge.target].type, edge.relationship)
                 candidate.validate_direction(edge.relationship, edge.direction)
 
+        # Bundled Packs may collect canonical host cards without taking
+        # ownership. External distributions retain their own-card-only
+        # manifest check in install().
+        host_cards = {key for key in self._nodes
+                      if self.node_type_owner_id(key) == "open-agent-world.core"}
         covered = set()
         for pack in staged.packs.values():
             if not pack.cards and not staged.legion_presets:
@@ -713,8 +718,8 @@ class PluginRegistry:
                 raise ValueError("pack artwork must reference an asset registered by the same plugin")
             if len(set(pack.cards)) != len(pack.cards):
                 raise ValueError(f"pack {pack.id!r} contains duplicate cards")
-            if not set(pack.cards) <= staged.nodes.keys():
-                raise ValueError(f"pack {pack.id!r} may reference only this plugin's node types")
+            if not set(pack.cards) <= staged.nodes.keys() | host_cards:
+                raise ValueError(f"pack {pack.id!r} may reference only this plugin's node types or host cards")
             covered.update(pack.cards)
         if staged.nodes.keys() - covered:
             raise ValueError("Every registered node type must belong to a pack")

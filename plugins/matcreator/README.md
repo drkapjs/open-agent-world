@@ -1,12 +1,26 @@
 # MatCreator on OAW
 
-This plugin publishes **MatCreator native research**, a dedicated **MatCreator
-Agent**, four portable Toolsets and a Know-Do Graph. Its Legion connects the
-host's reusable **Agent graph** card to the native Agent.
+This plugin publishes **MatCreator research**, a dedicated **MatCreator
+Agent**, four portable Toolsets, a Know-Do Graph and the host's reusable **Jobs**
+card. If you opened an older version, browse the MatCreator Pack in the Library
+and choose **Collect new cards** to collect Jobs. Jobs retains its canonical
+`core.jobs` identity and can also be collected
+from Core essentials.
+
+New research Legions open Conversation on the left, the Agent and Structure
+viewer in the center, and Sandbox on the right. Agent graph, artifacts and Jobs
+sit below, alongside the knowledge graph. Existing formations keep their saved
+positions; Workspace mode retains its composed panes and tabs.
+
+**Jobs → Agent** selects the submitting Agent's jobs in the current session.
+**Observe jobs** grants read-only access; **Manage jobs** also allows status
+refresh, monitoring controls and explicit external cancellation. A job records
+its Sandbox separately as the execution environment. One Jobs card can connect
+to several Agents; grouping cards into a Legion does not grant access to jobs.
 
 ## Native MatCreator Agent
 
-Use **MatCreator native research** for the Pack-owned planner, execution
+Use **MatCreator research** for the Pack-owned planner, execution
 orchestrator and recursive step executors. Their maintained Python source lives
 in `oaw_matcreator_engine/` and is included in the Pack wheel alongside the
 `oaw_matcreator/` host adapter. Editing that source takes effect in the next

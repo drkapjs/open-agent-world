@@ -38,6 +38,7 @@ test('Jobs card presents generic providers and controls in standalone and narrow
   });
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto('/');
+  await expect(page.locator(`[data-card-id="${board.id}"]`)).toBeAttached();
   await page.evaluate(async id => {
     // @ts-expect-error Vite development module used to open the production workspace.
     const { useNodeSurfaceStore } = await import('/src/state/nodeSurfaces.ts' /* @vite-ignore */);
@@ -45,6 +46,7 @@ test('Jobs card presents generic providers and controls in standalone and narrow
   }, board.id);
   let workspace = page.getByRole('dialog', { name: 'Research jobs workspace', exact: true });
   await expect(workspace.locator('.job-tile')).toHaveCount(6);
+  await expect(page.locator(`.react-flow__node[data-id="${board.id}"]`)).toHaveCSS('width', '1020px');
   await page.getByRole('button', { name: 'Fit view', exact: true }).click();
   await expect(workspace.getByRole('button', { name: 'Refresh jobs' })).toBeInViewport();
   await page.screenshot({ path: '../.outputs/jobs/standalone-light.png' });
@@ -97,7 +99,7 @@ test('MatCreator preset composes the real session-scoped Jobs card beneath its g
   // This checks composition, not the separate canvas fit/viewport gesture.
   await page.locator(`[data-card-id="${instance.node_ids.group}"]`).getByRole('button', { name: 'Workspace mode', exact: true })
     .evaluate((button: HTMLButtonElement) => button.click());
-  const workspace = page.getByRole('dialog', { name: 'MatCreator native research workspace mode', exact: true });
+  const workspace = page.getByRole('dialog', { name: 'MatCreator research workspace mode', exact: true });
   const jobs = workspace.getByRole('region', { name: 'Jobs', exact: true });
   await expect(jobs.getByText('No jobs in this session', { exact: true })).toBeVisible();
   const graph = workspace.getByRole('region', { name: 'Execution graph', exact: true });
