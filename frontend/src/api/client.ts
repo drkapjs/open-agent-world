@@ -424,6 +424,13 @@ export const worldApi = {
     return request(`/nodes/${encodeURIComponent(id)}/document?summary_only=true`, { headers: stateSessionHeaders(sessionId) });
   },
 
+  getNodeDefaults(id: string): Promise<Record<string, unknown>> {
+    return request(`/nodes/${encodeURIComponent(id)}/defaults`);
+  },
+  restoreNodeDefaults(id: string, value: Record<string, unknown>): Promise<void> {
+    return request(`/nodes/${encodeURIComponent(id)}/defaults`, { method: 'POST', body: JSON.stringify({ value }) });
+  },
+
   async nodeResourceAction(id: string, action: string, args: Record<string, unknown>, confirm = false, sessionId: string | null = cardStateSession(id) ?? null): Promise<Record<string, unknown>> {
     return request(`/nodes/${encodeURIComponent(id)}/resource/${encodeURIComponent(action)}`, {
       method: "POST", headers: stateSessionHeaders(sessionId), body: JSON.stringify({ arguments: args, confirm }),
@@ -798,6 +805,22 @@ export const worldApi = {
     return request(`/lifecycle${retry ? "/retry-cleanup" : ""}`, retry ? { method: "POST" } : undefined);
   },
   cancelRun(runId: string): Promise<unknown> { return request(`/runs/${encodeURIComponent(runId)}/cancel`, { method: "POST" }); },
+  getRunReasoning(runId: string, offset = 0): Promise<{ items: import("../types/world").SavedModelThinking[]; next_offset: number | null }> {
+    return request(`/runs/${encodeURIComponent(runId)}/reasoning?offset=${offset}&limit=50`);
+  },
+  getRunReasoningText(runId: string, identity: string): Promise<import("../types/world").SavedModelThinking> {
+    return request(`/runs/${encodeURIComponent(runId)}/reasoning/${encodeURIComponent(identity)}`);
+  },
+  getRunInvocations(runId: string, kind: "models" | "tools", offset = 0): Promise<{ items: import("../types/world").SavedInvocation[]; next_offset: number | null }> {
+    return request(`/runs/${encodeURIComponent(runId)}/invocations/${kind}?offset=${offset}&limit=50`);
+  },
+  getRunInvocation(runId: string, kind: "models" | "tools", identity: string): Promise<import("../types/world").SavedInvocation> {
+    return request(`/runs/${encodeURIComponent(runId)}/invocations/${kind}/${encodeURIComponent(identity)}`);
+  },
+  agentRuns(agentId: string): Promise<{ run_id: string; agent_id: string; status: string; started_at?: string;
+    finished_at?: string; lifecycle: Record<string, unknown> }[]> {
+    return request(`/runs?agent_id=${encodeURIComponent(agentId)}`);
+  },
 
   stopAgent(nodeId: string): Promise<Record<string, unknown>> {
     return request<Record<string, unknown>>(`/agents/${encodeURIComponent(nodeId)}/stop`, {
@@ -998,10 +1021,10 @@ export const worldApi = {
     });
   },
 
-  executeSandbox(nodeId: string, command: string): Promise<Record<string, unknown>> {
+  executeSandbox(nodeId: string, command: string, pythonEnvironment: "auto" | "managed" = "auto"): Promise<Record<string, unknown>> {
     return request<Record<string, unknown>>(`/sandboxes/${encodeURIComponent(nodeId)}/execute`, {
       method: "POST",
-      body: JSON.stringify({ command }),
+      body: JSON.stringify({ command, ...(pythonEnvironment === "managed" ? { python_environment: "managed" } : {}) }),
     });
   },
 };

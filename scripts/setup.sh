@@ -4,12 +4,12 @@ cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
 
 for tool in uv node npm; do
   if ! command -v "$tool" >/dev/null 2>&1; then
-    echo "Missing prerequisite: $tool. Install uv and Node.js 20 or newer (including npm), then rerun this script." >&2
+    echo "Missing prerequisite: $tool. Install uv and Node.js 24 or newer (including npm), then rerun this script." >&2
     exit 1
   fi
 done
-if ! node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 20 ? 0 : 1)'; then
-  echo "Node.js 20 or newer is required." >&2
+if ! node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 24 ? 0 : 1)'; then
+  echo "Node.js 24 or newer is required." >&2
   exit 1
 fi
 

@@ -82,6 +82,15 @@ def run(client, agent, sandbox, skill, **arguments):
          "interpreter": ["python"], **arguments})
 
 
+def test_python_entry_without_shebang_defaults_to_sandbox_python(runtime_client):
+    client, _, native = runtime_client
+    agent, sandbox, skill, _, _ = setup_skill(client)
+    result = run(client, agent, sandbox, skill, interpreter=[])
+    assert result["exit_code"] == 0
+    assert native.last_argv[0] == "python3"
+    assert Path(native.last_argv[1]).read_text() == "print('ok')"
+
+
 @pytest.mark.parametrize("equipment,toolbox", [(False, False), (False, True), (True, False), (True, True)])
 def test_lazy_current_bundle_uses_normal_native_backend_and_workspace(runtime_client, equipment, toolbox):
     client, backend, native = runtime_client

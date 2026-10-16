@@ -17,11 +17,12 @@ from backend.plugins.execution_graph import NodeExecutionSource
 from backend.plugins.template import NodeTemplateHandler
 from backend.plugins.presets import LegionPresetDefinition
 from backend.plugins.tutorials import Tutorials, validate_tutorials
+from backend.plugins.equipment import DefaultEquipment
 
 if TYPE_CHECKING:
     from backend.legions.models import LegionBlueprintPreset
     from backend.plugins.summoning import NodeSummoningDefinition
-    from backend.agents import AgentCapabilityProvider, RuntimeProvider
+    from backend.agents import AgentCapabilityProvider, ModelConnectionResolver, RuntimeProvider
     from backend.capabilities import Capability
     from backend.plugins.capability import CapabilityContext
     from backend.state.schema import StateSchema
@@ -203,6 +204,7 @@ class NodeTypeCatalogItem(BaseModel):
     state: PluginStateSpec = LEGACY_STATE
     has_scoped_state: bool = False
     has_document: bool = False
+    has_default_equipment: bool = False
     transformations: dict[str, dict[str, Any]] = Field(default_factory=dict)
     has_execution: bool = False
     container: dict[str, Any] | None = None
@@ -278,6 +280,9 @@ class CapabilityDefinition:
     target_parameter: str = "target"
     selectors: tuple[CapabilitySelector, ...] = ()
     target_capabilities: frozenset[str] = frozenset()
+    # Unknown/plugin-defined operations are conservatively treated as writes
+    # when deciding whether an interrupted Agent Run may replay its work.
+    read_only: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -344,6 +349,7 @@ class NodeTypeDefinition:
     state: PluginStateSpec | None = None
     card_face: CardFaceSpec | Mapping[str, str] | None = None
     tutorials: Tutorials = ()
+    default_equipment: tuple[DefaultEquipment, ...] = ()
 
     def resolved_presentation(self) -> NodePresentation:
         if self.presentation is not None:
@@ -387,6 +393,7 @@ class NodeTypeDefinition:
             state=self.state or LEGACY_STATE,
             has_scoped_state=self.state is not None and self.state.mode == "scoped",
             has_document=self.document is not None,
+            has_default_equipment=bool(self.default_equipment),
             transformations={key: {"label": item.label, "source_traits": sorted(item.source_traits)} for key, item in self.document.transformations.items()} if self.document else {},
             has_execution=self.execution is not None,
             container=self.container.catalog_item() if self.container else None,
@@ -452,6 +459,8 @@ class PluginRegistration:
         self.capability_handlers: dict[str, CapabilityHandler] = {}
         self.capabilities: dict[str, CapabilityDefinition] = {}
         self.runtime_provider_factories: dict[str, RuntimeProviderFactory] = {}
+        self.runtime_provider_model_resolvers: set[str] = set()
+        self.runtime_provider_context_stores: set[str] = set()
         self.background_job_providers: dict[str, Any] = {}
         self.state_schemas: dict[str, StateSchema] = {}
         self.assets: dict[str, PluginAsset] = {}
@@ -488,11 +497,15 @@ class PluginRegistration:
         self._add(self.capability_handlers, kind, handler, "capability handler")
 
     def register_capability(self, definition: CapabilityDefinition, handler: CapabilityHandler) -> None:
+        if not isinstance(definition.read_only, bool):
+            raise ValueError("capability read_only must be a boolean")
         self._add(self.capabilities, definition.kind, definition, "capability")
         self.register_capability_handler(definition.kind, handler)
 
     def register_runtime_provider(
-        self, provider_id: str, factory: RuntimeProviderFactory
+        self, provider_id: str, factory: RuntimeProviderFactory,
+        *, needs_model_connection_resolver: bool = False,
+        needs_context_store: bool = False,
     ) -> None:
         self._add(
             self.runtime_provider_factories,
@@ -500,6 +513,10 @@ class PluginRegistration:
             factory,
             "runtime provider",
         )
+        if needs_model_connection_resolver:
+            self.runtime_provider_model_resolvers.add(provider_id)
+        if needs_context_store:
+            self.runtime_provider_context_stores.add(provider_id)
 
     def register_state_schema(self, schema: StateSchema) -> None:
         self._add(self.state_schemas, schema.id, schema, "state schema")
@@ -536,6 +553,8 @@ class PluginRegistry:
         self._capability_handlers: dict[str, CapabilityHandler] = {}
         self._capabilities: dict[str, CapabilityDefinition] = {}
         self._runtime_provider_factories: dict[str, RuntimeProviderFactory] = {}
+        self._runtime_provider_model_resolvers: set[str] = set()
+        self._runtime_provider_context_stores: set[str] = set()
         self._background_job_providers: dict[str, Any] = {}
         self._state_schemas: dict[str, StateSchema] = {}
         self._owners: dict[tuple[str, str], str] = {}
@@ -615,6 +634,8 @@ class PluginRegistry:
             self._runtime_provider_factories,
             staged.runtime_provider_factories,
         )
+        self._runtime_provider_model_resolvers.update(staged.runtime_provider_model_resolvers)
+        self._runtime_provider_context_stores.update(staged.runtime_provider_context_stores)
         self._commit_owned(
             "state_schema", descriptor.id, self._state_schemas, staged.state_schemas
         )
@@ -733,6 +754,28 @@ class PluginRegistry:
         for definition in staged.nodes.values():
             validate_tutorials(definition.tutorials)
             definition.resolved_presentation()
+            if definition.default_equipment:
+                if not all(isinstance(item, DefaultEquipment) for item in definition.default_equipment):
+                    raise TypeError("Default equipment entries must be DefaultEquipment declarations")
+                if "core.agent" not in definition.traits:
+                    raise ValueError("Default equipment requires an Agent owner")
+                if len(definition.default_equipment) > 16 or len({item.key for item in definition.default_equipment}) != len(definition.default_equipment):
+                    raise ValueError("Default equipment requires at most 16 unique slots")
+                for item in definition.default_equipment:
+                    target = staged.nodes.get(item.type)
+                    relationship = staged.relationships.get(item.relationship)
+                    if target is None or relationship is None:
+                        raise ValueError("Default equipment types and relationships must belong to the declaring plugin")
+                    if (target.document is None or target.document.initial_value is None or target.state is not None
+                        or target.lifecycle or target.execution or target.template_handler or target.resource_actions
+                        or target.default_equipment or "core.agent" in target.traits):
+                        raise ValueError("Default equipment supports inert document resources only")
+                    def matches(source, dest):
+                        return ((not relationship.source_types or source.id in relationship.source_types)
+                            and (not relationship.target_types or dest.id in relationship.target_types)
+                            and relationship.source_traits <= source.traits and relationship.target_traits <= dest.traits)
+                    if relationship.generated or not (matches(definition, target) or matches(target, definition)):
+                        raise ValueError("Default equipment relationship cannot connect its owner and target")
             if definition.card_face is not None:
                 face = CardFaceSpec.model_validate(definition.card_face)
                 if face.image_asset is not None:
@@ -994,6 +1037,8 @@ class PluginRegistry:
         self,
         provider_id: str,
         capability_provider: AgentCapabilityProvider,
+        model_connection_resolver: "ModelConnectionResolver | None" = None,
+        managed_context_store: Any = None,
         **options: Any,
     ) -> RuntimeProvider:
         self._assert_enabled("runtime_provider", provider_id)
@@ -1003,6 +1048,14 @@ class PluginRegistry:
             raise ValueError(
                 f"runtime provider {provider_id!r} is not registered"
             ) from exc
+        if provider_id in self._runtime_provider_model_resolvers:
+            if model_connection_resolver is None:
+                raise RuntimeError(f"runtime provider {provider_id!r} requires OAW model connections")
+            options["model_connection_resolver"] = model_connection_resolver
+        if provider_id in self._runtime_provider_context_stores:
+            if managed_context_store is None:
+                raise RuntimeError(f"runtime provider {provider_id!r} requires OAW managed context")
+            options["context_store"] = managed_context_store
         provider = factory(capability_provider, **options)
         from backend.agents import RuntimeProvider
 

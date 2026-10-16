@@ -12,6 +12,7 @@ from backend.plugins.presets import LegionPresetDefinition, PresetNode, PresetEd
 from backend.plugins.summoning import NodeSummoningDefinition, SummoningAction, SummoningPolicy
 from backend.plugins.documents import NodeDocumentAction, NodeDocumentDefinition, NodeDocumentDownload
 from backend.plugins.documents import NodeDocumentTransformation
+from backend.plugins.equipment import DefaultEquipment
 from backend.plugins.deployment import DeploymentSurface, NodeDeploymentDefinition
 from backend.plugins.resources import NodeResourceAction, NodeResourceContext
 from backend.plugins.data_sources import DataQuery, NodeDataConsumer, NodeDataSource
@@ -34,10 +35,11 @@ from backend.agents import (
     AgentRuntimeError,
     AgentStateError,
     AgentStatus,
+    ModelConnectionResolver,
     RuntimeProvider,
+    RuntimeModelConnection,
     ScopedToolDefinition,
     ToolParameter,
-    RuntimeModelConnection,
 )
 from backend.capabilities import Capability
 from backend.errors import (
@@ -92,10 +94,10 @@ from backend.world.models import Card, CardCreate, CardPatch, Edge
 
 __all__ = [
     "BackgroundJobProvider", "BackgroundJobContext", "JobObservation", "SubmissionUncertainError",
-    "RuntimeModelConnection",
     "DataQuery", "NodeDataConsumer", "NodeDataSource",
     "ExecutionEdge", "ExecutionNode", "ExecutionSnapshot", "NodeExecutionSource",
     "TutorialDefinition", "TutorialStep",
+    "DefaultEquipment",
     "PluginStateSpec", "ScopedStateSpec", "StatelessStateSpec", "CardStateStore",
     "DelegationRequest", "DelegationWait", "DelegationStop",
     "DeploymentSurface", "NodeDeploymentDefinition",
@@ -133,6 +135,7 @@ __all__ = [
     "AgentRuntimeError",
     "AgentStateError",
     "AgentStatus",
+    "ModelConnectionResolver",
     "Capability",
     "CapabilityContext",
     "CapabilityGrantDefinition",
@@ -176,6 +179,7 @@ __all__ = [
     "ResourceValidationError",
     "RevisionConflictError",
     "RuntimeProvider",
+    "RuntimeModelConnection",
     "RuntimeProviderFactory",
     "RuntimeInput",
     "RuntimeUnavailableError",

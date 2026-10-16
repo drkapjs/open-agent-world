@@ -1,5 +1,6 @@
 import type { ConversationMessage, ConversationRunSummary } from '../types/world';
 import { withoutFinalReply, type RunActivityItem, type RunActivityState } from './runActivity';
+import { compareTimestamp } from './activityTiming';
 
 type MessageEntry = { kind: 'message'; id: string; timestamp: string; message: ConversationMessage };
 type ActivityEntry = { kind: 'activity'; id: string; timestamp: string; run: ConversationRunSummary; item: RunActivityItem };
@@ -10,14 +11,6 @@ export type ExecutionGroup = {
 export type TranscriptEntry = MessageEntry | ActivityEntry | ExecutionGroup;
 export type TranscriptWindow = { hasBefore?: boolean; hasAfter?: boolean };
 const isRunning = (run: ConversationRunSummary) => ['created', 'running', 'waiting'].includes(run.status);
-function compareTimestamp(a: string, b: string): number {
-  const milliseconds = (Date.parse(a) || 0) - (Date.parse(b) || 0);
-  if (milliseconds) return milliseconds;
-  // Backend records carry microseconds. Date.parse alone can move narration
-  // in front of a tool that started earlier within the same millisecond.
-  const fraction = (value: string) => (value.match(/\.(\d+)(?:Z|[+-]\d\d:\d\d)$/)?.[1] ?? '').padEnd(6, '0');
-  return fraction(a).localeCompare(fraction(b));
-}
 
 /** One projection for live and restored history. Groups are presentation only:
  * adjacent tool calls in the same Run, separated by every message/other actor.
@@ -42,8 +35,7 @@ export function conversationTranscript(messages: ConversationMessage[], runs: Co
       const time = Date.parse(timestamp) || 0;
       // Run summaries cover whole Runs, whereas the message window is paged.
       if ((window.hasBefore && time < first) || (window.hasAfter && time > last)) continue;
-      const id = item.type.startsWith('tool_') && item.call_id ? `call:${item.call_id}` : item.id;
-      entries.push({ kind: 'activity', id: `${run.run_id}:${id}`, timestamp, run, item });
+      entries.push({ kind: 'activity', id: `${run.run_id}:${item.id}`, timestamp, run, item });
     }
   }
   entries.sort((a, b) => {

@@ -15,20 +15,32 @@ const event = (id: string, type: string, second: number, payload: Record<string,
 });
 
 describe('conversation arrival order', () => {
+  it('keeps distinct execution segments when specialists reuse a provider call ID', () => {
+    const activity = mergeRunActivity(undefined, run, [
+      event('builder', 'tool_started', 3, { name: 'read', call_id: 'same', role: 'builder' }),
+      event('handoff', 'agent_progress', 2, { kind: 'status', text: 'Build from the plan' }),
+      event('planner', 'tool_started', 1, { name: 'read', call_id: 'same', role: 'planner' }),
+    ]);
+    const entries = conversationTranscript([], [run], new Map([[run.run_id, activity]]));
+    const groups = entries.filter(entry => entry.kind === 'execution');
+    expect(groups).toHaveLength(2);
+    expect(new Set(groups.map(group => group.id)).size).toBe(2);
+    expect(groups.map(group => group.items[0].role)).toEqual(['planner', 'builder']);
+  });
   it('interleaves followups with individual activity and keeps a streaming bubble at its first position', () => {
     const events = [event('reply', 'agent_message', 2, { text: 'Checking', provider_message_id: 'reply' }),
       event('b', 'tool_started', 3, { name: 'b', call_id: 'b' })];
     const initial = mergeRunActivity(undefined, run, [...events].reverse());
     const messages = [message('first', 0, 1), message('followup', 4, 2)];
     const before = conversationTranscript(messages, [run], new Map([[run.run_id, initial]]));
-    expect(before.map(item => item.id)).toEqual(['first', 'run:reply', 'run:call:b', 'followup']);
+    expect(before.map(item => item.id)).toEqual(['first', 'run:reply', 'run:b', 'followup']);
     const updated = mergeRunActivity(initial, run, [
       event('c', 'tool_started', 6, { name: 'c', call_id: 'c' }),
       event('updated', 'agent_message', 5, { text: 'Checking resources', provider_message_id: 'reply' }),
       event('b-done', 'tool_completed', 5, { name: 'b', call_id: 'b', response: 'done' }),
     ]);
     expect(conversationTranscript(messages, [run], new Map([[run.run_id, updated]])).map(item => item.id))
-      .toEqual(['first', 'run:reply', 'run:call:b', 'followup', 'run:call:c']);
+      .toEqual(['first', 'run:reply', 'run:b', 'followup', 'run:c']);
   });
 
   it('reconciles REST and websocket by message identity and retains the order on reload', () => {
@@ -55,8 +67,8 @@ describe('conversation arrival order', () => {
     const messages = [message('user', 0, 1)];
     const live = conversationTranscript(messages, [run], new Map([[run.run_id, active]]));
     expect(live.map(entry => entry.kind)).toEqual(['message', 'execution', 'activity', 'execution']);
-    expect(live[1]).toMatchObject({ id: 'run:call:a', expanded: false, items: [{ id: 'a' }, { id: 'b' }] });
-    expect(live[3]).toMatchObject({ id: 'run:call:c', expanded: true });
+    expect(live[1]).toMatchObject({ id: 'run:a', expanded: false, items: [{ id: 'a' }, { id: 'b' }] });
+    expect(live[3]).toMatchObject({ id: 'run:c', expanded: true });
     const terminal = { ...run, status: 'succeeded', tool_trace: trace.map(item => ({ ...item.payload,
       id: item.id, timestamp: item.timestamp, type: item.type })) };
     const restored = mergeRunActivity(undefined, terminal, []);
@@ -101,7 +113,7 @@ describe('conversation arrival order', () => {
     const before = conversationTranscript([reply], [run], new Map([['run', early]]));
     const repaired = mergeRunActivity(early, run, [start]);
     const after = conversationTranscript([reply], [run], new Map([['run', repaired]]));
-    expect(before.map(entry => entry.id)).toEqual(['reply', 'run:call:c']);
-    expect(after.map(entry => entry.id)).toEqual(['run:call:c', 'reply']);
+    expect(before.map(entry => entry.id)).toEqual(['reply', 'run:done']);
+    expect(after.map(entry => entry.id)).toEqual(['run:done', 'reply']);
   });
 });

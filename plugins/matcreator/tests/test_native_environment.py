@@ -180,7 +180,7 @@ print(json.dumps({'value': private_probe.value, 'paths': sys.path}))
 async def test_missing_runtime_never_falls_back_to_host_or_installs_during_run(installer, monkeypatch):
     _, calls, _ = installer
     provider = SimpleNamespace(
-        resolve_model=lambda _: RuntimeModelConnection("test", "openai", "http://127.0.0.1", "secret"),
+        resolve_model=lambda _: RuntimeModelConnection("openai", "test", "http://127.0.0.1", "secret"),
         runtime_state_directory=lambda _: environment.environment_root().parent / "state",
     )
     runtime = MatCreatorRuntime(provider)
@@ -213,7 +213,7 @@ print(json.dumps({'type': 'completed', 'text': '\\u4f60\\u597d'}, ensure_ascii=F
     monkeypatch.setattr(runtime_module, "__file__", str(tmp_path / "native_runtime.py"))
     monkeypatch.setattr(runtime_module, "read_environment", lambda: (sys.executable, tmp_path / "managed"))
     provider = SimpleNamespace(
-        resolve_model=lambda _: RuntimeModelConnection("test", "openai", "http://127.0.0.1", "secret"),
+        resolve_model=lambda _: RuntimeModelConnection("openai", "test", "http://127.0.0.1", "secret"),
         runtime_state_directory=lambda _: tmp_path / "state",
     )
     runtime = MatCreatorRuntime(provider)

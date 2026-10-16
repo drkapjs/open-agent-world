@@ -8,6 +8,8 @@ import { elapsedMilliseconds, executionElapsed, toolElapsed } from '../state/act
 import { MarkdownMessage } from "./MarkdownMessage";
 import { hasToolData, ToolData } from './ToolData';
 import { toolPresentation } from '../state/toolPresentation';
+import { ReasoningActivity } from './RunReasoning';
+import { useInvocationDetail } from '../state/useInvocationDetail';
 
 function Duration({ milliseconds }: { milliseconds?: number }) {
   if (milliseconds === undefined) return null;
@@ -28,26 +30,31 @@ function useActivityClock(active: boolean) {
   return now;
 }
 
-const ToolActivity = memo(function ToolActivity({ item, active, now, open, onOpen }: {
-  item: RunActivityItem; active: boolean; now: number; open: boolean; onOpen: (id: string, open: boolean) => void;
+export const ToolActivity = memo(function ToolActivity({ item, active, now, open, onOpen, runId }: {
+  item: RunActivityItem; active: boolean; now?: number; open: boolean; onOpen: (id: string, open: boolean) => void; runId?: string;
 }) {
   useLocale();
-  const failed = toolFailed(item);
+  const detail = useInvocationDetail(runId, 'tools', item.archive_id, open, active);
+  const row = detail.row;
+  const observed = { ...item, arguments: row?.effective_arguments ?? row?.arguments ?? item.arguments,
+    response: row?.response ?? item.response, error: row?.error ?? item.error };
+  const failed = row?.state === 'failed' || row?.state === 'interrupted' || toolFailed(observed);
   const completed = item.type === "tool_completed";
   const pending = !completed && active;
   const status = failed ? t("Failed") : completed ? t("Completed") : pending ? t("Running") : t("Stopped");
   const Icon = failed ? CircleAlert : completed ? Check : pending ? LoaderCircle : Square;
-  const response = item.response;
-  const presentation = toolPresentation(item);
+  const clock = useActivityClock(now === undefined && pending);
+  const response = observed.response;
+  const presentation = toolPresentation(observed);
   const hasInput = hasToolData(presentation.input);
   const hasOutput = hasToolData(response);
-  const hasError = hasToolData(item.error);
-  const hasDetails = hasInput || hasOutput || hasError;
+  const hasError = hasToolData(observed.error);
+  const hasDetails = hasInput || hasOutput || hasError || Boolean(item.archive_id);
   const className = `run-tool${failed ? ' is-error' : ''}`;
   const heading = <>
       <Icon size={12} className={pending ? "run-activity-spinner" : undefined} aria-label={status} />
       <span className="run-tool-name" title={presentation.name}>{presentation.name}</span>
-      <Duration milliseconds={toolElapsed(item, active, now)} />
+      <Duration milliseconds={toolElapsed(item, active, now ?? clock)} />
       {hasDetails && <ChevronRight size={12} className="run-tool-chevron" aria-hidden="true" />}
     </>;
   if (!hasDetails) return <div className={className} data-activity-id={item.id}>
@@ -59,13 +66,17 @@ const ToolActivity = memo(function ToolActivity({ item, active, now, open, onOpe
     {open ? <div className="run-tool-details">
       {hasInput && <section aria-label={t('Input')}><span>{t('Input')}</span><ToolData value={presentation.input} /></section>}
       {hasOutput && <section aria-label={t('Output')}><span>{t('Output')}</span><ToolData value={response} /></section>}
-      {hasError && <section aria-label={t('Error')}><span>{t('Error')}</span><ToolData value={item.error} /></section>}
-      {item.truncated ? <small>{t("Details truncated")}</small> : null}
+      {hasError && <section aria-label={t('Error')}><span>{t('Error')}</span><ToolData value={observed.error} /></section>}
+      {(row ? row.truncated || row.response_complete === false : item.truncated) ? <small>{t("Details incomplete")}</small> : null}
+      {detail.error ? <p role="alert">{detail.error} <button onClick={detail.retry}>{t("Retry")}</button></p> : null}
     </div> : null}
   </details>;
 });
 
-export const RunActivityText = memo(function RunActivityText({ item }: { item: RunActivityItem }) {
+export const RunActivityText = memo(function RunActivityText({ item, runId, active = false }: {
+  item: RunActivityItem; runId?: string; active?: boolean;
+}) {
+  if (item.kind === 'model_reasoning') return <ReasoningActivity item={item} runId={runId} active={active} />;
   return <div className={item.type === "agent_progress" ? "run-activity-progress" : "run-activity-text"}>
     {item.type === "agent_message" ? <MarkdownMessage content={item.text ?? ""} /> : <p>{item.text}</p>}
   </div>;
@@ -149,7 +160,7 @@ export function ConversationExecution({ group, agentName, history = false }: { g
           setAway(!follow.current);
         }}>
         {group.truncated && <small className="run-activity-note">{t('Earlier activity is no longer in this live view')}</small>}
-        {group.items.map(item => <ToolActivity key={item.id} item={item} active={group.running} now={now}
+        {group.items.map(item => <ToolActivity key={item.id} item={item} active={group.running} now={now} runId={group.run.run_id}
           open={openedTools.has(item.id)} onOpen={(id, expanded) => setOpenedTools(previous => {
             if (previous.has(id) === expanded) return previous;
             const next = new Set(previous);
