@@ -310,10 +310,6 @@ export function ExecutionGraphView({ api }: { api?: ExecutionSourceHost }) {
 
   return <section className="execution-graph nodrag nopan nowheel" aria-label={t('Execution graph')} data-narrow={narrow}
     style={{ '--graph-label-x': labelX + 'px' } as CSSProperties}>
-    <header className="execution-graph-heading"><strong><GitBranch size={16} />{t('Project history')}</strong>
-      <span className="execution-phase" role="status" data-phase={value?.phase}>{['running', 'waiting'].includes(value?.phase ?? '') ? t(value!.phase) : ''}</span>
-    </header>
-    {value?.title && <p className="execution-project-title" title={value.title}>{value.title}</p>}
     {sources.length > 1 && <select className="execution-graph-source" aria-label={t('Execution source')} value={sources.some(item => item.id === source) ? source : ''} onChange={event => setSource(event.target.value)}>
       <option value="">{t('All connected agents')}</option>
       {sources.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
