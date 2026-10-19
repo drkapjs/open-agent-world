@@ -166,6 +166,11 @@ def operate(root: Path, relative: str, operation: str, *, read_only=False, data=
 
 def _operate(root: Path, relative: str, operation: str, *, read_only=False, data=None, overwrite=False, allow_hardlink=False, runtime_pinned_root=None, create_parents=False, cursor='', query='', edits=None):
     target = root.joinpath(*parts(relative))
+    if operation == 'desktop_location':
+        directory = stat.S_ISDIR(target.lstat().st_mode)
+        with pinned(target, directory=directory, allow_hardlink=allow_hardlink,
+                    runtime_pinned_root=runtime_pinned_root):
+            return {'path': str(target if directory else target.parent)}
     if operation in {"write", "mkdir", "edit"} and read_only:
         raise SandboxSecurityError("This root is read-only")
     if operation not in {"list", "preview", "download", "write", "mkdir", "edit"}:

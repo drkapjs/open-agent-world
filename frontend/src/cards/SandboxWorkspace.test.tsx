@@ -62,6 +62,23 @@ describe("Sandbox workspace interaction", () => {
   });
   afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
+  it('opens files and folders in the system file manager and reports failures', async () => {
+    const { container } = render(<Workspace />);
+    const file = await screen.findByRole('button', { name: 'first.txt' });
+    expect(container.querySelector('.sandbox-files-footer')).toBeNull();
+    vi.mocked(worldApi.sandboxWorkspace).mockResolvedValue({ opened: true });
+    fireEvent.contextMenu(file);
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Open in system folder' }));
+    await waitFor(() => expect(worldApi.sandboxWorkspace).toHaveBeenCalledWith(card.id, 'files/open-folder', { root: 'workspace', path: 'first.txt' }));
+    fireEvent.contextMenu(screen.getByRole('button', { name: 'Workspace' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Open in system folder' }));
+    await waitFor(() => expect(worldApi.sandboxWorkspace).toHaveBeenCalledWith(card.id, 'files/open-folder', { root: 'workspace', path: '' }));
+    vi.mocked(worldApi.sandboxWorkspace).mockRejectedValue(new Error('Folder is unavailable'));
+    fireEvent.contextMenu(file);
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Open in system folder' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('Folder is unavailable');
+  });
+
   it('reveals its detached file preview on a direct file selection', async () => {
     const activate = vi.fn(() => true);
     render(<WorkspaceNavigationContext.Provider value={{ activate }}><Workspace /></WorkspaceNavigationContext.Provider>);

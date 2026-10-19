@@ -440,12 +440,6 @@ export function ExecutionGraphView({ api }: { api?: ExecutionSourceHost }) {
           </div>;
         })}
       </div>}
-      {!!graph.rows.length && <footer className="execution-graph-legend">
-        <span><i data-kind="actor" />{t('Agent color')}</span>
-        {graph.tracks.some(track => track.kind === 'workstream') && <span title={t('Same workstream, not a dependency')}><i data-kind="workstream" />{t('Workstream')}</span>}
-        {index.edges.length > 0 && <span><i />{t('Recorded relation')}</span>}
-        {!!graph.references.size && <span>↗ {t('Folded connection')}</span>}
-      </footer>}
     </div>
     {newCount > 0 && <button className="execution-new-activity" onClick={() => {
       pendingNavigation.current = graph.rows.at(-1)?.id; setSelected(graph.rows.at(-1)?.id); setNewCount(0);

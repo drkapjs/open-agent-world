@@ -445,6 +445,33 @@ async def sandbox_files(sandbox_id: str, operation: str = "roots", root: str = "
     return result
 
 
+class OpenSandboxFolderRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    root: str = Field(default='workspace', max_length=512)
+    path: str = Field(default='', max_length=4096)
+
+
+@router.post('/sandboxes/{sandbox_id}/files/open-folder')
+async def open_sandbox_folder(sandbox_id: str, body: OpenSandboxFolderRequest, request: Request, services=Depends(get_services)):
+    import asyncio
+    from backend.api.desktop import _require_local_desktop
+    from backend.desktop_folders import open_folder
+    _require_local_desktop(request)
+    async with services._node_mutation(read_only=True):
+        services._require_card_type(sandbox_id, 'sandbox')
+        try:
+            location = await services._require_sandbox_backend().file_operation(
+                sandbox_id, 'desktop_location', root=body.root, path=body.path)
+            await asyncio.to_thread(open_folder, location['path'])
+        except FileNotFoundError as exc:
+            raise SandboxValidationError('The file or folder no longer exists. Refresh the file list and try again.') from exc
+        except PermissionError as exc:
+            raise SandboxValidationError('The system denied access to this folder. Check its permissions on this computer.') from exc
+        except OSError as exc:
+            raise SandboxValidationError('The system file manager could not open this folder. Check that it is available on this computer.') from exc
+    return {'opened': True}
+
+
 @router.post("/sandboxes/{sandbox_id}/files", status_code=201)
 async def upload_sandbox_file(sandbox_id: str, path: str, request: Request,
                               directory: bool = False, services=Depends(get_services)):
