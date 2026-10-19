@@ -61,6 +61,7 @@
   "Request cancellation of this external job? Its status changes only after provider confirmation.": ["Request cancellation of this external job? Its status changes only after provider confirmation.","请求取消此外部作业？只有提供方确认后，才会更新取消状态。"],
   "Resume monitoring": ["Resume monitoring","恢复监控"],
   "Search jobs": ["Search jobs","搜索作业"],
+  "Close job search": ["Close job search","关闭作业搜索"],
   "Show job details": ["Show job details","展开作业详情"],
   "Source run": ["Source run","来源 Run"],
   "Submitted": ["Submitted","已提交"],
