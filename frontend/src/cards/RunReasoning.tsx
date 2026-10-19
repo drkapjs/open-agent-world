@@ -1,4 +1,5 @@
 import { memo, useEffect, useState } from "react";
+import { ChevronRight } from "lucide-react";
 import { t, useLocale } from "../i18n";
 import type { SavedModelThinking } from "../types/world";
 import type { RunActivityItem } from "../state/runActivity";
@@ -20,12 +21,14 @@ function reasoningForDisplay(text: string, streaming?: boolean): string {
 
 export const ReasoningActivity = memo(function ReasoningActivity({ item, runId, active }: { item: RunActivityItem; active: boolean; runId?: string }) {
   useLocale();
-  const [open, setOpen] = useState(false);
+  const [choice, setChoice] = useState<boolean>();
+  const open = choice ?? (active && item.streaming === true);
   const [full, setFull] = useState<SavedModelThinking>();
   const [error, setError] = useState("");
   const [retry, setRetry] = useState(0);
+  const needsFull = open && (choice === true || !item.text || Boolean(item.truncated || item.preview_truncated));
   useEffect(() => {
-    if (!open || !runId || !item.provider_message_id) return;
+    if (!needsFull || !runId || !item.provider_message_id) return;
     let current = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     async function read() {
@@ -37,13 +40,14 @@ export const ReasoningActivity = memo(function ReasoningActivity({ item, runId, 
     }
     void read();
     return () => { current = false; clearTimeout(timer); };
-  }, [open, runId, item.provider_message_id, active, retry]);
+  }, [needsFull, runId, item.provider_message_id, active, retry]);
   const body = full && full.run_id === runId && full.provider_message_id === item.provider_message_id
     && (Date.parse(full.updated_at) >= Date.parse(item.updated_at ?? "") || full.text.startsWith(item.text ?? "")) ? full : undefined;
-  return <details className="run-model-reasoning" open={open}
-    onToggle={event => setOpen(event.currentTarget.open)}>
-    <summary>{t("Model thinking")}{item.role ? ` · ${item.role.replaceAll("_", " ")}` : ""}{item.model_request ? ` #${item.model_request}` : ""}{item.model_attempt ? ` · ${t("Model attempt")} ${item.model_attempt}` : ""}{item.streaming ? ` · ${t("Live")}` : item.interrupted ? ` · ${t("Incomplete preview")}` : ""}</summary>
+  return <details className="run-model-reasoning" data-activity-id={item.id} open={open}
+    onToggle={event => { if (event.target === event.currentTarget && event.currentTarget.open !== open) setChoice(event.currentTarget.open); }}>
+    <summary><span>{t("Model thinking")}{item.role ? ` · ${item.role.replaceAll("_", " ")}` : ""}{item.model_request ? ` #${item.model_request}` : ""}{item.model_attempt ? ` · ${t("Model attempt")} ${item.model_attempt}` : ""}{item.streaming ? ` · ${t("Live")}` : item.interrupted ? ` · ${t("Incomplete preview")}` : ""}</span><ChevronRight size={12} aria-hidden="true" /></summary>
     <pre>{body ? body.text : reasoningForDisplay(item.text ?? "", item.streaming)}</pre>
+    {open && !body && !item.text && !error && <p role="status">{t('Loading activity…')}</p>}
     {(body ? body.truncated : item.truncated || item.preview_truncated) ? <small>{t("Thinking text truncated")}</small> : null}
     {error ? <p role="alert">{error} <button onClick={() => setRetry(value => value + 1)}>{t("Retry")}</button></p> : null}
   </details>;

@@ -811,6 +811,12 @@ export const worldApi = {
   getRunReasoning(runId: string, offset = 0): Promise<{ items: import("../types/world").SavedModelThinking[]; next_offset: number | null }> {
     return request(`/runs/${encodeURIComponent(runId)}/reasoning?offset=${offset}&limit=50`);
   },
+  getRunActivity(runId: string, offset = 0, latest = false): Promise<{ items: import('../state/runActivity').RunActivityItem[]; total: number; incomplete?: boolean; next_offset: number | null }> {
+    return request(`/runs/${encodeURIComponent(runId)}/activity?offset=${offset}&limit=50&latest=${latest}`);
+  },
+  getRunActivityDetail(runId: string, identity: string): Promise<Partial<import('../types/world').SavedInvocation> & { text?: string }> {
+    return request(`/runs/${encodeURIComponent(runId)}/activity/${encodeURIComponent(identity)}`);
+  },
   getRunReasoningText(runId: string, identity: string): Promise<import("../types/world").SavedModelThinking> {
     return request(`/runs/${encodeURIComponent(runId)}/reasoning/${encodeURIComponent(identity)}`);
   },

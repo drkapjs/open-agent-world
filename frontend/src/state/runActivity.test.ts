@@ -1,7 +1,23 @@
 import { describe, expect, it } from "vitest";
 import type { RuntimeEvent } from "../types/world";
-import { mergeRunActivity, toolFailed, withSavedThinking, withSavedTools } from "./runActivity";
+import { mergeRunActivity, toolFailed, withSavedThinking, withSavedTools, withSavedActivity } from "./runActivity";
 import type { SavedModelThinking, SavedInvocation } from "../types/world";
+
+it('repairs directory rows by recorded event/provider identity without duplicating public progress or losing newer thinking', () => {
+  const live = { seen: [], truncated: false, items: [
+    { id: 'event', type: 'agent_progress' as const, provider_message_id: 'plan', conversation_message_id: 'message', text: 'Plan' },
+    { id: 'reasoning', type: 'agent_progress' as const, kind: 'model_reasoning', provider_message_id: 'thought',
+      text: 'New thinking', streaming: true, updated_at: '2026-10-19T00:00:03Z' },
+  ] };
+  const merged = withSavedActivity(live, [
+    { id: 'progress:plan', source_event_id: 'event', type: 'agent_progress', provider_message_id: 'plan', text: 'Plan' },
+    { id: 'thinking:thought', type: 'agent_progress', kind: 'model_reasoning', provider_message_id: 'thought',
+      streaming: true, updated_at: '2026-10-19T00:00:02Z' },
+  ]);
+  expect(merged.items).toHaveLength(2);
+  expect(merged.items[0].conversation_message_id).toBe('message');
+  expect(merged.items[1].text).toBe('New thinking');
+});
 
 it("merges native tool rows with live previews without duplication or reopening completed calls", () => {
   const row: SavedInvocation = { id: "archive", run_id: "r", role: "builder", call_id: "same", name: "execute",

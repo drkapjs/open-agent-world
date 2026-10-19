@@ -19,6 +19,8 @@ export interface RunActivityItem {
   conversation_message_id?: string;
   call_id?: string;
   archive_id?: string;
+  activity_id?: string;
+  source_event_id?: string;
   name?: string;
   tool_name?: string;
   capability_id?: string;
@@ -43,6 +45,18 @@ const MAX_ITEMS = 200;
 const MAX_SEEN = 1024;
 const empty: RunActivityState = { items: [], seen: [], truncated: false };
 const types = new Set(["agent_message", "agent_progress", "tool_started", "tool_completed"]);
+const progressKinds = new Set(['status', 'plan', 'reasoning_summary', 'model_reasoning', 'model_stream_retry', 'model_stream_interrupted']);
+
+/** Runtime ticks carry lifecycle/context data, not transcript content. The same
+ * rule applies to live events and restored metadata, before grouping or markup. */
+export function visibleActivity(item: RunActivityItem): boolean {
+  if (item.type === 'tool_started' || item.type === 'tool_completed') return true;
+  if (item.type === 'agent_progress') {
+    if (item.kind && !progressKinds.has(item.kind)) return false;
+    if (item.kind === 'model_reasoning' && item.provider_message_id) return true;
+  }
+  return Boolean(item.text?.trim());
+}
 const text = (value: unknown): string | undefined => typeof value === "string" ? value : undefined;
 const object = (value: unknown): Record<string, unknown> =>
   value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -105,8 +119,7 @@ export function mergeRunActivity(
     const callId = text(payload.call_id);
     let index = items.findIndex(item => item.id === event.id);
     if (type === "agent_message" || type === "agent_progress") {
-      if (type === "agent_progress" && payload.kind !== undefined &&
-        !["status", "plan", "reasoning_summary", "model_reasoning", "model_stream_retry", "model_stream_interrupted"].includes(String(payload.kind))) continue;
+      if (type === "agent_progress" && payload.kind !== undefined && !progressKinds.has(String(payload.kind))) continue;
       const content = text(payload.text);
       if (!content?.trim()) continue;
       if (providerId) index = items.findIndex(item => item.type === type && item.provider_message_id === providerId);
@@ -147,6 +160,7 @@ export function mergeRunActivity(
       ...(type === 'tool_completed' && event.timestamp ? { finished_at: existing?.finished_at ?? event.timestamp } : {}),
       name, call_id: callId,
       archive_id: text(payload.archive_id) ?? existing?.archive_id,
+      activity_id: text(payload.activity_id) ?? existing?.activity_id,
       ...(typeof payload.tool_name === 'string' ? { tool_name: payload.tool_name } : {}),
       ...(typeof payload.capability_id === 'string' ? { capability_id: payload.capability_id } : {}),
       ...(typeof payload.author === 'string' ? { author: payload.author } : {}),
@@ -198,6 +212,30 @@ export function toolFailed(item: RunActivityItem): boolean {
       (typeof exitCode === 'number' && exitCode !== 0) || ['failed', 'error'].includes(String(value.status));
   };
   return item.success === false || Boolean(item.error) || failed(response) || failed(result);
+}
+
+/** A bounded archive directory repairs missed live rows without discarding
+ * newer websocket text or moving calls when their result arrives. */
+export function withSavedActivity(activity: RunActivityState | undefined, rows: RunActivityItem[], limit = MAX_ITEMS): RunActivityState {
+  const state = activity ?? empty;
+  const items = state.items.filter(visibleActivity);
+  for (const row of rows) {
+    if (!visibleActivity(row)) continue;
+    const eventIndex = items.findIndex(item => item.id === row.id || item.id === row.source_event_id);
+    const index = eventIndex >= 0 ? eventIndex : row.kind === 'model_reasoning'
+      ? items.findIndex(item => item.kind === row.kind && item.provider_message_id === row.provider_message_id)
+      : row.type.startsWith('tool_') ? toolIndex(items, row)
+      : items.findIndex(item => item.type === row.type && (
+          item.provider_message_id === row.provider_message_id && Boolean(row.provider_message_id)
+          || item.activity_id === row.activity_id && Boolean(row.activity_id)));
+    const live = index >= 0 ? items[index] : undefined;
+    const newer = live && compareTimestamp(live.updated_at ?? live.timestamp ?? '', row.updated_at ?? row.timestamp ?? '') >= 0;
+    const merged = live ? { ...(newer ? row : live), ...(newer ? live : row), id: live.id,
+      text: live.text ?? row.text, timestamp: live.timestamp || row.timestamp } : row;
+    if (index < 0) items.push(merged); else items[index] = merged;
+  }
+  items.sort((a, b) => compareTimestamp(a.timestamp ?? '', b.timestamp ?? ''));
+  return { ...state, items: items.slice(-limit), truncated: state.truncated || items.length > limit };
 }
 
 /** Native archival identities keep SDK tools and old trace previews in one row. */

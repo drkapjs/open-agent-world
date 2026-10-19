@@ -225,6 +225,22 @@ async def get_run(
     return services._require_run_manager().get_run(run_id)
 
 
+@router.get("/runs/{run_id}/activity")
+async def run_activity(run_id: str, offset: int = Query(default=0, ge=0),
+                       limit: int = Query(default=50, ge=1, le=100), latest: bool = False,
+                       services=Depends(get_services)):
+    from backend.runs.history import RunActivityHistory
+    services._require_run_manager().get_run(run_id)
+    return RunActivityHistory(services.database, run_id).page(offset, limit, latest=latest)
+
+
+@router.get("/runs/{run_id}/activity/{identity:path}")
+async def run_activity_detail(run_id: str, identity: str, services=Depends(get_services)):
+    from backend.runs.history import RunActivityHistory
+    services._require_run_manager().get_run(run_id)
+    return RunActivityHistory(services.database, run_id).get(identity)
+
+
 @router.get("/runs/{run_id}/reasoning")
 async def run_reasoning(run_id: str, offset: int = Query(default=0, ge=0),
                         limit: int = Query(default=50, ge=1, le=100), services=Depends(get_services)):

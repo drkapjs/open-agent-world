@@ -93,6 +93,11 @@ The planner owns user communication in both normal and Flash modes. Execution
 orchestrators and recursive step executors return internal reports and artifact
 references to their caller. Their text remains in native checkpoints for review;
 only planner text becomes Conversation replies, while tool activity stays visible.
+Provider-exposed thinking from the planner, orchestrator and child executors is
+published as `model_reasoning` activity using native event/part identities. OAW
+owns its Run history and loads each full text on expansion. Native model calls
+are non-streaming: thinking appears when each model response arrives, before its
+tool calls, without becoming a Conversation reply.
 `to_planner` ends the execution stream after its tool response, before another
 executor model round. The planner then reviews the report and, when needed,
 presents a revised plan for confirmation. Internal executors cannot send

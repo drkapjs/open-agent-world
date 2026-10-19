@@ -137,7 +137,11 @@ class RunInvocationLogs:
     def _save(self, kind, identity, fields):
         scope = self.state.ensure_scope("run", self.run_id)
         # Merge only this identity, using StateStore's normal transaction/revision.
-        self.state.patch(scope, FIELDS[kind], {identity: fields}, run_id=self.run_id)
+        with self.state.database.transaction(immediate=True):
+            self.state.patch(scope, FIELDS[kind], {identity: fields}, run_id=self.run_id)
+            if kind == 'tools':
+                from .history import RunActivityHistory
+                RunActivityHistory(self.state.database, self.run_id).tool(fields)
         return fields
 
     def _settle(self, kind, identity, fields):
@@ -254,7 +258,8 @@ class RunInvocationLogs:
                 "next_offset": offset + limit if offset + limit < len(rows) else None}
 
     def get(self, kind, identity):
-        row = self.records(kind).get(identity)
+        from .history import stored_record
+        row = stored_record(self.state.database, self.run_id, FIELDS[kind], identity)
         if row is None:
             raise NotFoundError("No archived invocation for this Run")
         return row

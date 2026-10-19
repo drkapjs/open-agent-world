@@ -823,6 +823,9 @@ class RunManager:
                         )
                     published = await self._publish_provider_event(event, record)
                     event_kind = event.type.value
+                    from .history import RunActivityHistory
+                    RunActivityHistory(self.state.database, record.run_id).public(
+                        event_kind, published.payload, published.id, published.timestamp.isoformat())
                     text = event.payload.get("text")
                     if event_kind == "agent_message" and isinstance(text, str):
                         # Conversation owns message persistence; Run output keeps
@@ -1208,6 +1211,9 @@ class RunManager:
         payload = (public_tool_payload(event.payload)
                    if event.type.value in {"tool_started", "tool_completed"}
                    else dict(event.payload))
+        if event.type.value in {'tool_started', 'tool_completed'} and not payload.get('archive_id') and payload.get('call_id'):
+            from .history import public_tool_identity
+            payload['activity_id'] = public_tool_identity(payload, '')
         if event.type.value == 'tool_completed' and payload.get('call_id'):
             # Carry the original tool identity into the result checkpoint too.
             # Match only explicit call IDs; concurrent wrapper calls share names.

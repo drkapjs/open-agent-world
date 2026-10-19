@@ -210,8 +210,9 @@ the final response is persisted. `is_final` only seals an individual streamed
 message; it does not identify the final response. Once that response is visible,
 the preceding process is collapsed as a single work log before the response.
 User messages, speaker changes, and other Runs remain chronological boundaries.
-Failed, incomplete, paged-out, or legacy Runs without this explicit relation
-retain their visible process instead of guessing a final reply.
+Paged-out final replies retain the visible process with older activity available
+on request. Failed/interrupted or legacy history without this explicit relation
+uses the recorded Run start and does not treat the last narration as a final reply.
 
 Tool activity retains separate start and completion timestamps when merging
 events, including completion-before-start repair from REST. Each tool displays
@@ -241,8 +242,37 @@ The bounded Run checkpoint (`tool_trace`, retained for API compatibility) stores
 the latest 50 tool/public-progress events, including `status`, `plan`, and
 `reasoning_summary`. `tool_trace_truncated` explicitly marks omitted earlier
 events. The display cache retains up to 200 merged rows. These are activity
-previews, not an unlimited execution archive; older checkpoints cannot restore
-events that were never persisted. Grouping does not create runtime phases or
+previews, independent of the durable `run_activity` directory. Every public
+tool call/visible progress event is retained there; native tools and provider-exposed
+thinking are indexed by their existing Run archive identities. Conversation
+timeline responses omit tool bodies. Opening **Work log** reads one metadata
+page (`GET /api/runs/{run_id}/activity`, default 50 rows), and **Load more activity**
+requests the next page. Only opening a specific tool/thinking row reads its body.
+Native invocation/thinking bodies are selected individually from Run state;
+public-only calls retain their sanitized payloads, including existing payload
+truncation markers. Body and directory writes for native records are atomic.
+
+Existing native archives and retained public checkpoints are indexed on first
+access without altering the original records. Older checkpoints cannot restore
+events that were never persisted; the directory reports incomplete coverage when
+the recorded call count exceeds available history. A successful final reply has
+a collapsed Work log before it even when the browser has no live activity cache.
+Messages and live activity are ordered first. At the recorded final reply,
+contiguous preceding narration is folded in place with the saved work log.
+Folding never re-sorts the timeline or crosses another actor's live activity.
+A paged-out final reply does not fold the visible process.
+Failed/interrupted Runs also retain a Work log. Active Runs repair their latest
+50 directory entries, including thinking, without fetching historical pages.
+Active Runs use the existing tool groups, with no additional Work log or refresh
+control. When the live cache omits earlier rows, the first tool group's disclosure
+offers paged loading into the same chronological transcript. Runtime ticks with
+no display text are excluded before paging and rendering, including old indexed
+ticks, so they neither create empty bubbles nor split adjacent tool calls.
+Streaming thinking opens automatically and respects manual collapse; completed
+thinking bodies in history load only on disclosure. Codex forwards the app-server's
+readable reasoning summaries, including section boundaries and final snapshots;
+it does not forward raw reasoning blocks. No content is invented when a provider
+does not expose thinking. Grouping does not create runtime phases or
 infer dependencies. Historical message windows retain their associated Run
 summaries and restrict activity to the visible time range.
 Each record has an immutable ID and a per-session increasing `sequence`.

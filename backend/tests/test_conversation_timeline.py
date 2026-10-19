@@ -161,7 +161,12 @@ async def test_public_activity_checkpoint_restores_boundaries_and_reports_trunca
         completion = summary.tool_trace[-2]
         assert completion['tool_name'] == 'read_file'
         assert completion['capability_id'] == 'operation:read_file'
-        assert completion['response'] == {'content': f'file-{count - 1}'}
+        assert 'response' not in completion and 'arguments' not in completion
+        from backend.runs.history import RunActivityHistory
+        archive = RunActivityHistory(services.database, summary.run_id)
+        assert archive.get(completion['activity_id'])['response'] == {'content': f'file-{count - 1}'}
+        assert archive.page(limit=100)['total'] == count * 2
+        assert not archive.page(limit=100)['incomplete']
         assert all(item.get('kind') != 'raw_reasoning' for item in summary.tool_trace)
         assert all(item['id'] and item['timestamp'] for item in summary.tool_trace)
         assert [item.content for item in page.items] == ['Start', 'Draft reply', 'Done']
@@ -171,6 +176,7 @@ async def test_public_activity_checkpoint_restores_boundaries_and_reports_trunca
     restored = create_services(settings)
     try:
         assert restored.conversations.page_messages(room.id, session.id).run_summaries[summary.run_id] == summary
+        assert RunActivityHistory(restored.database, summary.run_id).page(limit=100)['total'] == count * 2
     finally:
         restored.close()
 

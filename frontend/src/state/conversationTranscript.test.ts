@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { conversationTranscript } from './conversationTranscript';
-import { mergeRunActivity } from './runActivity';
+import { mergeRunActivity, withSavedActivity, type RunActivityItem } from './runActivity';
 import type { ConversationMessage, ConversationRunSummary, RuntimeEvent } from '../types/world';
 
 const time = (second: number) => `2026-10-13T00:00:0${second}Z`;
@@ -15,6 +15,103 @@ const event = (id: string, type: string, second: number, payload: Record<string,
 });
 
 describe('conversation arrival order', () => {
+  it('excludes empty/internal restored progress before grouping, while retaining lazy thinking metadata', () => {
+    const rows: RunActivityItem[] = [
+      { id: 'a', type: 'tool_completed', timestamp: time(1) },
+      { id: 'status', type: 'agent_progress', kind: 'status', timestamp: time(2) },
+      { id: 'space', type: 'agent_progress', text: ' \n\t', timestamp: time(2) },
+      { id: 'internal', type: 'agent_progress', kind: 'context_usage', text: 'usage', timestamp: time(2) },
+      { id: 'b', type: 'tool_completed', timestamp: time(3) },
+      { id: 'thinking', type: 'agent_progress', kind: 'model_reasoning', provider_message_id: 'p', timestamp: time(4) },
+    ];
+    const raw = { items: rows, seen: [], truncated: false };
+    const merged = withSavedActivity(raw, rows);
+    expect(merged.items.map(row => row.id)).toEqual(['a', 'b', 'thinking']);
+    // The projection also protects old in-memory states and paged archives.
+    for (const state of [raw, merged]) {
+      const entries = conversationTranscript([], [run], new Map([[run.run_id, state]]));
+      expect(entries.map(entry => entry.kind)).toEqual(['execution', 'activity']);
+      expect(entries[0]).toMatchObject({ items: [{ id: 'a' }, { id: 'b' }] });
+      expect(entries[1]).toMatchObject({ item: { id: 'thinking' } });
+    }
+  });
+
+  it('keeps narration before a user interruption inline while a final reply owns its contiguous work log', () => {
+    const before = { ...message('before', 1, 1), sender_kind: 'agent' as const, run_id: run.run_id };
+    const after = { ...message('after', 3, 3), sender_kind: 'agent' as const, run_id: run.run_id };
+    const final = { ...message('final', 4, 4), sender_kind: 'agent' as const, run_id: run.run_id };
+    const entries = conversationTranscript([before, message('followup', 2, 2), after, final],
+      [{ ...run, status: 'succeeded', final_message_id: 'final' }], new Map());
+    expect(entries.map(entry => entry.id)).toEqual(['before', 'followup', 'archive:run', 'final']);
+    expect(entries[2]).toMatchObject({ kind: 'archive', messages: [after], timestamp: after.created_at });
+  });
+
+  it('orders each archive before its recorded final reply when timestamps tie, independently of Run input order', () => {
+    const reply = (id: string, sequence: number, runId: string): ConversationMessage => ({
+      ...message(id, 4, sequence), sender_kind: 'agent', run_id: runId, is_final: true,
+    });
+    const messages = [message('user', 4, 1), reply('answer-a', 2, 'a'), message('followup', 4, 3),
+      reply('answer-b', 4, 'b'), reply('later-a', 5, 'a')];
+    const a = { ...run, run_id: 'a', status: 'succeeded', final_message_id: 'answer-a', finished_at: time(6) };
+    const b = { ...a, run_id: 'b', final_message_id: 'answer-b' };
+    for (const runs of [[a, b], [b, a]]) {
+      const streamed = { items: [{ id: 'streamed-final', type: 'agent_message' as const, text: 'answer-a', timestamp: time(4) }], seen: [], truncated: false };
+      for (const cache of [new Map(), new Map([['a', streamed]])]) {
+        const entries = conversationTranscript(messages, runs, cache);
+        expect(entries.map(entry => entry.id)).toEqual(['user', 'archive:a', 'answer-a', 'followup', 'archive:b', 'answer-b', 'later-a']);
+        expect(entries[1]).toMatchObject({ messages: [] });
+      }
+    }
+  });
+
+  it('keeps another Run\'s live activity between narration and the final reply when folding', () => {
+    const other = { ...run, run_id: 'other', agent_id: 'other-agent' };
+    const live = { items: [{ id: 'other-tool', type: 'tool_started' as const, timestamp: time(2), name: 'read' }], seen: [], truncated: false };
+    const intro = { ...message('intro', 1, 1), sender_kind: 'agent' as const, run_id: run.run_id };
+    const final = { ...intro, ...message('final', 3, 2), sender_kind: 'agent' as const };
+    const entries = conversationTranscript([intro, final], [{ ...run, status: 'succeeded', final_message_id: 'final' }, other],
+      new Map([['other', live]]));
+    expect(entries.map(entry => entry.id)).toEqual(['intro', 'other:other-tool', 'archive:run', 'final']);
+    expect(entries[2]).toMatchObject({ messages: [] });
+  });
+
+  it('folds separate replies from the same Agent independently without changing the message sequence', () => {
+    const reply = (id: string, sequence: number, runId: string): ConversationMessage => ({
+      ...message(id, 4, sequence), sender_kind: 'agent', run_id: runId,
+    });
+    const messages = [reply('intro-a', 1, 'a'), reply('answer-a', 2, 'a'), reply('intro-b', 3, 'b'), reply('answer-b', 4, 'b')];
+    const runs = ['a', 'b'].map(id => ({ ...run, run_id: id, status: 'succeeded', final_message_id: `answer-${id}` }));
+    const entries = conversationTranscript(messages, runs, new Map());
+    expect(entries.map(entry => entry.id)).toEqual(['archive:a', 'answer-a', 'archive:b', 'answer-b']);
+    expect(entries[0]).toMatchObject({ messages: [messages[0]] });
+    expect(entries[2]).toMatchObject({ messages: [messages[2]] });
+  });
+
+  it('retains visible process when the recorded final reply is on another page or belongs to another Run', () => {
+    const activity = mergeRunActivity(undefined, run, [event('tool', 'tool_completed', 3, { name: 'read', call_id: 'read' })]);
+    const narration = { ...message('narration', 2, 2), sender_kind: 'agent' as const, run_id: run.run_id };
+    const terminal = { ...run, status: 'succeeded', final_message_id: 'final', finished_at: time(6) };
+    const cache = new Map([[run.run_id, activity]]);
+    expect(conversationTranscript([narration, message('followup', 4, 3)], [terminal], cache, { hasBefore: true, hasAfter: true })
+      .map(entry => entry.id)).toEqual(['narration', 'run:tool', 'followup']);
+    const foreign = { ...message('final', 5, 4), sender_kind: 'agent' as const, run_id: 'another-run' };
+    expect(conversationTranscript([narration, foreign], [terminal], cache).map(entry => entry.id))
+      .toEqual(['narration', 'run:tool', 'final']);
+  });
+
+  it('places legacy and interrupted history at its recorded start without treating the last narration as a final reply', () => {
+    const narration = { ...message('narration', 2, 2), sender_kind: 'agent' as const, run_id: run.run_id };
+    for (const status of ['succeeded', 'failed', 'interrupted']) {
+      const terminal = { ...run, status, finished_at: time(6) };
+      const entries = conversationTranscript([message('user', 0, 1), narration], [terminal], new Map());
+      expect(entries.map(entry => entry.id)).toEqual(['user', 'archive:run', 'narration']);
+      expect(entries[1]).toMatchObject({ timestamp: run.started_at, messages: [] });
+    }
+    const activity = mergeRunActivity(undefined, run, [event('tool', 'tool_completed', 3, { name: 'read' })]);
+    expect(conversationTranscript([narration, message('followup', 4, 3)], [{ ...run, status: 'succeeded' }],
+      new Map([[run.run_id, activity]]), { hasBefore: true }).map(entry => entry.id))
+      .toEqual(['narration', 'run:tool', 'followup']);
+  });
   it('keeps distinct execution segments when specialists reuse a provider call ID', () => {
     const activity = mergeRunActivity(undefined, run, [
       event('builder', 'tool_started', 3, { name: 'read', call_id: 'same', role: 'builder' }),
@@ -69,13 +166,14 @@ describe('conversation arrival order', () => {
     expect(live.map(entry => entry.kind)).toEqual(['message', 'execution', 'activity', 'execution']);
     expect(live[1]).toMatchObject({ id: 'run:a', expanded: false, items: [{ id: 'a' }, { id: 'b' }] });
     expect(live[3]).toMatchObject({ id: 'run:c', expanded: true });
-    const terminal = { ...run, status: 'succeeded', tool_trace: trace.map(item => ({ ...item.payload,
+    const terminal = { ...run, status: 'succeeded', final_message_id: 'answer', tool_trace: trace.map(item => ({ ...item.payload,
       id: item.id, timestamp: item.timestamp, type: item.type })) };
     const restored = mergeRunActivity(undefined, terminal, []);
     const final = { ...message('answer', 7, 2), sender_kind: 'agent' as const, run_id: run.run_id };
     const ended = conversationTranscript([...messages, final], [terminal], new Map([[run.run_id, restored]]));
-    expect(ended.map(entry => entry.id)).toEqual([...live.map(entry => entry.id), 'answer']);
-    expect(ended.filter(entry => entry.kind === 'execution').every(entry => !entry.expanded)).toBe(true);
+    expect(ended.map(entry => entry.id)).toEqual(['user', 'archive:run', 'answer']);
+    expect(conversationTranscript([...messages, final], [terminal], new Map()).map(entry => entry.id))
+      .toEqual(['user', 'archive:run', 'answer']);
   });
 
   it('splits for user followups and other Runs without hiding unfinished calls', () => {
@@ -102,7 +200,7 @@ describe('conversation arrival order', () => {
     const entries = conversationTranscript([{ ...message('narration', 3, 1), sender_kind: 'agent' }], [run], new Map([['run', activity]]));
     expect(entries[0]).toMatchObject({ kind: 'execution', expanded: true });
     const stopped = conversationTranscript([], [{ ...run, status: 'succeeded' }], new Map([['run', activity]]));
-    expect(stopped[0]).toMatchObject({ kind: 'execution', expanded: false });
+    expect(stopped[0]).toMatchObject({ kind: 'archive', id: 'archive:run' });
   });
 
   it('retains microsecond order and tool identity when the checkpoint repairs a missing start', () => {

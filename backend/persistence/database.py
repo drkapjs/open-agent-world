@@ -188,6 +188,23 @@ CREATE INDEX IF NOT EXISTS runs_agent_idx ON runs (agent_id, created_at);
 CREATE INDEX IF NOT EXISTS runs_parent_idx ON runs (parent_run_id, created_at);
 CREATE INDEX IF NOT EXISTS runs_task_idx ON runs (task_id, created_at);
 
+-- A small, pageable directory of observable Run activity. Native invocation
+-- and thinking bodies remain in Run state; public-only events keep their
+-- sanitized body here so rotating the live preview never deletes history.
+CREATE TABLE IF NOT EXISTS run_activity (
+    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
+    identity TEXT NOT NULL,
+    timestamp TEXT NOT NULL,
+    metadata_json TEXT NOT NULL,
+    detail_json TEXT,
+    UNIQUE(run_id, identity)
+);
+CREATE INDEX IF NOT EXISTS run_activity_page_idx ON run_activity (run_id, timestamp, sequence);
+CREATE TABLE IF NOT EXISTS run_activity_imports (
+    run_id TEXT PRIMARY KEY REFERENCES runs(run_id) ON DELETE CASCADE
+);
+
 -- Durable execution receipts. Never store tool arguments or raw outputs here:
 -- the hashes identify a call for reconciliation, while resource-specific
 -- journals and document revisions remain authoritative for its effects.

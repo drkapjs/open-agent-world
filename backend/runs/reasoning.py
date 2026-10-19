@@ -52,7 +52,10 @@ class RunReasoning:
                "created_at": current.get("created_at", stamp), "updated_at": stamp,
                "revision": current.get("revision", 0) + 1}
         scope = self.state.get_scope("run", self.run_id)
-        self.state.patch(scope, "model_reasoning", {identity: row}, run_id=self.run_id)
+        with self.state.database.transaction(immediate=True):
+            self.state.patch(scope, "model_reasoning", {identity: row}, run_id=self.run_id)
+            from .history import RunActivityHistory
+            RunActivityHistory(self.state.database, self.run_id).thinking(row)
         self._last_write[identity] = now
         self._pending.pop(identity, None)
         if row.get("streaming") is False:
@@ -76,7 +79,8 @@ class RunReasoning:
                 "next_offset": offset + limit if offset + limit < len(rows) else None}
 
     def get(self, identity: str) -> dict:
-        row = self.records().get(identity)
+        from .history import stored_record
+        row = stored_record(self.state.database, self.run_id, 'model_reasoning', identity)
         if row is None:
             raise NotFoundError("No saved thinking for this model request")
         return {**row, "text_length": len(row["text"]), "preview_truncated": False}

@@ -133,17 +133,17 @@ describe("Run activity surface", () => {
     expect(screen.getByText("Final answer")).toBeTruthy();
   });
 
-  it("keeps live thinking collapsed until the user opens it", () => {
+  it("shows live thinking automatically and respects an explicit collapse", () => {
     useLocale.setState({ locale: "en" });
     const item = { id: "thought", type: "agent_progress" as const, kind: "model_reasoning",
       role: "planner", model_request: 1, text: "First", streaming: true };
     const view = render(<RunActivityStream active activity={{ seen: [], truncated: false, items: [item] }} />);
     const details = view.container.querySelector(".run-model-reasoning") as HTMLDetailsElement;
-    expect(details.open).toBe(false);
-    act(() => { details.open = true; fireEvent(details, new Event("toggle")); });
+    expect(details.open).toBe(true);
+    act(() => { details.open = false; fireEvent(details, new Event("toggle")); });
     view.rerender(<RunActivityStream activity={{ seen: [], truncated: false,
       items: [{ ...item, text: "First second", streaming: false }] }} />);
-    expect(details.open).toBe(true);
+    expect(details.open).toBe(false);
     expect(within(details).getByText("First second")).toBeTruthy();
   });
 

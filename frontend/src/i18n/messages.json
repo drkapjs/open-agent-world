@@ -1,4 +1,10 @@
 {
+  "Show full activity": ["Show full activity", "查看完整执行记录"],
+  "Some older activity was not recorded.": ["Some older activity was not recorded.", "部分早期执行记录当时未保存。"],
+  "Loading activity…": ["Loading activity…", "正在加载执行记录…"],
+  "Load more activity": ["Load more activity", "加载更多执行记录"],
+  "No saved activity for this run.": ["No saved activity for this run.", "此次运行没有已保存的执行记录。"],
+  "Load earlier activity": ["Load earlier activity", "加载更早的执行记录"],
   "Model requests": ["Model requests", "模型请求"],
   "Input tokens": ["Input tokens", "输入 token"],
   "Output tokens": ["Output tokens", "输出 token"],
