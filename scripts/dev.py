@@ -41,7 +41,7 @@ def stop(process: subprocess.Popen) -> None:
         except (OSError, subprocess.TimeoutExpired):
             pass
     if os.name == "nt":
-        # npm owns a Vite child; terminating npm alone leaves that listener alive.
+        # Vite owns build workers; terminate the whole owned process tree.
         subprocess.run(["taskkill.exe", "/PID", str(process.pid), "/T", "/F"],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                        creationflags=subprocess.CREATE_NO_WINDOW, check=False)
@@ -90,7 +90,7 @@ def main() -> None:
     for path in args.plugin_path:
         check += ["--plugin-path", str((root / path).resolve())]
     subprocess.run(check, cwd=root, check=True)
-    subprocess.run([commands["node"], str(root / "frontend/scripts/source-packs.mjs"), "--check"], cwd=root, check=True)
+    subprocess.run([commands["node"], str(root / "frontend/scripts/prepare-dev.mjs")], cwd=root, check=True)
     backend_port = available_port(args.backend_port)
     frontend_port = available_port(args.frontend_port)
     if frontend_port == backend_port:
@@ -127,7 +127,9 @@ def main() -> None:
                     print(f"Waiting for backend startup ({now - started:.0f}s elapsed). Ctrl+C cancels.", flush=True)
                     notice = now + 5
                 time.sleep(0.2)
-        frontend = subprocess.Popen([commands["npm"], "run", "dev", "--", "--port", str(frontend_port), "--strictPort"],
+        # Shared predev preparation already completed before backend startup.
+        frontend = subprocess.Popen([commands["node"], str(root / "frontend/node_modules/vite/bin/vite.js"),
+                                     "--host", "127.0.0.1", "--port", str(frontend_port), "--strictPort"],
                                     cwd=root / "frontend", env=env, **options)
         processes.append(frontend)
         print(f"Open Agent World: http://127.0.0.1:{frontend_port}", flush=True)

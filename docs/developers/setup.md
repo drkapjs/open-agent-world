@@ -42,8 +42,23 @@ Run it when creating a profile or changing dependencies. `--skip-build` / `-Skip
 prepares the SDK and Pack dependencies without building the production frontend.
 Ordinary `dev` launches only check the environment and build source assets; they do
 not run uv sync, editable installs, setup hooks, or npm ci. Missing or stale
-dependencies produce an error pointing back to setup. Frontend builds and hot reload
-still run on launch and source edits; this is compilation, not package installation.
+dependencies produce an error pointing back to setup. The launchers and `npm run dev`
+share one frontend preparation step; the launchers do not repeat npm's `predev` hook.
+SDK and Pack builds reuse successful local receipts when their source, build tools,
+lockfiles, installed dependency manifests and complete output trees are unchanged.
+Changed Packs rebuild independently; missing/damaged assets and failed builds cannot
+reuse a receipt. Source edits still rebuild the affected artifact and reload the page.
+Receipts live under `node_modules/.cache/oaw` and are never shipped in Pack artifacts.
+To force a rebuild, use `npm --prefix frontend run build:pack-sdk -- --force` and
+`npm --prefix frontend run build:packs -- --force` (neither command installs packages).
+The Windows research launcher also reuses the complete built frontend through
+`node frontend/scripts/build-source-frontend.mjs`; host source/configuration, Pack
+sources and copied artifacts invalidate it. `start.ps1` / `start.sh` simply serve
+the existing production build. Desktop packaging and CI retain their explicit
+installation steps; those commands are not ordinary application launchers.
+Offline entrypoint tests run with `python scripts/test-source-launchers.py` and
+`node --test frontend/scripts/source-startup.test.mjs`, including a Windows/Linux/macOS
+CI matrix. These fixture tests do not establish full native application acceptance.
 Setup and dev both accept Node 22+. The current `matterviz` dependency declares
 Node 24+, so Node 22 displays a compatibility notice instead of blocking setup.
 This does not change the dependency's own engine declaration.

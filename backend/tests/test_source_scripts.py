@@ -157,7 +157,7 @@ def test_check_skips_uninstalled_packs_and_reports_missing_profile_environment(s
     assert not (tmp_path / "profile").exists()
 
 
-def test_repeated_dev_starts_only_check_then_run_npm_and_propagate_failure(scripts, monkeypatch, tmp_path):
+def test_repeated_dev_starts_prepare_once_then_run_vite_and_propagate_failure(scripts, monkeypatch, tmp_path):
     _, _, dev = scripts
     python = tmp_path / "python"
     python.touch()
@@ -171,7 +171,7 @@ def test_repeated_dev_starts_only_check_then_run_npm_and_propagate_failure(scrip
 
     def popen(command, **kwargs):
         commands.append(command)
-        code = 2 if command[0] == "npm" else None
+        code = 2 if command[0] == "node" else None
         process = SimpleNamespace(poll=lambda: code, returncode=code)
         children.append(process)
         return process
@@ -185,8 +185,10 @@ def test_repeated_dev_starts_only_check_then_run_npm_and_propagate_failure(scrip
     assert len(stopped) == 4
     assert all(not any(token in command for token in ("install", "sync", "ci", "--prepare")) for command in commands)
     assert commands[0][1].endswith("check-source-environment.py")
-    assert commands[1][-1] == "--check"
-    assert commands[3][:3] == ["npm", "run", "dev"]
+    assert commands[1][-1].endswith("prepare-dev.mjs")
+    assert commands[3][0] == "node"
+    assert Path(commands[3][1]).as_posix().endswith("vite/bin/vite.js")
+    assert commands[3][2:4] == ["--host", "127.0.0.1"]
     assert stopped[:2] == list(reversed(children[:2]))
 
 

@@ -7,10 +7,12 @@ import ts from 'typescript';
 import { buildPackFrontend } from './build.mjs';
 import { buildPackFrontendVite } from './build-vite.mjs';
 import { sourcePackArtifacts } from '../server/source-packs.mjs';
-import { buildSourcePack, checkProject, preparePack } from '../scripts/source-packs.mjs';
+import { buildSourcePack, checkProject, dependencyFingerprint, preparePack } from '../scripts/source-packs.mjs';
 import { createServer } from 'vite';
 import sdkExports from './sdk-exports.mjs';
 import { sdkRuntimeExports } from '../scripts/pack-sdk-exports.mjs';
+import { cachedBuild, treeFingerprint } from '../scripts/build-cache.mjs';
+import { buildPackSdk } from '../scripts/build-pack-sdk.mjs';
 
 async function temporaryDirectory() {
   const base = fileURLToPath(new URL('../../.tmp/', import.meta.url));
@@ -135,18 +137,70 @@ test('real source Pack build isolates development NODE_ENV and emits release JSX
     await assert.rejects(buildSourcePack(pack), /Dependencies missing or stale/);
     await assert.rejects(access(path.join(root, 'node_modules')));
     await preparePack(pack);
-    await buildSourcePack(pack);
+    assert.equal(await buildSourcePack(pack), true);
+    assert.equal(await buildSourcePack(pack), false, 'unchanged source reuses the completed artifact');
+    await writeFile(path.join(root, 'index.tsx'), 'export default <section>changed JSX</section>;');
+    assert.equal(await buildSourcePack(pack), true);
+    assert.equal(await buildSourcePack(pack), false);
+    await rm(path.join(root, 'dist/index.js'));
+    assert.equal(await buildSourcePack(pack), true, 'missing outputs are rebuilt');
+    assert.equal(await buildSourcePack(pack, { force: true }), true);
     assert.equal(process.env.NODE_ENV, 'development');
     const output = path.join(root, 'dist/index.js');
     assert.doesNotMatch(await readFile(output, 'utf8'), /jsx-dev-runtime|jsxDEV/);
     globalThis[runtimeKey] = { jsx: { jsx: (tag, props) => ({ tag, props }) } };
     assert.deepEqual((await import(pathToFileURL(output).href)).default,
-      { tag: 'section', props: { children: 'shared JSX' } });
+      { tag: 'section', props: { children: 'changed JSX' } });
+    // A valid artifact cannot hide dependency loss or a failed rebuild, and
+    // neither case is allowed to invoke an installer.
+    await rm(path.join(root, 'node_modules/@oaw/plugin-api'), { force: true, recursive: true });
+    await assert.rejects(buildSourcePack(pack), /Dependencies missing or stale/);
+    await assert.rejects(access(path.join(root, 'node_modules/@oaw/plugin-api')));
   } finally {
     if (previous === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = previous;
     if (previousRuntime === undefined) delete globalThis[runtimeKey]; else globalThis[runtimeKey] = previousRuntime;
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test('build receipts invalidate on added/deleted sources, damaged assets, failures and concurrent source edits', async () => {
+  const root = await temporaryDirectory();
+  try {
+    const source = path.join(root, 'src');
+    const output = path.join(root, 'dist');
+    const receiptFile = path.join(root, 'cache/build.json');
+    await mkdir(source); await mkdir(output);
+    const entry = path.join(source, 'entry.js');
+    await writeFile(entry, 'before');
+    let builds = 0, fail = false, editDuringBuild = false;
+    const run = () => cachedBuild({ receiptFile,
+      inputs: () => treeFingerprint(source), outputs: () => treeFingerprint(output),
+      build: async () => {
+        builds++;
+        if (fail) throw new Error('compile failed');
+        await writeFile(path.join(output, 'index.js'), await readFile(entry));
+        await writeFile(path.join(output, 'worker.js'), 'worker');
+        if (editDuringBuild) await writeFile(entry, 'racing');
+      },
+    });
+    assert.equal(await run(), true); assert.equal(await run(), false); assert.equal(builds, 1);
+    await writeFile(entry, 'after!'); // Same byte length, different content.
+    assert.equal(await run(), true);
+    await writeFile(path.join(source, 'new.css'), 'new'); assert.equal(await run(), true);
+    await rm(path.join(source, 'new.css')); assert.equal(await run(), true);
+    await writeFile(path.join(output, 'worker.js'), 'broken'); assert.equal(await run(), true);
+    await rm(path.join(output, 'worker.js')); assert.equal(await run(), true);
+    await writeFile(entry, 'failed'); fail = true;
+    await assert.rejects(run(), /compile failed/);
+    await assert.rejects(access(receiptFile));
+    await writeFile(entry, 'after!'); fail = false;
+    assert.equal(await run(), true, 'reverting a failed source must not revive an old receipt');
+    await writeFile(entry, 'before'); editDuringBuild = true;
+    assert.equal(await run(), true); await assert.rejects(access(receiptFile));
+    editDuringBuild = false;
+    assert.equal(await run(), true); assert.equal(await run(), false);
+    await writeFile(receiptFile, '{broken'); assert.equal(await run(), true);
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
 
 test('dependency checks detect missing, changed and nested packages without repairing them', async () => {
@@ -168,12 +222,44 @@ test('dependency checks detect missing, changed and nested packages without repa
       await writeFile(path.join(root, key, 'package.json'), JSON.stringify({ version: item.version }));
     }
     await checkProject(root);
+    const originalFingerprint = await dependencyFingerprint(root);
     const nested = path.join(root, 'node_modules/fixture/node_modules/nested/package.json');
+    await writeFile(nested, '{"version":"2.0.0"}');
+    assert.notEqual(await dependencyFingerprint(root), originalFingerprint, 'reinstalling even the same version invalidates builds');
     await writeFile(nested, '{"version":"1.0.0"}');
     await assert.rejects(checkProject(root), /fixture\/node_modules\/nested/);
     assert.equal(await readFile(nested, 'utf8'), '{"version":"1.0.0"}');
     await writeFile(path.join(root, 'package.json'), JSON.stringify({ dependencies: { fixture: '^2.0.0' } }));
     await assert.rejects(checkProject(root), /Update package-lock.json/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('SDK reuses declarations and exports, rebuilds missing outputs, and does not cache compilation failures', async () => {
+  const root = await temporaryDirectory();
+  try {
+    await mkdir(path.join(root, 'src/plugins'), { recursive: true });
+    await mkdir(path.join(root, 'pack-sdk'));
+    await writeFile(path.join(root, 'package.json'), '{}');
+    await writeFile(path.join(root, 'package-lock.json'), '{"packages":{"":{}}}');
+    await writeFile(path.join(root, 'tsconfig.app.json'), '{"compilerOptions":{"target":"ES2022","module":"ESNext","skipLibCheck":true},"include":["src"]}');
+    await writeFile(path.join(root, 'src/vite-env.d.ts'), '');
+    const source = path.join(root, 'src/plugins/sdk.ts');
+    await writeFile(source, 'export const first = 1;');
+    assert.equal(await buildPackSdk({ root }), true);
+    assert.equal(await buildPackSdk({ root }), false);
+    await writeFile(source, 'export const second = 2;');
+    assert.equal(await buildPackSdk({ root }), true);
+    assert.match(await readFile(path.join(root, 'pack-sdk/sdk-exports.mjs'), 'utf8'), /\["second"\]/);
+    const declaration = path.join(root, 'pack-sdk/types/plugins/sdk.d.ts');
+    await rm(declaration);
+    assert.equal(await buildPackSdk({ root }), true);
+    await writeFile(source, 'export const second: number = "bad";');
+    await assert.rejects(buildPackSdk({ root }), /not assignable/);
+    await assert.rejects(access(path.join(root, 'node_modules/.cache/oaw/pack-sdk.json')));
+    assert.match(await readFile(declaration, 'utf8'), /second/);
+    await writeFile(source, 'export const second = 2;');
+    assert.equal(await buildPackSdk({ root }), true);
+    assert.equal(await buildPackSdk({ root }), false);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
@@ -194,17 +280,28 @@ test('Pack checks reject an SDK link to a different checkout without replacing i
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test('development serves the release artifact and rebuilds it on source changes', async () => {
+test('development reuses artifacts across restarts and still rebuilds on source changes', async () => {
   const root = await temporaryDirectory();
   let server;
   try {
-    await writeFile(path.join(root, 'package.json'), '{"type":"module"}');
+    const sdk = fileURLToPath(new URL('./', import.meta.url));
+    const devDependencies = { '@oaw/plugin-api': 'file:' + path.relative(root, sdk).replaceAll('\\', '/') };
+    await writeFile(path.join(root, 'package.json'), JSON.stringify({ type: 'module', scripts: { build: 'node build.mjs' }, devDependencies }));
+    await writeFile(path.join(root, 'package-lock.json'), JSON.stringify({ packages: { '': { devDependencies } } }));
+    await writeFile(path.join(root, 'build.mjs'), "import { buildPackFrontendVite } from '@oaw/plugin-api/build-vite'; await buildPackFrontendVite({});");
     await writeFile(path.join(root, 'index.tsx'), 'export default {value:"before-watch"};');
     const pack = { root, owner: 'test.source' };
+    await preparePack(pack);
     let builds = 0;
-    server = await createServer({ root, configFile: false, server: { port: 0, host: '127.0.0.1' },
-      plugins: [sourcePackArtifacts({ discover: async () => [pack], buildPack: async () => { builds++; await buildPackFrontendVite({ root }); } })] });
+    const start = () => createServer({ root, configFile: false, server: { port: 0, host: '127.0.0.1' },
+      plugins: [sourcePackArtifacts({ discover: async () => [pack], buildPack: async () => { if (await buildSourcePack(pack)) builds++; } })] });
+    server = await start();
     await server.listen();
+    assert.equal(builds, 1);
+    await server.close();
+    server = await start();
+    await server.listen();
+    assert.equal(builds, 1, 'restart must reuse the Pack');
     const address = server.httpServer.address();
     const url = `http://127.0.0.1:${address.port}/assets/packs/test.source/index.js`;
     assert.equal(await (await fetch(url)).text(), await readFile(path.join(root, 'dist/index.js'), 'utf8'));
@@ -214,7 +311,7 @@ test('development serves the release artifact and rebuilds it on source changes'
     let observed = false;
     for (let attempt = 0; attempt < 50; attempt++) {
       await new Promise(resolve => setTimeout(resolve, 100));
-      if ((await (await fetch(url)).text()).includes('after-watch')) { observed = true; break; }
+      if ((await (await fetch(url)).text()).includes('after-watch') && builds === 2) { observed = true; break; }
     }
     assert.equal(observed, true); assert.equal(builds, 2);
     assert.equal((await fetch(url.replace('index.js', '%2e%2e%2fpackage.json'))).status, 404);

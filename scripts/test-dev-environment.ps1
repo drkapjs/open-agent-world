@@ -39,7 +39,9 @@ try {
     $receipt = Get-Content -Raw -LiteralPath (Join-Path $testRoot 'receipt.json') | ConvertFrom-Json
     if ($receipt.python -ne $python -or $receipt.prefix -ne $venv) { throw 'Setup used a different interpreter from server startup.' }
     if ($receipt.plugins.Count -ne 4 -or $receipt.plugins[0] -ne '--profile' -or $receipt.plugins[1] -ne 'fixture-profile' -or $receipt.plugins[2] -ne '--plugin-path' -or $receipt.plugins[3] -ne $extra) { throw "Profile or plugin paths with spaces were not preserved: $($receipt.plugins | ConvertTo-Json -Compress)" }
-    if ($script:nodeArguments[-1] -ne '--check') { throw 'Frontend preparation was not read-only.' }
+    if ($script:nodeArguments[-1] -ne (Join-Path $testRoot 'frontend/scripts/prepare-dev.mjs')) { throw 'Frontend did not use shared preparation.' }
+    $frontend = $ast.Find({ param($node) $node -is [Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'node' -and $node.Extent.Text -match 'vite/bin/vite.js' }, $true)
+    if ($null -eq $frontend) { throw 'Frontend must start Vite directly after preflight.' }
     # A second launch must perform the same read-only checks, with no uv call.
     Initialize-BackendEnvironment -Root $testRoot -DevelopmentProfile 'fixture-profile' | Out-Null
     $start = $ast.Find({ param($node) $node -is [Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Start-Process' -and $node.Extent.Text -match '-RedirectStandardError \$backendError' }, $true)
@@ -50,7 +52,7 @@ try {
         Initialize-BackendEnvironment -Root $testRoot | Out-Null
         throw 'Expected frontend check failure.'
     } catch {
-        if ($_.Exception.Message -ne 'Frontend dependencies are missing or stale. Run setup before dev.') { throw }
+        if ($_.Exception.Message -ne 'Frontend preparation failed. See the dependency or build error above.') { throw }
     }
     $script:nodeExitCode = 0
     New-Item -ItemType File -Path (Join-Path $testRoot 'fail-plugin') | Out-Null

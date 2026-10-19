@@ -20,7 +20,7 @@
     "test:e2e:minister": "node scripts/run-e2e.mjs --minister",
     "prepare:packs": "node scripts/source-packs.mjs --prepare",
     "build:packs": "node scripts/source-packs.mjs",
-    "predev": "node scripts/source-packs.mjs --check && npm run build:pack-sdk",
+    "predev": "node scripts/prepare-dev.mjs",
     "prebuild": "npm run build:pack-sdk && npm run prepare:packs"
   },
   "dependencies": {

@@ -19,6 +19,27 @@ env:
   PYTHONDONTWRITEBYTECODE: "1"
 
 jobs:
+  source-launchers:
+    name: Source startup (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest, macos-14]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - name: Test source launchers without installing application dependencies
+        run: python scripts/test-source-launchers.py
+      - name: Test npm discovery and build receipts
+        run: node --test frontend/scripts/source-startup.test.mjs
+
   backend:
     name: Backend tests
     runs-on: ubuntu-24.04

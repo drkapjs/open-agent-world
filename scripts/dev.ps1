@@ -223,8 +223,8 @@ function Initialize-BackendEnvironment {
     foreach ($path in $AdditionalPlugins) { $checkArguments += @('--plugin-path', $path) }
     & $python @checkArguments | Out-Host
     if ($LASTEXITCODE -ne 0) { throw 'Source environment check failed. Run setup for this profile; see the error above.' }
-    & node (Join-Path $Root 'frontend/scripts/source-packs.mjs') --check | Out-Host
-    if ($LASTEXITCODE -ne 0) { throw 'Frontend dependencies are missing or stale. Run setup before dev.' }
+    & node (Join-Path $Root 'frontend/scripts/prepare-dev.mjs') | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw 'Frontend preparation failed. See the dependency or build error above.' }
     return $python
 }
 
@@ -325,7 +325,9 @@ try {
         Write-Host "Backend plugins: $($resolvedPluginPaths -join ', ')"
     }
     Write-Host "Backend activity: $backendOut"
-    & npm.cmd --prefix frontend run dev -- --port $frontendPort --strictPort
+    # Shared predev preparation already completed. Start Vite directly, without
+    # repeating npm hooks or passing ignore-scripts into Pack build children.
+    & node (Join-Path $projectRoot 'frontend/node_modules/vite/bin/vite.js') (Join-Path $projectRoot 'frontend') --host 127.0.0.1 --port $frontendPort --strictPort
     if ($LASTEXITCODE -ne 0) { throw "Frontend development server failed (exit code $LASTEXITCODE). See the build error above." }
 }
 finally {

@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process';
 import { access, mkdir, readFile, readdir, realpath, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { buildRuntime, cachedBuild, digest, filesFingerprint, installedFingerprint, treeFiles, treeFingerprint } from './build-cache.mjs';
 
 export const frontendRoot = fileURLToPath(new URL('../', import.meta.url));
 const repo = path.dirname(frontendRoot);
@@ -26,15 +27,19 @@ export async function sourcePacks() {
   return packs;
 }
 
-async function npm(args, cwd, env = process.env) {
+export async function runNpm(args, cwd, env = process.env) {
   let executable = process.env.npm_execpath;
-  if (!executable) {
+  if (!executable && process.platform === 'win32') {
     const require = createRequire(import.meta.url);
     try { executable = require.resolve('npm/bin/npm-cli.js'); }
     catch { executable = path.join(path.dirname(process.execPath), 'node_modules/npm/bin/npm-cli.js'); }
   }
+  // POSIX installations (system packages, Homebrew, nvm, etc.) need not place
+  // npm beside node. Resolve their executable through PATH without a shell.
+  // Windows keeps the JS entrypoint because .cmd cannot be spawned directly.
   await new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [executable, ...args], { cwd, env, stdio: 'inherit', windowsHide: true });
+    const child = spawn(executable ? process.execPath : 'npm', executable ? [executable, ...args] : args,
+      { cwd, env, stdio: 'inherit', windowsHide: true });
     child.on('error', reject);
     child.on('exit', code => code === 0 ? resolve() : reject(new Error(`npm ${args.join(' ')} failed for ${cwd} (${code})`)));
   });
@@ -75,6 +80,17 @@ export async function checkProject(root) {
   if (missing.length) throw new Error(`Dependencies missing or stale in ${root}: ${missing.slice(0, 5).join(', ')}. Run scripts/setup.ps1 or scripts/setup.sh with your --profile before dev.`);
 }
 
+export async function dependencyFingerprint(root) {
+  const { required } = await projectDependencies(root);
+  return digest(JSON.stringify([
+    await filesFingerprint(['package.json', 'package-lock.json'].map(file => path.join(root, file))),
+    await installedFingerprint([
+      path.join(root, 'node_modules/.package-lock.json'),
+      ...required.map(([key]) => path.join(root, key, 'package.json')),
+    ]),
+  ]));
+}
+
 export async function preparePack(pack, { install = true } = {}) {
   const { manifest, lock, required } = await projectDependencies(pack.root);
   const sdkReference = manifest.devDependencies?.['@oaw/plugin-api'];
@@ -104,18 +120,41 @@ export async function preparePack(pack, { install = true } = {}) {
       await symlink(path.join(cache, relative), target, 'junction');
     }
     await writeFile(path.join(modules, '.oaw-cache.json'), JSON.stringify({ sha256: createHash('sha256').update(JSON.stringify(lock)).digest('hex') }));
-  } else await npm(['ci', '--include=dev', '--ignore-scripts', '--no-audit', '--no-fund'], pack.root);
+  } else await runNpm(['ci', '--include=dev', '--ignore-scripts', '--no-audit', '--no-fund'], pack.root);
   // Never report a partial install or an incorrectly linked SDK as prepared.
   await preparePack(pack, { install: false });
 }
 
-export async function buildSourcePack(pack) {
-  await preparePack(pack, { install: false });
-  // Vite's development server sets NODE_ENV=development in its own process.
-  // Pack artifacts use the release ABI even when served by that dev server.
-  // Scope this to the build child: the host stays in development mode and npm
-  // ci still installs the Pack's development/build dependencies.
-  await npm(['run', 'build'], pack.root, { ...process.env, NODE_ENV: 'production' });
+export async function buildSourcePack(pack, { force = false } = {}) {
+  const started = performance.now();
+  const sdk = path.join(frontendRoot, 'pack-sdk');
+  const built = await cachedBuild({
+    receiptFile: path.join(pack.root, 'node_modules/.cache/oaw/build.json'),
+    force,
+    inputs: async () => digest(JSON.stringify([
+      buildRuntime(), pack.owner,
+      await treeFingerprint(pack.root, { exclude: ['node_modules', 'dist', '.git'] }),
+      // Generated declarations do not affect release JS. SDK export/ABI and
+      // builder changes do; every Pack must see those changes, including in dev.
+      await filesFingerprint((await treeFiles(sdk, { exclude: ['types', 'node_modules'] }))
+        .filter(file => file.endsWith('.mjs') && !file.endsWith('.test.mjs') || file === path.join(sdk, 'package.json'))),
+      await filesFingerprint([fileURLToPath(import.meta.url), fileURLToPath(new URL('./build-cache.mjs', import.meta.url))]),
+      await dependencyFingerprint(frontendRoot), await dependencyFingerprint(pack.root),
+      await installedFingerprint([path.join(pack.root, 'node_modules/@oaw/plugin-api/package.json')]),
+    ])),
+    outputs: () => treeFingerprint(path.join(pack.root, 'dist')),
+    build: async () => {
+      await preparePack(pack, { install: false });
+      // Keep host development mode and the Pack release ABI separate.
+      await runNpm(['run', 'build'], pack.root, { ...process.env, NODE_ENV: 'production' });
+      const artifact = await readJson(path.join(pack.root, 'dist/frontend-build.json'));
+      for (const file of [artifact.entry, ...artifact.files.map(item => item.path)]) {
+        if (!await exists(path.join(pack.root, 'dist', file))) throw new Error(`Missing Pack output: ${pack.owner}/${file}`);
+      }
+    },
+  });
+  console.log(`[Pack ${pack.owner}] ${built ? 'Built' : 'Reused'} (${((performance.now() - started) / 1000).toFixed(2)}s)`);
+  return built;
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
@@ -125,7 +164,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     for (const pack of await sourcePacks()) {
       if (process.argv.includes('--prepare')) await preparePack(pack);
       else if (process.argv.includes('--check')) await preparePack(pack, { install: false });
-      else await buildSourcePack(pack);
+      else await buildSourcePack(pack, { force: process.argv.includes('--force') });
     }
   }
 }
