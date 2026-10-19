@@ -2,7 +2,7 @@
   "name": "open-agent-world-frontend",
   "private": true,
   "engines": {
-    "node": ">=24"
+    "node": ">=22"
   },
   "version": "0.1.0",
   "type": "module",
@@ -20,7 +20,7 @@
     "test:e2e:minister": "node scripts/run-e2e.mjs --minister",
     "prepare:packs": "node scripts/source-packs.mjs --prepare",
     "build:packs": "node scripts/source-packs.mjs",
-    "predev": "npm run build:pack-sdk && npm run prepare:packs",
+    "predev": "node scripts/source-packs.mjs --check && npm run build:pack-sdk",
     "prebuild": "npm run build:pack-sdk && npm run prepare:packs"
   },
   "dependencies": {

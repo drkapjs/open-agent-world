@@ -124,10 +124,16 @@ jobs:
       - uses: astral-sh/setup-uv@v10.2.0
       - name: Install locked backend dependencies
         run: uv sync --project backend --locked --dev --python 3.12
+      - name: Check Windows source setup and dev launch contracts
+        run: |
+          ./scripts/test-dev-environment.ps1
+          ./scripts/test-dev-startup.ps1
       - name: Check startup, access boundaries, deployment, persistence and migration
         run: >-
           backend/.venv/Scripts/python.exe .github/run-backend-tests.py
           backend/tests/test_application_launch.py
+          backend/tests/test_source_scripts.py
+          backend/tests/test_plugin_setup.py
           backend/tests/test_control_plane.py
           backend/tests/test_http_foundations.py
           backend/tests/test_request_context.py

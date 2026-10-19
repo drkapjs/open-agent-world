@@ -37,7 +37,7 @@ build-backend = "hatchling.build"
 packages = ["src/oaw_hello"]
 ```
 
-The entry point tells OAW which factory to call. Packages directly inside `plugins/` are discovered at startup without an editable install. Add `oaw.pack.toml` to declare the same identities for source development and publication:
+The entry point tells OAW which factory to call. The loader discovers packages directly inside `plugins/`; setup installs their editable metadata and prepares declared dependencies before dev starts. Add `oaw.pack.toml` to declare the same identities for source development and publication:
 
 ```toml
 schema_version = 3
@@ -123,12 +123,14 @@ Keep registration deterministic: create no files, network connections, or backgr
 Windows:
 
 ```powershell
+./scripts/setup.ps1 -Profile plugin-tutorial -SkipBuild
 ./scripts/dev.ps1 -AgentRuntime mock -Profile plugin-tutorial
 ```
 
 Linux/macOS:
 
 ```sh
+bash scripts/setup.sh --profile plugin-tutorial --skip-build
 bash scripts/dev.sh --agent-runtime core.mock --profile plugin-tutorial
 ```
 

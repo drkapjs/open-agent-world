@@ -10,6 +10,7 @@ import pytest
 @pytest.fixture
 def installer(tmp_path, monkeypatch):
     path = Path(__file__).resolve().parents[2] / "scripts" / "install-plugins.py"
+    monkeypatch.syspath_prepend(str(path.parent))
     spec = importlib.util.spec_from_file_location("plugin_installer", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -153,3 +154,24 @@ def test_installer_passes_development_profile_to_destination_interpreter(install
     monkeypatch.setattr(sys, 'argv', ['install-plugins.py', str(plugin), '--python', 'destination-python', '--profile', 'pack-dev'])
     module.main()
     assert calls[1][-3:] == [str(plugin.resolve()), '', 'pack-dev']
+
+
+def test_additional_plugin_keeps_defaults_and_deduplicates_paths(installer, monkeypatch, tmp_path):
+    module, plugin, calls = installer
+    additional = tmp_path / 'additional plugin'
+    additional.mkdir()
+    (additional / 'pyproject.toml').write_text('[project]\nname="additional"\n')
+    monkeypatch.setattr(module, 'plugin_paths', lambda root: [plugin])
+    monkeypatch.setattr(sys, 'argv', ['install-plugins.py', '--additional-path', str(additional), '--additional-path', str(plugin)])
+    module.main()
+    assert calls[0].count('--editable') == 2
+    assert str(plugin) in calls[0] and str(additional) in calls[0]
+
+
+def test_invalid_profile_fails_before_installation(installer, monkeypatch):
+    module, plugin, calls = installer
+    monkeypatch.setattr(sys, 'argv', ['install-plugins.py', str(plugin), '--profile', '../outside'])
+    with pytest.raises(SystemExit) as error:
+        module.main()
+    assert error.value.code == 2
+    assert not calls

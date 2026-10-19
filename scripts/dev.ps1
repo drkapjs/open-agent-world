@@ -217,17 +217,14 @@ function Remove-OwnedBackendState {
 function Initialize-BackendEnvironment {
     param([string]$Root, [string]$DevelopmentProfile = "default", [string[]]$AdditionalPlugins = @())
 
-    # Installation hooks and the server must use the same persistent interpreter.
-    # uv run --with-editable creates a temporary overlay with a different prefix.
-    & uv sync --project (Join-Path $Root 'backend') --dev --extra adk --extra litellm --inexact | Out-Host
-    if ($LASTEXITCODE -ne 0) { throw 'Backend dependency installation failed.' }
     $python = Join-Path $Root 'backend/.venv/Scripts/python.exe'
-    if (-not (Test-Path -LiteralPath $python)) { throw "Backend Python is missing: $python" }
-    $plugins = @(Get-ChildItem -LiteralPath (Join-Path $Root 'plugins') -Directory |
-        Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'pyproject.toml') } |
-        ForEach-Object { $_.FullName })
-    & $python (Join-Path $Root 'scripts/install-plugins.py') --profile $DevelopmentProfile @plugins @AdditionalPlugins | Out-Host
-    if ($LASTEXITCODE -ne 0) { throw 'Plugin dependency installation failed.' }
+    if (-not (Test-Path -LiteralPath $python)) { throw "Backend Python is missing. Run scripts/setup.ps1 -Profile $DevelopmentProfile -SkipBuild first." }
+    $checkArguments = @((Join-Path $Root 'scripts/check-source-environment.py'), '--profile', $DevelopmentProfile)
+    foreach ($path in $AdditionalPlugins) { $checkArguments += @('--plugin-path', $path) }
+    & $python @checkArguments | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw 'Source environment check failed. Run setup for this profile; see the error above.' }
+    & node (Join-Path $Root 'frontend/scripts/source-packs.mjs') --check | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw 'Frontend dependencies are missing or stale. Run setup before dev.' }
     return $python
 }
 
@@ -253,6 +250,7 @@ try {
         }
         $resolved.Path
     })
+    $backendPython = Initialize-BackendEnvironment -Root $projectRoot -DevelopmentProfile $Profile -AdditionalPlugins $resolvedPluginPaths
     # Recover a backend left by an earlier invocation. The recorded start time
     # prevents a recycled PID from causing an unrelated process to be killed.
     $previousState = Read-BackendState
@@ -265,7 +263,6 @@ try {
         }
         Remove-OwnedBackendState $previousState
     }
-    $backendPython = Initialize-BackendEnvironment -Root $projectRoot -DevelopmentProfile $Profile -AdditionalPlugins $resolvedPluginPaths
 
     $backendPort = Get-AvailableLocalPort -PreferredPort 8000
     $frontendPort = Get-AvailableLocalPort -PreferredPort 5173

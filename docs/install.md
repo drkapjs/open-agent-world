@@ -26,7 +26,7 @@ macOS 13+ can use the built-in **Seatbelt** Sandbox. On Apple Silicon with macOS
 
 ## Linux / WSL2
 
-Linux currently uses the source installation and opens the application in your browser. Install Git, Python 3.11 or newer, uv, and Node.js 20 or newer (including npm), then run:
+Linux currently uses the source installation and opens the application in your browser. Install Git, Python 3.11 or newer, uv, and Node.js 22 or newer (including npm), then run:
 
 ```bash
 git clone https://github.com/theAfish/open-agent-world.git

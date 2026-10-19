@@ -33,14 +33,18 @@ Setup now also builds the frontend. After later frontend edits, run `npm --prefi
 ## Development and F3
 
 ```powershell
+./scripts/setup.ps1 -Profile default -SkipBuild
 ./scripts/dev.ps1
+./scripts/setup.ps1 -Profile tutorial -SkipBuild
 ./scripts/dev.ps1 -AgentRuntime mock -Profile tutorial
 ```
 
 Portable equivalents:
 
 ```bash
+bash scripts/setup.sh --profile default --skip-build
 bash scripts/dev.sh
+bash scripts/setup.sh --profile tutorial --skip-build
 bash scripts/dev.sh --agent-runtime core.mock --profile tutorial
 ```
 

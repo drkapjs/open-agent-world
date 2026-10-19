@@ -11,6 +11,8 @@ import subprocess
 import sys
 import tomllib
 
+from setup import profile_name
+
 ROOT = Path(__file__).resolve().parents[1]
 
 # Compatibility for undeclared legacy plugins only. New declarations route
@@ -85,15 +87,22 @@ def plugin_paths(directory: Path) -> list[Path]:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("paths", nargs="*", type=Path)
+    parser.add_argument("--additional-path", action="append", type=Path, default=[],
+                        help="Add to the default checkout plugins instead of replacing them")
     parser.add_argument("--python", default=sys.executable)
     parser.add_argument("--target", type=Path, help="Install non-editable packages into a desktop payload")
-    parser.add_argument("--profile", help="Prepare dependencies in this development profile, matching backend.launcher")
+    parser.add_argument("--profile", type=profile_name, help="Prepare dependencies in this development profile, matching backend.launcher")
     parser.add_argument("--constraint", type=Path, help="Preserve the locked host dependency versions")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     if args.target and args.profile:
         parser.error("--target and --profile select different preparation destinations")
-    paths = args.paths or plugin_paths(ROOT / "plugins")
+    paths = list(dict.fromkeys(path.resolve() for path in
+                              [*(args.paths or plugin_paths(ROOT / "plugins")), *args.additional_path]))
+    # Validate the whole request before invoking a package manager.
+    for path in paths:
+        if not (path / "pyproject.toml").is_file():
+            parser.error(f"Plugin path must contain a pyproject.toml: {path}")
     if not paths:
         return
     command = ["uv", "pip", "install", "--no-deps", "--python", args.python]

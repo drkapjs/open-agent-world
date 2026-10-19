@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
 import test from 'node:test';
@@ -7,7 +7,7 @@ import ts from 'typescript';
 import { buildPackFrontend } from './build.mjs';
 import { buildPackFrontendVite } from './build-vite.mjs';
 import { sourcePackArtifacts } from '../server/source-packs.mjs';
-import { buildSourcePack } from '../scripts/source-packs.mjs';
+import { buildSourcePack, checkProject, preparePack } from '../scripts/source-packs.mjs';
 import { createServer } from 'vite';
 import sdkExports from './sdk-exports.mjs';
 import { sdkRuntimeExports } from '../scripts/pack-sdk-exports.mjs';
@@ -131,7 +131,11 @@ test('real source Pack build isolates development NODE_ENV and emits release JSX
     await buildPackFrontendVite({ root });
     assert.equal(process.env.NODE_ENV, 'development');
     // Exercise npm and the actual child process, unlike the injected watcher fixture.
-    await buildSourcePack({ root, owner: 'test.development' });
+    const pack = { root, owner: 'test.development' };
+    await assert.rejects(buildSourcePack(pack), /Dependencies missing or stale/);
+    await assert.rejects(access(path.join(root, 'node_modules')));
+    await preparePack(pack);
+    await buildSourcePack(pack);
     assert.equal(process.env.NODE_ENV, 'development');
     const output = path.join(root, 'dist/index.js');
     assert.doesNotMatch(await readFile(output, 'utf8'), /jsx-dev-runtime|jsxDEV/);
@@ -143,6 +147,51 @@ test('real source Pack build isolates development NODE_ENV and emits release JSX
     if (previousRuntime === undefined) delete globalThis[runtimeKey]; else globalThis[runtimeKey] = previousRuntime;
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test('dependency checks detect missing, changed and nested packages without repairing them', async () => {
+  const root = await temporaryDirectory();
+  try {
+    const dependencies = { fixture: '^1.0.0' };
+    await writeFile(path.join(root, 'package.json'), JSON.stringify({ dependencies }));
+    const lock = { packages: {
+      '': { dependencies },
+      'node_modules/fixture': { version: '1.2.0' },
+      'node_modules/fixture/node_modules/nested': { version: '2.0.0' },
+      'node_modules/other-platform': { version: '1.0.0', os: ['!' + process.platform] },
+    } };
+    await writeFile(path.join(root, 'package-lock.json'), JSON.stringify(lock));
+    await assert.rejects(checkProject(root), /Dependencies missing or stale/);
+    await assert.rejects(access(path.join(root, 'node_modules')));
+    for (const [key, item] of Object.entries(lock.packages).filter(([key]) => key.includes('fixture'))) {
+      await mkdir(path.join(root, key), { recursive: true });
+      await writeFile(path.join(root, key, 'package.json'), JSON.stringify({ version: item.version }));
+    }
+    await checkProject(root);
+    const nested = path.join(root, 'node_modules/fixture/node_modules/nested/package.json');
+    await writeFile(nested, '{"version":"1.0.0"}');
+    await assert.rejects(checkProject(root), /fixture\/node_modules\/nested/);
+    assert.equal(await readFile(nested, 'utf8'), '{"version":"1.0.0"}');
+    await writeFile(path.join(root, 'package.json'), JSON.stringify({ dependencies: { fixture: '^2.0.0' } }));
+    await assert.rejects(checkProject(root), /Update package-lock.json/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('Pack checks reject an SDK link to a different checkout without replacing it', async () => {
+  const root = await temporaryDirectory();
+  try {
+    const sdk = fileURLToPath(new URL('./', import.meta.url));
+    const devDependencies = { '@oaw/plugin-api': 'file:' + path.relative(root, sdk).replaceAll('\\', '/') };
+    await writeFile(path.join(root, 'package.json'), JSON.stringify({ devDependencies }));
+    await writeFile(path.join(root, 'package-lock.json'), JSON.stringify({ packages: { '': { devDependencies } } }));
+    const wrong = path.join(root, 'other-sdk');
+    await mkdir(wrong);
+    await writeFile(path.join(wrong, 'package.json'), '{"name":"@oaw/plugin-api"}');
+    await mkdir(path.join(root, 'node_modules/@oaw'), { recursive: true });
+    await symlink(wrong, path.join(root, 'node_modules/@oaw/plugin-api'), 'junction');
+    await assert.rejects(preparePack({ root, owner: 'fixture' }, { install: false }), /Dependencies missing or stale/);
+    assert.equal(await readFile(path.join(wrong, 'package.json'), 'utf8'), '{"name":"@oaw/plugin-api"}');
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
 
 test('development serves the release artifact and rebuilds it on source changes', async () => {
