@@ -15,25 +15,26 @@ try {
         & (Join-Path $projectRoot 'backend/.venv/Scripts/python.exe') scripts/package-backend.py
         if ($LASTEXITCODE -ne 0) { throw 'Backend packaging failed.' }
     }
-    # NSIS's compiler opens source files through MAX_PATH-limited APIs. Alias
-    # the payload root itself (not the checkout) without changing resource IDs
-    # or installed paths. A temporary Tauri merge patch preserves signing and
-    # updater configuration and removes the original long resource key.
+    # NSIS's compiler cannot open long source paths. Use temporary flat hard
+    # links on the same volume, mapping each file to its original installed
+    # path. Relative resource keys also avoid Tauri stripping Windows drives.
+    # No payload bytes are copied or removed; signing/updater config is retained.
     $payloadRoot = (Resolve-Path -LiteralPath (Join-Path $projectRoot '.open-agent-world/desktop-payload')).Path
-    $payloadDrive = $null
-    foreach ($letter in 'ZYXWVUTSRQP'.ToCharArray()) {
-        if (-not (Get-PSDrive -Name $letter -ErrorAction SilentlyContinue)) {
-            & subst.exe "${letter}:" $payloadRoot
-            if ($LASTEXITCODE -ne 0) { throw 'Cannot create the temporary payload drive.' }
-            $payloadDrive = "${letter}:"
-            break
-        }
-    }
-    if (-not $payloadDrive) { throw 'No free drive letter for the NSIS payload.' }
-    $configPatch = Join-Path $projectRoot ('.open-agent-world/desktop-config-' + [guid]::NewGuid().ToString('N') + '.json')
+    $aliasName = 'nsis-' + [guid]::NewGuid().ToString('N')
+    $aliasRoot = Join-Path $projectRoot ".open-agent-world/$aliasName"
+    $configPatch = "$aliasRoot.json"
     try {
+        New-Item -ItemType Directory -Path $aliasRoot | Out-Null
         $resources = @{ '../../.open-agent-world/desktop-payload/' = $null }
-        $resources["$payloadDrive/"] = 'payload/'
+        $index = 0
+        Get-ChildItem -LiteralPath $payloadRoot -Recurse -File | ForEach-Object {
+            $name = "$index$($_.Extension)"
+            New-Item -ItemType HardLink -Path (Join-Path $aliasRoot $name) -Value $_.FullName | Out-Null
+            $relative = $_.FullName.Substring($payloadRoot.Length + 1).Replace('\', '/')
+            $resources["../../.open-agent-world/$aliasName/$name"] = "payload/$relative"
+            $index++
+        }
+        if ($index -eq 0) { throw 'Cannot package an empty payload.' }
         $patch = @{ bundle = @{ resources = $resources } } | ConvertTo-Json -Depth 4
         [IO.File]::WriteAllText($configPatch, $patch, [Text.UTF8Encoding]::new($false))
         Push-Location (Join-Path $projectRoot 'desktop')
@@ -46,9 +47,13 @@ try {
         finally { Pop-Location }
     }
     finally {
-        & subst.exe $payloadDrive /d
-        if ($LASTEXITCODE -ne 0) { throw "Cannot remove temporary payload drive $payloadDrive" }
         if (Test-Path -LiteralPath $configPatch) { Remove-Item -LiteralPath $configPatch }
+        if (Test-Path -LiteralPath $aliasRoot) {
+            $resolved = (Resolve-Path -LiteralPath $aliasRoot).Path
+            $buildRoot = (Resolve-Path -LiteralPath (Join-Path $projectRoot '.open-agent-world')).Path
+            if ($resolved -ne (Join-Path $buildRoot $aliasName)) { throw 'Unsafe NSIS staging cleanup path.' }
+            Remove-Item -LiteralPath $resolved -Recurse -Force
+        }
     }
     Write-Host 'Installer: desktop/src-tauri/target/release/bundle/nsis/'
 }
