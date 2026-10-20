@@ -6,7 +6,9 @@ requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2.11,<3",
     "mat-know-base @ git+https://github.com/theAfish/mat_know_base.git@0d05057e5fdbd821ec96c99227266d4c5e0d6af6",
-    "pymupdf4llm>=0.0.17",
+    # 2.x is an empty compatibility package; its code moved into PyMuPDF 2.x.
+    # Keep the existing import/API until that migration is explicitly supported.
+    "pymupdf4llm>=0.0.17,<2",
     "openpyxl>=3.1,<4",
     "httpx>=0.28,<1",
 ]

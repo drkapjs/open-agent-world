@@ -49,6 +49,7 @@ Audit date: 2026-10-20. Work branch: `refactor`, initially clean at
 | Windows application tests cannot prepare default Packs | CI environment, previously hidden behind the script exit failure | Install declared optional adapters and repository plugin test dependencies in the disposable Windows CI environment, matching the Linux integration job |
 | Greeter optional Python bootstrap has no native platform | CI environment/scope | Retain the original native fixture and assertions; build the same external card with `--host-only`, omitting its unused Sandbox requirement only from the external copy. This validates host installation/loading, not native Sandbox provisioning |
 | Hosted browser test times out on Carol's welcome screen | Test race | A fresh builder profile always has onboarding. Wait for its Start blank control and dismiss it instead of sampling visibility before the asynchronous onboarding state arrives. CI screenshot confirmed the blocking welcome overlay |
+| All three real desktop builds reject a Knowledge Base dependency wheel | Unbounded dependency across a breaking upstream release | PyMuPDF4LLM 2.0, released on October 19, is an empty compatibility package: its implementation moved into PyMuPDF 2.x. Bound the two owning Packs to the existing 1.x API, retain the Adapter validators, and test real local PDF conversion in backend CI |
 
 ## Verification
 
@@ -100,3 +101,16 @@ Audit date: 2026-10-20. Work branch: `refactor`, initially clean at
   ([run](https://github.com/theAfish/open-agent-world/actions/runs/39422789329)).
   That workflow still failed its hosted browser timing check; this partial result
   is not presented as an overall green run.
+- At `41ad117d`, both [exact-source CI](https://github.com/theAfish/open-agent-world/actions/runs/39425701900)
+  and [PR merge-tree CI](https://github.com/theAfish/open-agent-world/actions/runs/39425701245)
+  passed: backend 2620 passed / 60 existing skips, Windows 216 passed / one
+  existing skip, frontend 1200 tests, 12 SDK tests and 11 browser cases.
+  JUnit comparison retained all 2655 baseline cases and added 25, with no
+  removed cases or new skips. Documentation and all three native targets passed.
+- The [real preview](https://github.com/theAfish/open-agent-world/actions/runs/39431614575)
+  then passed its source gate but failed all three payload builds on the same
+  empty `pymupdf4llm-2.0` wheel. Clean host-only constraints reproduced it locally;
+  the existing developer environment had retained 1.28.2 and concealed the drift.
+  [The upstream release](https://pypi.org/project/pymupdf4llm/2.0/) documents the
+  packaging/API move. The fix belongs to Knowledge Base and Library dependency
+  declarations, not host dependencies or relaxed wheel integrity rules.

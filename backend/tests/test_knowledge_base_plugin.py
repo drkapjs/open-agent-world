@@ -41,6 +41,19 @@ NODE_TYPE = "knowledge.base"
 DESKTOP_ONLY = {"ingest", "process", "groups", "settings", "review", "graph_schema"}
 
 
+def test_declared_local_pdf_engine_converts_a_real_document():
+    """Fresh CI installs must provide the actual PDF engine, not a placeholder wheel."""
+    import pymupdf
+    from oaw_knowledge_base.markdown import to_markdown
+
+    with pymupdf.open() as document:
+        document.new_page().insert_text((50, 50), "OAW PDF acceptance")
+        data = document.tobytes()
+    text, engine, _ = to_markdown(data, "acceptance.pdf", "application/pdf", engine="pymupdf4llm")
+    assert engine == "pymupdf4llm"
+    assert "OAW PDF acceptance" in text
+
+
 @pytest.fixture
 def services(tmp_path):
     instance = create_services(Settings.for_data_root(tmp_path / "profile"))
