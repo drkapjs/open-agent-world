@@ -126,7 +126,7 @@ jobs:
         run: |
           mkdir -p .outputs
           npm pack ./frontend/pack-sdk --pack-destination .outputs
-          backend/.venv/bin/python scripts/build-external-greeter.py
+          backend/.venv/bin/python scripts/build-external-greeter.py --host-only
       - name: Install external Pack and verify cards and assets after restart
         working-directory: frontend
         env:
@@ -195,7 +195,12 @@ jobs:
           python-version: '3.12'
       - uses: astral-sh/setup-uv@v10.2.0
       - name: Install locked backend dependencies
-        run: uv sync --project backend --locked --dev --extra hosting --python 3.12
+        run: uv sync --project backend --locked --all-extras --group dev --python 3.12
+      - name: Install repository plugin test dependencies
+        run: >-
+          backend/.venv/Scripts/python.exe -c "from pathlib import Path; import subprocess, sys;
+          subprocess.run(['uv', 'pip', 'install', '--python', sys.executable,
+          *[str(p.parent) for p in sorted(Path('plugins').glob('*/pyproject.toml'))]], check=True)"
       - name: Check Windows source setup and dev launch contracts
         run: |
           ./scripts/test-dev-environment.ps1

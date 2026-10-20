@@ -46,7 +46,33 @@ Audit date: 2026-10-20. Work branch: `refactor`, initially clean at
 | Windows short/long temporary path mismatch | Test path comparison | Canonicalize both paths, preserve exact directory and environment checks |
 | Windows smoke prints PASS then exits 1 | Test harness state leak | Restore LASTEXITCODE after failure-simulation shims; keep thrown assertions fatal |
 | Chinese prose in card-design.md | Documentation defect | Translate prose in the English page; keep the language gate strict |
+| Windows application tests cannot prepare default Packs | CI environment, previously hidden behind the script exit failure | Install declared optional adapters and repository plugin test dependencies in the disposable Windows CI environment, matching the Linux integration job |
+| Greeter optional Python bootstrap has no native platform | CI environment/scope | Retain the original native fixture and assertions; build the same external card with `--host-only`, omitting its unused Sandbox requirement only from the external copy. This validates host installation/loading, not native Sandbox provisioning |
 
 ## Verification
 
-Results and remaining acceptance boundaries are recorded below as work completes.
+- Local Windows: 67 focused Python baseline/release tests passed initially;
+  the expanded release gate/configuration suite passed 56 tests. Full frontend
+  passed 182 files / 1200 tests; TypeScript/Vite build and 12 SDK boundary tests
+  passed. Documentation passed 16 validator tests, strict MkDocs, 80 pages /
+  9348 links/assets / 33 search pages. Source launcher tests passed with three
+  existing POSIX-only skips; Node startup tests and both PowerShell harnesses
+  passed with no leaked native exit code.
+- First branch CI at `ce0c0cf6`: [validation](https://github.com/theAfish/open-agent-world/actions/runs/39421444778)
+  established the source-startup fixes on all three OS runners, frontend
+  build/unit/SDK success, and exposed the additional Windows dependency and
+  Greeter native-platform assumptions described above.
+- [Documentation](https://github.com/theAfish/open-agent-world/actions/runs/39421453416)
+  passed on that SHA; Pages was correctly not deployed from `refactor`.
+- [Negative release-gate acceptance](https://github.com/theAfish/open-agent-world/actions/runs/39421472247)
+  rejected incomplete CI for that exact SHA. All installer and release steps
+  were skipped; no formal Release or production deployment was made.
+- GitHub administrator permissions were available. Ruleset 23912326 was updated
+  and activated for `dev` and `main`, requiring the three aggregate checks from
+  Actions app 15368, one PR approval, up-to-date branches, resolved conversations,
+  and no deletion/force pushes or bypass actors. Both branch endpoints were
+  read back as protected. Ruleset 25474393 blocks updates/deletion of `v*` tags.
+- The original Greeter native-Python mode was also tried locally: installation
+  passed, but environment preparation exceeded its timeout and shutdown did not
+  drain in time. This is not native Sandbox acceptance; that mode remains a
+  separate target-environment requirement. The host-only mode makes no such claim.

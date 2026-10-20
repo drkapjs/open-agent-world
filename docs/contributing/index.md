@@ -22,11 +22,17 @@ PR validation of a synthetic merge commit is not proof for another commit.
 
 ### Repository administrator setup
 
-As audited on 2026-10-20, both branches are unprotected. The existing
-`Protect main branch` ruleset is disabled and its required-check list is empty.
-The changes in this repository do not enable GitHub settings.
+The 2026-10-20 audit found both branches unprotected. Batch 0 activated
+[Protect dev and main](https://github.com/theAfish/open-agent-world/rules/23912326)
+through the GitHub API; both branch endpoints now report `protected: true`.
+It requires the three Actions checks, up-to-date branches, one approval, stale
+approval dismissal and conversation resolution, and blocks deletion/force pushes
+with no bypass actors.
+[Protect release tags](https://github.com/theAfish/open-agent-world/rules/25474393)
+blocks updates and deletion of `v*` tags, also without bypass actors.
+These are repository settings, not settings enabled by cloning this code.
 
-After the new checks have run, an administrator must:
+To reproduce or review the settings on another repository, an administrator must:
 
 1. Open **Settings → Rules → Rulesets**, enable the existing ruleset and
    target both `refs/heads/dev` and `refs/heads/main` (or create equivalent rules).
@@ -37,9 +43,10 @@ After the new checks have run, an administrator must:
    deployment or installer build as merge requirements.
 4. Block branch deletion and force pushes; leave routine bypasses disabled.
    Retain merge commits for release integration.
-5. Add a tag ruleset for `v*` that blocks updates and deletion, and restrict
-   tag creation to release maintainers. Do not exempt normal tag publication
-   from the workflow's source/CI gate.
+5. Add a tag ruleset for `v*` that blocks updates and deletion. Assign tag
+   creation to release maintainers as an operating responsibility; the current
+   ruleset does not restrict creation beyond repository write access. Do not
+   exempt normal tag publication from the workflow's source/CI gate.
 
 Verify the rules with a test PR whose checks fail and confirm that merging is
 blocked. Saving a ruleset or adding these instructions is not that verification.
