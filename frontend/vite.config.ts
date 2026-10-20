@@ -16,6 +16,6 @@ export default defineConfig(({ mode }) => ({
     alias: [{ find: "@oaw/plugin-api", replacement: fileURLToPath(new URL("./src/plugins/sdk.ts", import.meta.url)) }],
   },
   plugins: [localControlPlaneProxy(), ...(mode === "test" ? [] : [sourcePackArtifacts()]), react()],
-  server: { proxy: { "/api": localManagementProxy(backendHttpUrl), "/ws": localManagementProxy(backendWsUrl, true) } },
+  server: { proxy: { "/api": localManagementProxy(backendHttpUrl), "/auth": { target: backendHttpUrl }, "/ws": localManagementProxy(backendWsUrl, true) } },
   test: { setupFiles: ["./src/test/setup.ts"] },
 }));

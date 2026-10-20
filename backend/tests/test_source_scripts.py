@@ -167,7 +167,11 @@ def test_repeated_dev_starts_prepare_once_then_run_vite_and_propagate_failure(sc
     monkeypatch.setattr(sys, "argv", ["dev.py", "--profile", "fixture", "--plugin-path", "extra plugin"])
     commands, children, stopped = [], [], []
     monkeypatch.setattr(dev.subprocess, "run", lambda command, **kwargs: commands.append(command))
-    monkeypatch.setattr(dev.urllib.request, "build_opener", lambda *args: SimpleNamespace(open=lambda *a, **k: nullcontext()))
+    probes = []
+    def probe(url, **kwargs):
+        probes.append(url)
+        return nullcontext()
+    monkeypatch.setattr(dev.urllib.request, "build_opener", lambda *args: SimpleNamespace(open=probe))
 
     def popen(command, **kwargs):
         commands.append(command)
@@ -190,6 +194,7 @@ def test_repeated_dev_starts_prepare_once_then_run_vite_and_propagate_failure(sc
     assert Path(commands[3][1]).as_posix().endswith("vite/bin/vite.js")
     assert commands[3][2:4] == ["--host", "127.0.0.1"]
     assert stopped[:2] == list(reversed(children[:2]))
+    assert probes == ["http://127.0.0.1:8000/health/ready"] * 2
 
 
 def test_failed_preflight_never_launches_processes(scripts, monkeypatch, tmp_path):

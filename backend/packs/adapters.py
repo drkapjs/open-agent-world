@@ -230,8 +230,13 @@ def verify_wheel(declaration: AdapterWheel, data: bytes, *, check_host: bool = T
             candidates = ([origin] if name == root and origin else
                           [Path(base) / name.split('/', 1)[1] for base in existing.submodule_search_locations or ()])
             for actual in candidates:
-                if host_provided and actual.resolve() == Path(installed.locate_file(name)).resolve():
-                    continue
+                if host_provided:
+                    owned = Path(installed.locate_file(name))
+                    # The same path cannot have two different resolved origins.
+                    # Ownership/containment was checked above for every file;
+                    # only aliases need another pair of filesystem resolutions.
+                    if actual == owned or actual.resolve() == owned.resolve():
+                        continue
                 if actual.is_file() and hashlib.sha256(actual.read_bytes()).digest() != hashlib.sha256(value).digest():
                     raise ValueError(f"Adapter contribution conflicts with existing host file: {name}")
     if installed is not None:
@@ -415,7 +420,7 @@ def prepare_adapters(adapter: AdapterDependencies, files: dict[str, bytes], data
     paths = []
     for wheel in adapter.wheels:
         contents = verify_wheel(wheel, files[wheel.path])
-        # Preserve original bytes for startup revalidation and repair diagnosis.
+        # Preserve original bytes for explicit integrity checks and repair.
         contents['.oaw-wheel.whl'] = files[wheel.path]
         target = cache / wheel.sha256
         with installation_lock(base / 'adapter-locks' / (wheel.sha256 + '.lock')):
@@ -445,7 +450,7 @@ def prepare_adapters(adapter: AdapterDependencies, files: dict[str, bytes], data
 
 
 def prepared_adapter_paths(adapter: AdapterDependencies, data_root: Path, *, read_only: bool = False) -> tuple[Path, ...]:
-    """Verify prepared libraries without modifying import paths."""
+    """Full integrity check for installation/diagnostics, never ordinary startup."""
     from backend.packs.modules import _verify_tree
     check_adapter_dependencies([adapter])
     paths = []
@@ -457,6 +462,55 @@ def prepared_adapter_paths(adapter: AdapterDependencies, data_root: Path, *, rea
         _verify_tree(path, files, discard_bytecode=not read_only)
         paths.append(path)
     return tuple(paths)
+
+
+def check_prepared_adapter_paths(adapter: AdapterDependencies, data_root: Path) -> tuple[Path, ...]:
+    """Check recorded installations without reading archives or walking files.
+
+    Prepared code is trusted host-managed software, like site-packages. Runtime
+    users must not have write access to it. Content verification belongs to the
+    installer and the explicit integrity command, not every process startup.
+    """
+    from backend.packs.modules import check_module_roots, _regular
+    active = tuple(wheel for path, wheel in _ACTIVATED_WHEELS.items() if str(path) in sys.path)
+    check_adapter_dependencies([adapter, *(AdapterDependencies(wheels=(wheel,)) for wheel in active)])
+    cache = Path(data_root).resolve() / 'packs' / 'adapter-wheels'
+    paths = []
+    for wheel in adapter.wheels:
+        path = cache / wheel.sha256
+        check_module_roots(path, wheel.roots, boundary=Path(data_root).resolve())
+        _regular(path / '.oaw-wheel.whl', path, directory=False)
+        _check_adapter_origins(wheel)
+        paths.append(path)
+    return tuple(paths)
+
+
+def _check_adapter_origins(wheel: AdapterWheel) -> None:
+    """Keep namespace ownership checks without rehashing installed host files."""
+    try:
+        installed = metadata.distribution(wheel.name)
+    except metadata.PackageNotFoundError:
+        installed = None
+    for root in wheel.roots:
+        module_name = root[:-3] if root.endswith('.py') else root
+        if not module_name.isidentifier():
+            continue
+        existing = PathFinder.find_spec(module_name)
+        if existing is None:
+            continue
+        if existing.origin in {'built-in', 'frozen'}:
+            raise ValueError(f'Adapter library shadows a host module: {module_name}')
+        if root in wheel.namespace_roots:
+            continue  # Disjoint contributions are checked against recorded file ownership.
+        if installed is None:
+            raise ValueError(f'Adapter library root is already owned by another distribution: {root}')
+        expected = Path(installed.locate_file(root if root.endswith('.py') else root + '/__init__.py')).resolve()
+        if existing.origin is None or Path(existing.origin).resolve() != expected:
+            raise ValueError(f'Host provider module has a different origin: {module_name}')
+        loaded = sys.modules.get(module_name)
+        if loaded is not None and (getattr(loaded, '__file__', None) is None
+                                  or Path(loaded.__file__).resolve() != expected):
+            raise ValueError(f'Loaded adapter module has a different origin: {module_name}; restart OAW')
 
 
 class _ImmutableAdapterLoader(SourceFileLoader):
@@ -502,8 +556,8 @@ class _SharedAdapterFinder:
 
 
 def activate_adapters(adapter: AdapterDependencies, data_root: Path, *, read_only: bool = False) -> tuple[Path, ...]:
-    """Verify prepared shared libraries, then expose them for the process lifetime."""
-    paths = prepared_adapter_paths(adapter, data_root, read_only=read_only)
+    """Activate compatible installed libraries without repeating installation."""
+    paths = check_prepared_adapter_paths(adapter, data_root)
     if read_only:
         _SharedAdapterFinder.read_only_roots.update(paths)
     for path in paths:

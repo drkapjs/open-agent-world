@@ -107,6 +107,68 @@ test('Vite Pack artifact carries native workers and CSS and refuses private host
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test('Vite Pack dependencies use their owning manifests without exposing transitives to Pack sources', async () => {
+  const root = await temporaryDirectory();
+  const install = async (relative, manifest, source) => {
+    const directory = path.join(root, 'node_modules', relative);
+    await mkdir(directory, { recursive: true });
+    await writeFile(path.join(directory, 'package.json'), JSON.stringify({ type: 'module', main: 'index.js', ...manifest }));
+    await writeFile(path.join(directory, 'index.js'), source);
+  };
+  try {
+    await writeFile(path.join(root, 'package.json'), JSON.stringify({ type: 'module', dependencies: { '@fixture/parent': '1.0.0' },
+      devDependencies: { devpeer: '1.0.0' } }));
+    await install('@fixture/parent', { name: '@fixture/parent', dependencies: { leaf: '1.0.0' },
+      peerDependencies: { peer: '1.0.0' }, optionalDependencies: { optional: '1.0.0' }, devDependencies: { devpeer: '1.0.0' } },
+      'import a from "leaf"; import b from "peer"; import c from "optional"; import d from "devpeer"; export default a + b + c + d;');
+    await install('@fixture/parent/node_modules/leaf', { name: 'leaf', dependencies: { nested: '1.0.0' } },
+      'import value from "nested"; export default value;');
+    await install('@fixture/parent/node_modules/leaf/node_modules/nested', { name: 'nested' }, 'export default 1;');
+    await install('peer', { name: 'peer' }, 'export default 2;');
+    await install('optional', { name: 'optional' }, 'export default 3;');
+    await install('devpeer', { name: 'devpeer' }, 'export default 4;');
+    await writeFile(path.join(root, 'index.tsx'), 'import value from "@fixture/parent"; export default value;');
+    await buildPackFrontendVite({ root });
+    assert.equal((await import(pathToFileURL(path.join(root, 'dist/index.js')).href)).default, 10);
+
+    // Merely having a package installed does not authorize the Pack to import it.
+    await writeFile(path.join(root, 'index.tsx'), 'import value from "peer"; export default value;');
+    await assert.rejects(buildPackFrontendVite({ root }), /Undeclared Pack frontend dependency: peer/);
+    // Published vendors may declare runtime peers as dev dependencies. This
+    // compatibility does not grant Pack source access to its build tooling.
+    await writeFile(path.join(root, 'index.tsx'), 'import value from "devpeer"; export default value;');
+    await assert.rejects(buildPackFrontendVite({ root }), /Undeclared Pack frontend dependency: devpeer/);
+    await writeFile(path.join(root, 'index.tsx'), 'import value from "@fixture/parent"; export default value;');
+    // The nearest nested package also cannot borrow its parent's declaration.
+    await writeFile(path.join(root, 'node_modules/@fixture/parent/node_modules/leaf/index.js'),
+      'import value from "optional"; export default value;');
+    await assert.rejects(buildPackFrontendVite({ root }), /Undeclared Pack frontend dependency: optional/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('Vite checks cached dependency links with the same Pack boundary as installed packages', async () => {
+  const root = await temporaryDirectory();
+  const cache = await temporaryDirectory();
+  try {
+    await writeFile(path.join(root, 'package.json'), JSON.stringify({ type: 'module', dependencies: { linked: '1.0.0' } }));
+    await writeFile(path.join(root, 'index.tsx'), 'import value from "linked"; export default value;');
+    await mkdir(path.join(root, 'node_modules/undeclared'), { recursive: true });
+    await writeFile(path.join(root, 'node_modules/undeclared/package.json'), '{"name":"undeclared","type":"module","main":"index.js"}');
+    await writeFile(path.join(root, 'node_modules/undeclared/index.js'), 'export default 7;');
+    await writeFile(path.join(cache, 'package.json'), '{"name":"linked","type":"module","main":"index.js"}');
+    await writeFile(path.join(cache, 'index.js'), 'import value from "undeclared"; export default value;');
+    await symlink(cache, path.join(root, 'node_modules/linked'), 'junction');
+    await assert.rejects(buildPackFrontendVite({ root }), /Undeclared Pack frontend dependency: undeclared/);
+    await writeFile(path.join(cache, 'package.json'), JSON.stringify({ name: 'linked', type: 'module', main: 'index.js',
+      dependencies: { undeclared: '1.0.0' } }));
+    await buildPackFrontendVite({ root });
+    assert.equal((await import(pathToFileURL(path.join(root, 'dist/index.js')).href)).default, 7);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(cache, { recursive: true, force: true });
+  }
+});
+
 test('real source Pack build isolates development NODE_ENV and emits release JSX', async () => {
   const root = await temporaryDirectory();
   const previous = process.env.NODE_ENV;

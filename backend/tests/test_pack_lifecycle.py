@@ -82,13 +82,18 @@ def test_uninstall_releases_archive_dependencies_and_retained_activation_prepare
     manager = PackInstallationManager(tmp_path)
     manager.install(unified(environment={'target': 'host-worker', 'prepare': 'install', 'verify_imports': ['json']}))
     resources = manager.uninstall_plan('test.greeter-release')['resources']
-    assert len(resources) == 1 and resources[0]['action'] == 'remove'
+    assert {item['kind'] for item in resources} == {'environment', 'modules'}
+    assert all(item['action'] == 'remove' for item in resources)
+    module_path = manager.root / 'cache/modules' / next(item['id'].removeprefix('modules:') for item in resources if item['kind'] == 'modules')
+    assert module_path.exists()
     manager.uninstall('test.greeter-release')
     assert list((tmp_path / 'runtime/environments').iterdir()) == []
+    assert not module_path.exists()
     assert manager.version_path('test.greeter-release', '0.1.0').exists()
     manager.prepare_activation('test.greeter-release', '0.1.0')
     manager.activate('test.greeter-release', '0.1.0')
     assert manager.selected()['test.greeter-release'].version == '0.1.0'
+    assert module_path.exists()
 
 
 def test_source_uninstall_persists_enrollment_without_deleting_checkout(tmp_path):

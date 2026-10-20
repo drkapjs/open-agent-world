@@ -10,6 +10,7 @@ import hashlib
 import io
 import os
 from pathlib import Path, PurePosixPath
+import re
 import shutil
 import stat
 from uuid import uuid4
@@ -20,12 +21,54 @@ from backend.packs.environments import installation_lock
 from backend.packs.manifest import PackManifest
 
 
-def _regular(path: Path, root: Path, *, directory: bool) -> None:
+def _regular(path: Path, root: Path, *, directory: bool, resolved_root: Path | None = None) -> None:
     status = path.lstat()
     reparse = bool(getattr(status, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
-    if (path.is_symlink() or reparse or not path.resolve().is_relative_to(root.resolve())
+    boundary = resolved_root if resolved_root is not None else root.resolve()
+    if (stat.S_ISLNK(status.st_mode) or reparse or not path.resolve().is_relative_to(boundary)
             or not (stat.S_ISDIR(status.st_mode) if directory else stat.S_ISREG(status.st_mode))):
         raise ValueError(f"Unsafe materialized Pack module path: {path}")
+
+
+def check_module_roots(root: Path, names, *, boundary: Path) -> None:
+    """Check the small set of import roots, without scanning their contents."""
+    root, boundary = Path(root).absolute(), Path(boundary).resolve()
+    if not root.is_relative_to(boundary):
+        raise ValueError("Pack modules escape the managed installation")
+    for parent in (root, *root.parents):
+        if parent == boundary:
+            break
+        _regular(parent, boundary, directory=True, resolved_root=boundary)
+    for name in names:
+        path = root / name
+        # Names were validated by the Pack declaration; retain a local boundary
+        # check as this helper is also used by installed backend modules.
+        if Path(name).name != name or name in {'.', '..'}:
+            raise ValueError("Unsafe Pack module root")
+        _regular(path, root, directory=path.is_dir(), resolved_root=root.resolve())
+
+
+def prepared_modules(manifest: PackManifest, cache_root: Path, *, expected_digest: str) -> Path:
+    if not isinstance(expected_digest, str) or not re.fullmatch(r'[a-f0-9]{64}', expected_digest):
+        raise ValueError('Invalid installed backend digest')
+    root = Path(cache_root) / expected_digest
+    check_module_roots(root, manifest.module_names, boundary=Path(cache_root).parent.parent.parent)
+    for module in manifest.module_names:
+        _regular(root / module / '__init__.py', root, directory=False)
+    return root
+
+
+def verify_modules(wheel: bytes, manifest: PackManifest, cache_root: Path, *, expected_digest: str) -> Path:
+    """Explicit, read-only verification of an already materialized backend."""
+    if hashlib.sha256(wheel).hexdigest() != expected_digest:
+        raise ValueError("Installed adapter wheel checksum changed before verification")
+    inspect_wheel(wheel, manifest)
+    with ZipFile(io.BytesIO(wheel)) as archive:
+        files = {name: data for name, data in zip_files(archive).items()
+                 if name.split('/', 1)[0] in manifest.module_names}
+    root = prepared_modules(manifest, cache_root, expected_digest=expected_digest)
+    _verify_tree(root, files, discard_bytecode=False)
+    return root
 
 
 def _verify_tree(root: Path, expected: dict[str, bytes], *, discard_bytecode: bool = True) -> None:
@@ -36,27 +79,30 @@ def _verify_tree(root: Path, expected: dict[str, bytes], *, discard_bytecode: bo
     Reject links and unexpected contents before deleting any generated files.
     """
     _regular(root, root.parent, directory=True)
+    # Resolve the immutable boundary once per verification, not once per file.
+    # Each file still gets a fresh lstat, resolved containment and full checksum.
+    resolved_root = root.resolve()
     directories = {str(parent) for name in expected for parent in PurePosixPath(name).parents if str(parent) != "."}
+    has_root_modules = any('/' not in name and name.endswith('.py') for name in expected)
     seen: set[str] = set()
     bytecode: list[Path] = []
-    cache_directories: list[Path] = []
+    cache_directories: set[Path] = set()
     for directory, children, filenames in os.walk(root, followlinks=False):
         parent = Path(directory)
         for child in children:
             path = parent / child
-            _regular(path, root, directory=True)
+            _regular(path, root, directory=True, resolved_root=resolved_root)
             name = path.relative_to(root).as_posix()
             if name in directories:
                 continue
             source_parent = parent.relative_to(root).as_posix()
-            has_root_modules = any('/' not in name and name.endswith('.py') for name in expected)
             if child == "__pycache__" and (source_parent in directories or source_parent == '.' and has_root_modules):
-                cache_directories.append(path)
+                cache_directories.add(path)
                 continue
             raise ValueError(f"Unexpected materialized Pack directory: {name}")
         for child in filenames:
             path = parent / child
-            _regular(path, root, directory=False)
+            _regular(path, root, directory=False, resolved_root=resolved_root)
             name = path.relative_to(root).as_posix()
             if parent in cache_directories and child.endswith(".pyc"):
                 bytecode.append(path)

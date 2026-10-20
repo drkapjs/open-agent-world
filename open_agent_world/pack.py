@@ -60,6 +60,9 @@ def main():
     inspector = commands.add_parser('inspect')
     inspector.add_argument('artifact', type=Path)
     commands.add_parser('schema')
+    verifier = commands.add_parser('verify', help='Fully verify selected Packs and prepared source dependencies without importing plugin code')
+    verifier.add_argument('--data-root', type=Path, required=True)
+    verifier.add_argument('--plugin-path', type=Path, action='append', default=[])
     for name in ('install', 'activate', 'status', 'uninstall-plan', 'gc'):
         command = commands.add_parser(name)
         command.add_argument('--data-root', type=Path, required=True)
@@ -89,6 +92,9 @@ def main():
         print(inspect_archive(args.artifact.read_bytes()).manifest.model_dump_json(indent=2))
     elif args.command == 'schema':
         print(json.dumps(PackManifest.model_json_schema(), indent=2))
+    elif args.command == 'verify':
+        from backend.packs.verification import verify_profile
+        print(json.dumps(verify_profile(args.data_root, plugin_directories=tuple(args.plugin_path)), indent=2))
     else:
         # Recovery must not import the failed selected external version. Bundled
         # registrations still reserve their IDs and enforce dependency versions.

@@ -5,6 +5,22 @@ $parseErrors = $null
 $tokens = $null
 $ast = [Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$tokens, [ref]$parseErrors)
 if ($parseErrors.Count) { throw ($parseErrors | Out-String) }
+$readyFunction = $ast.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Test-BackendReady' }, $true)
+Invoke-Expression $readyFunction.Extent.Text
+$script:probeStatus = 503
+function Invoke-WebRequest {
+    param([string]$Uri, [switch]$UseBasicParsing, [int]$TimeoutSec)
+    if ($Uri -ne 'http://127.0.0.1:12345/health/ready') { throw "Wrong readiness endpoint: $Uri" }
+    return [pscustomobject]@{ StatusCode = $script:probeStatus }
+}
+try {
+    if (Test-BackendReady -Port 12345) { throw 'An unready application was accepted.' }
+    $script:probeStatus = 200
+    if (-not (Test-BackendReady -Port 12345)) { throw 'A ready application was rejected.' }
+    Write-Host 'PASS: dedicated readiness endpoint and 503 handling.'
+} finally {
+    Remove-Item -LiteralPath Function:\Invoke-WebRequest
+}
 $waitFunction = $ast.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Wait-BackendListener' }, $true)
 Invoke-Expression $waitFunction.Extent.Text
 

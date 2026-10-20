@@ -117,7 +117,7 @@ def main() -> None:
             if backend.poll() is not None:
                 raise RuntimeError("Backend exited during startup; see its error above")
             try:
-                with opener.open(env["OAW_DEV_BACKEND_HTTP_URL"] + "/api/catalog", timeout=1):
+                with opener.open(env["OAW_DEV_BACKEND_HTTP_URL"] + "/health/ready", timeout=1):
                     break
             except (urllib.error.URLError, TimeoutError):
                 now = time.monotonic()

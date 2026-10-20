@@ -9,9 +9,19 @@ from types import SimpleNamespace
 import pytest
 
 from backend.packs.adapters import (activate_adapters, check_adapter_dependencies, collect_wheels,
-    describe_wheel, prepare_adapters, verify_wheel)
+    describe_wheel, prepare_adapters, prepared_adapter_paths, verify_wheel)
 from backend.packs.lifecycle import ManagedResourceLedger
 from backend.packs.manifest import AdapterDependencies
+
+
+@pytest.fixture(autouse=True)
+def isolated_adapter_import_paths(monkeypatch):
+    from backend.packs import adapters
+    monkeypatch.setattr(sys, 'path', list(sys.path))
+    monkeypatch.setattr(sys, 'meta_path', list(sys.meta_path))
+    monkeypatch.setattr(adapters, '_ACTIVATED_WHEELS', {})
+    monkeypatch.setattr(adapters._SharedAdapterFinder, 'roots', {})
+    monkeypatch.setattr(adapters._SharedAdapterFinder, 'read_only_roots', set())
 
 
 def library(name='fixture-helper', version='1.0', *, requires=(), extra=None):
@@ -48,10 +58,59 @@ def test_prepare_reuses_identical_wheel_with_independent_consumers_and_checks_ta
         sys.path.remove(str(first[0]))
     (first[0] / 'fixture_helper/__init__.py').write_text('VALUE = 99')
     with pytest.raises(ValueError, match='checksum mismatch'):
-        activate_adapters(adapter, tmp_path)
+        prepared_adapter_paths(adapter, tmp_path, read_only=True)
     ledger.release_consumer('source:second')
     ledger.collect()
     assert not first[0].exists()
+
+
+def test_adapter_startup_does_not_read_archives_or_scan_contents(tmp_path, monkeypatch):
+    from backend.packs import modules
+    wheel, data = library('fast-startup-helper')
+    adapter = AdapterDependencies(requirements=('fast-startup-helper==1.0',), wheels=(wheel,))
+    paths = prepare_adapters(adapter, {wheel.path: data}, tmp_path, consumer='source:fixture')
+    def forbidden(*args, **kwargs):
+        raise AssertionError('Startup must not read dependency contents or scan the installation')
+    monkeypatch.setattr(Path, 'read_bytes', forbidden)
+    monkeypatch.setattr(modules, '_verify_tree', forbidden)
+    monkeypatch.setattr(modules.os, 'walk', forbidden)
+    for _ in range(2):
+        assert activate_adapters(adapter, tmp_path) == paths
+
+
+def test_adapter_startup_rejects_foreign_import_root(tmp_path, monkeypatch):
+    wheel, data = library('foreign-root-helper')
+    adapter = AdapterDependencies(requirements=('foreign-root-helper==1.0',), wheels=(wheel,))
+    prepare_adapters(adapter, {wheel.path: data}, tmp_path / 'profile', consumer='source:fixture')
+    other = tmp_path / 'foreign/foreign_root_helper'
+    other.mkdir(parents=True)
+    (other / '__init__.py').write_text('FOREIGN = True')
+    monkeypatch.setattr(sys, 'path', [str(other.parent), *sys.path])
+    with pytest.raises(ValueError, match='owned by another distribution'):
+        activate_adapters(adapter, tmp_path / 'profile')
+
+
+def test_adapter_startup_rejects_linked_package_without_scanning(tmp_path):
+    import os
+    wheel, data = library('linked-root-helper')
+    adapter = AdapterDependencies(requirements=('linked-root-helper==1.0',), wheels=(wheel,))
+    paths = prepare_adapters(adapter, {wheel.path: data}, tmp_path / 'profile', consumer='source:fixture')
+    package = paths[0] / 'linked_root_helper'
+    outside = tmp_path / 'outside'
+    package.rename(outside)
+    try:
+        if os.name == 'nt':
+            import _winapi
+            _winapi.CreateJunction(str(outside), str(package))
+        else:
+            package.symlink_to(outside, target_is_directory=True)
+        with pytest.raises(ValueError, match='Unsafe materialized Pack module path'):
+            activate_adapters(adapter, tmp_path / 'profile')
+    finally:
+        if package.is_symlink():
+            package.unlink()
+        elif os.name == 'nt' and package.is_junction():
+            package.rmdir()
 
 
 def test_shared_dependency_conflict_is_found_without_preparation():

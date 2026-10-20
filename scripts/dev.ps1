@@ -142,7 +142,7 @@ function Test-BackendReady {
     param([int]$Port)
 
     try {
-        $response = Invoke-WebRequest -Uri "http://127.0.0.1:$Port/api/catalog" -UseBasicParsing -TimeoutSec 1
+        $response = Invoke-WebRequest -Uri "http://127.0.0.1:$Port/health/ready" -UseBasicParsing -TimeoutSec 1
         return $response.StatusCode -eq 200
     }
     catch {
@@ -178,7 +178,8 @@ function Wait-BackendListener {
                 Write-Host $detail
                 $lastDetail = $detail
             } else {
-                Write-Host ("Backend is still starting ({0:n0}s elapsed)." -f $started.Elapsed.TotalSeconds)
+                $activity = if ($lastDetail) { " Last activity: $lastDetail" } else { "" }
+                Write-Host ("Backend is still starting ({0:n0}s elapsed).{1}" -f $started.Elapsed.TotalSeconds, $activity)
             }
             $nextNotice = $started.Elapsed.TotalSeconds + 5
         }

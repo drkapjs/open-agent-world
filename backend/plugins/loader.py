@@ -7,6 +7,7 @@ from pathlib import Path
 
 from backend.plugins.builtin import create_builtin_registry
 from backend.plugins.registry import PluginDescriptor, PluginRegistry
+from backend.startup_progress import startup_stage
 
 
 ENTRY_POINT_GROUP = "open_agent_world.plugins"
@@ -23,7 +24,7 @@ def create_plugin(factory, *, data_root=None, source_root=None):
     return factory()
 
 
-def load_plugin_registry(plugin_directory: Path | None = None, *, plugin_directories: tuple[Path, ...] = (), data_root: Path | None = None, load_installed: bool = True) -> PluginRegistry:
+def load_plugin_registry(plugin_directory: Path | None = None, *, plugin_directories: tuple[Path, ...] = (), data_root: Path | None = None, load_installed: bool = True, load_unenrolled_sources: bool = False) -> PluginRegistry:
     """Load trusted packages in the project's plugins folder, then installed plugins.
 
     Each entry point exposes a zero-argument plugin factory. Loading is
@@ -86,14 +87,15 @@ def load_plugin_registry(plugin_directory: Path | None = None, *, plugin_directo
     pending = []
     for entry_point, origin in candidates:
         spec = source_specs.get(origin)
-        if spec is not None and enrollment and not enrollment.source_enrolled(spec.distribution_id):
+        if spec is not None and enrollment and not load_unenrolled_sources and not enrollment.source_enrolled(spec.distribution_id):
             continue
         if spec is not None and data_root is not None:
             from backend.packs.lifecycle import ManagedResourceLedger, environment_resources
             from backend.packs.adapters import activate_source_adapter, source_adapter_resource_ids
             ManagedResourceLedger(data_root).pin_process(
                 environment_resources(spec, origin.parent) | source_adapter_resource_ids(spec, data_root), label=spec.owner)
-            activate_source_adapter(spec, data_root)
+            with startup_stage(f"check Pack installation ({spec.owner})"):
+                activate_source_adapter(spec, data_root)
         try:
             factory = entry_point.load()
             if not callable(factory):
@@ -158,7 +160,8 @@ def load_plugin_registry(plugin_directory: Path | None = None, *, plugin_directo
             raise RuntimeError(f"Cannot load plugin {entry_point.name!r} from {origin}: {exc}") from exc
     if data_root is not None:
         if load_installed:
-            load_installed_packs(registry, data_root)
+            with startup_stage("load installed Packs"):
+                load_installed_packs(registry, data_root)
         manager = PackInstallationManager(data_root, registry)
         manager.pin_loaded_resources()
         manager.reconcile_resources()
@@ -177,7 +180,7 @@ def load_installed_packs(registry: PluginRegistry, data_root: Path) -> None:
     # Environment bootstrap validates that enabled set, before any mutation.
     manager._check_selection(pending, check_requirements=False)
     # Resolve metadata first. No user code runs during inspection or validation.
-    entries = {key: manager.verify_installed(manifest, backend_only=True) for key, manifest in pending.items()}
+    entries = {key: manager.startup_entrypoint(manifest) for key, manifest in pending.items()}
     providers = {pack: manifest.id for manifest in pending.values() for pack in manifest.provided_pack_ids}
     while pending:
         ready = [m for m in pending.values() if not any(providers.get(d.id) in pending for d in m.dependencies.packs)]
@@ -201,8 +204,8 @@ def load_installed_packs(registry: PluginRegistry, data_root: Path) -> None:
                 if manifest.schema_version == 3:
                     from backend.packs.adapters import activate_adapters
                     activate_adapters(manifest.adapter, data_root)
-                    from backend.packs.modules import materialize_modules
-                    origin = materialize_modules(origin.read_bytes(), manifest, manager.root / "cache" / "modules",
+                    from backend.packs.modules import prepared_modules
+                    origin = prepared_modules(manifest, manager.root / "cache" / "modules",
                         expected_digest=manager._checksums(manifest.id, manifest.version)[manifest.entrypoints.backend])
                     ledger.register('modules:' + origin.name, origin, 'modules')
                 for module_name in manifest.module_names:
@@ -215,8 +218,7 @@ def load_installed_packs(registry: PluginRegistry, data_root: Path) -> None:
                         raise ValueError("Backend module ownership conflict; restart OAW to change versions")
                 if str(origin) not in sys.path:
                     sys.path.append(str(origin))
-                # Schema 3 files have just been verified. Do not create host
-                # bytecode caches in that canonical module tree while loading.
+                # Keep the installed backend tree free of host bytecode writes.
                 previous_bytecode = sys.dont_write_bytecode
                 try:
                     if manifest.schema_version == 3:

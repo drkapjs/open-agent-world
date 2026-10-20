@@ -12,7 +12,23 @@ export async function buildPackFrontendVite({ root = process.cwd(), outDir = 'di
   root = path.resolve(root); outDir = path.resolve(root, outDir);
   if (root === outDir || path.dirname(outDir) === outDir) throw new Error('Pack output must be a separate build directory');
   const manifest = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
-  const dependencies = new Set([...Object.keys(manifest.dependencies ?? {}), ...Object.keys(manifest.peerDependencies ?? {}), '@oaw/plugin-api']);
+  const manifests = new Map([[root, Promise.resolve(manifest)]]);
+  const insideRoot = filename => {
+    const relative = path.relative(root, filename);
+    return relative === '' || (relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative));
+  };
+  const importOwner = filename => {
+    const parts = path.relative(root, filename).split(path.sep);
+    const installation = parts.lastIndexOf('node_modules');
+    if (installation < 0) return root;
+    const packageName = parts[installation + 1];
+    if (!packageName) throw new Error('Pack dependency has no owning package');
+    return path.join(root, ...parts.slice(0, installation + (packageName.startsWith('@') ? 3 : 2)));
+  };
+  const ownerManifest = owner => {
+    if (!manifests.has(owner)) manifests.set(owner, readFile(path.join(owner, 'package.json'), 'utf8').then(JSON.parse));
+    return manifests.get(owner);
+  };
   const prefix = '\0oaw-host:';
   const boundary = (worker = false) => ({ name: 'oaw-pack-boundary', enforce: 'pre',
     async resolveId(source, importer) {
@@ -21,13 +37,30 @@ export async function buildPackFrontendVite({ root = process.cwd(), outDir = 'di
         if (worker) throw new Error('Pack workers cannot import host React or SDK modules');
         return prefix + source;
       }
-      if (importer?.startsWith(root.replaceAll('\\', '/')) && (source.startsWith('.') || path.isAbsolute(source))) {
+      const filename = importer && !importer.startsWith('\0') ? importer.split('?')[0] : undefined;
+      const owned = filename && insideRoot(filename);
+      if (owned && (source.startsWith('.') || path.isAbsolute(source))) {
         const candidate = path.resolve(path.dirname(importer.split('?')[0]), source.split('?')[0]);
-        if (!candidate.startsWith(root + path.sep) && candidate !== root) throw new Error(`Pack source import escapes its frontend project: ${source}`);
+        if (!insideRoot(candidate)) throw new Error(`Pack source import escapes its frontend project: ${source}`);
       }
-      if (importer?.startsWith(root.replaceAll('\\', '/')) && !source.startsWith('.') && !path.isAbsolute(source) && !source.startsWith('\0')) {
+      if (owned && !source.startsWith('.') && !path.isAbsolute(source) && !source.startsWith('\0')) {
+        // Each installed package owns its imports, including nested/scoped packages.
+        // A transitive dependency does not become available to the Pack's own source.
+        const owner = importOwner(filename);
+        const declared = await ownerManifest(owner);
+        const dependencies = new Set([...Object.keys(declared.dependencies ?? {}), ...Object.keys(declared.peerDependencies ?? {}),
+          ...Object.keys(declared.optionalDependencies ?? {}), ...(declared.name ? [declared.name] : []), '@oaw/plugin-api',
+          // Some published source libraries (for example @threlte/extras) put
+          // runtime peers in devDependencies. Honor that explicit declaration
+          // only for vendors; resolution still requires the package to already
+          // exist in this Pack's installed tree. Pack source stays runtime-only.
+          ...Object.keys(owner === root ? {} : declared.devDependencies ?? {})]);
         const name = source.startsWith('@') ? source.split('/').slice(0, 2).join('/') : source.split('/')[0];
-        if (!dependencies.has(name)) throw new Error(`Undeclared Pack frontend dependency: ${name}`);
+        const internal = source.startsWith('#') && Object.keys(declared.imports ?? {}).some(pattern => {
+          const wildcard = pattern.indexOf('*');
+          return wildcard < 0 ? source === pattern : source.startsWith(pattern.slice(0, wildcard)) && source.endsWith(pattern.slice(wildcard + 1));
+        });
+        if (!dependencies.has(name) && !internal) throw new Error(`Undeclared Pack frontend dependency: ${name} (imported by ${path.relative(root, filename)})`);
       }
     },
     load(id) { if (id.startsWith(prefix)) return hostRuntimeModule(id.slice(prefix.length)); },
@@ -39,7 +72,9 @@ export async function buildPackFrontendVite({ root = process.cwd(), outDir = 'di
     // helper is called from a process with NODE_ENV=development.
     esbuild: { jsx: 'automatic', jsxImportSource: 'react', jsxDev: false },
     css: { postcss: { plugins: [autoprefixer({ overrideBrowserslist: ['Chrome >= 109', 'Firefox >= 115', 'Safari >= 16.4'] })] } },
-    resolve: { conditions: ['browser', 'module'] },
+    // Setup may link an exact-version cache into this Pack's node_modules.
+    // Keep those imports under the same ownership checks as a fresh npm ci.
+    resolve: { conditions: ['browser', 'module'], preserveSymlinks: true },
     worker: { format: 'es', plugins: () => [boundary(true)] },
     build: { outDir, emptyOutDir: true, minify, target: 'es2022', assetsInlineLimit: 0,
       rollupOptions: { input: path.join(root, 'index.tsx'), preserveEntrySignatures: 'strict',

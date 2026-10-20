@@ -679,14 +679,17 @@ class ApplicationServices:
         raise TimeoutError("plugin lifecycle cleanup exceeded its deadline")
 
     async def startup(self) -> None:
-        await self.resources.artifacts.recover()
+        from backend.startup_progress import startup_stage
+        with startup_stage("recover managed artifacts"):
+            await self.resources.artifacts.recover()
         from backend.node_containers import migrate_collections
         migrate_collections(self)
         from backend.plugin_defaults import migrate_equipment
         migrate_equipment(self)
         manager = self._require_run_manager()
         manager.admission_check = self.summoning.assert_admission
-        await manager.startup()
+        with startup_stage("recover interrupted runs"):
+            await manager.startup()
         for run in manager.list_runs():
             conversation_id, session_id = manager._conversation_scope(run)
             if (
@@ -747,11 +750,13 @@ class ApplicationServices:
         for card in self.world.list_cards():
             lifecycle = self.plugins.node_type(card.type).lifecycle if not card.missing_plugin else None
             if lifecycle is not None:
-                await lifecycle.on_startup(context, card)
+                with startup_stage(f"restore card runtime ({card.type})"):
+                    await lifecycle.on_startup(context, card)
         await self.summoning.recover()
         from backend.sandbox.history import recover as recover_commands
         await recover_commands(self)
-        await self.background_jobs.startup()
+        with startup_stage("recover background jobs"):
+            await self.background_jobs.startup()
 
         self.node_execution.continuation_closed = False
         self.node_execution.signal_continuations()
@@ -3990,8 +3995,11 @@ def create_services(
     for directory in ("projects", "assets", "sandboxes", "database", "logs"):
         (settings.data_root / directory).mkdir(parents=True, exist_ok=True)
     new_world = not settings.database_path.exists()
-    database = Database(settings.database_path)
-    plugin_registry = plugins or load_plugin_registry(plugin_directories=settings.plugin_directories, data_root=settings.data_root)
+    from backend.startup_progress import startup_stage
+    with startup_stage("open profile database"):
+        database = Database(settings.database_path)
+    with startup_stage("load Pack registry"):
+        plugin_registry = plugins or load_plugin_registry(plugin_directories=settings.plugin_directories, data_root=settings.data_root)
     world = WorldStore(database, plugin_registry, chunk_size=settings.chunk_size, new_world=new_world)
     try:
         card_library = CardLibraryStore(database, plugin_registry)
@@ -4118,7 +4126,8 @@ def create_services(
         (saved_llm.base_url or saved_llm.api_key)
         and services.run_manager.default_runtime_provider_id is not None
     ):
-        default_provider = services.run_manager.default_provider()
+        with startup_stage("initialize default Agent provider"):
+            default_provider = services.run_manager.default_provider()
     else:
         default_provider = None
     if isinstance(default_provider, GoogleAdkAgentRuntime):
@@ -4139,8 +4148,9 @@ def create_services(
         services.sandbox_backend.pack_requirements = services.plugin_bootstrap.requirements
     from backend.packs.installation import PackInstallationManager
     services.pack_installations = PackInstallationManager(settings.data_root, plugin_registry)
-    services.pack_installations.pin_loaded_resources()
-    services.pack_installations.reconcile_resources(collect=True)
+    with startup_stage("reconcile Pack resources"):
+        services.pack_installations.pin_loaded_resources()
+        services.pack_installations.reconcile_resources(collect=True)
     from backend.packs.marketplace import MarketplaceClient
     services.marketplace = MarketplaceClient(settings.marketplace_url)
     return services

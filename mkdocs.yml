@@ -153,6 +153,7 @@ nav:
       - 从源码运行: getting-started.zh-CN.md
       - 交互教程与实现: tutorial.zh-CN.md
       - 工作区部署: deployment.zh-CN.md
+      - 多用户托管: contributing/hosting.zh-CN.md
       - 插件部署接入: plugin-deployment.zh-CN.md
       - 发布说明模板: release-notes.zh-CN.md
       - 文档编写规范: contributing/docs-checklist.zh-CN.md

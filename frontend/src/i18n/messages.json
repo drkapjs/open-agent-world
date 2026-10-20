@@ -7725,5 +7725,6 @@
   "Source files stay in your checkout. You can restore this Pack later.": ["Source files stay in your checkout. You can restore this Pack later.", "源文件保留在项目中，之后可以恢复此卡包。"],
   "Retain": ["Retain", "保留"],
   "After restart": ["After restart", "重启后清理"],
-  "Open in system folder": ["Open in system folder", "在系统文件夹中打开"]
+  "Open in system folder": ["Open in system folder", "在系统文件夹中打开"],
+  "The workspace is not ready. Try again or contact your administrator.": ["The workspace is not ready. Try again or contact your administrator.", "工作区暂未就绪，请重试或联系管理员。"]
 }

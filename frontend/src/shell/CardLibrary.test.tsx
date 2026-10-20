@@ -8,6 +8,7 @@ import { useCardLibrary, type LibrarySnapshot } from "../state/cardLibrary";
 import { TEST_CATALOG } from "../state/catalog.fixture";
 import { worldApi } from "../api/client";
 import { useWorldStore } from "../state/worldStore";
+import * as hostedAuth from '../auth/hostedSession';
 
 const originalRefresh = useCardLibrary.getState().refresh;
 beforeEach(() => {
@@ -16,6 +17,18 @@ beforeEach(() => {
 });
 const installedContentPack = { id: 'local.research', name: 'Research kit', version: '1.0.0', selected: true, loaded: false,
   kind: 'content' as const, environment: null };
+
+it('keeps hosted collections available without exposing plugin installation or store controls', async () => {
+  vi.spyOn(hostedAuth, 'isHosted').mockReturnValue(true);
+  useCardLibrary.setState({ snapshot: snapshot(), open: true, tab: 'store', refresh: async () => {} });
+  useWorldStore.setState({ legions: [] });
+  await act(async () => { render(<CardLibrary />); });
+  expect(screen.queryByRole('button', { name: 'Store' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Install Pack from File...' })).toBeNull();
+  expect(screen.queryByLabelText('Pack file')).toBeNull();
+  expect(worldApi.getInstalledPacks).not.toHaveBeenCalled();
+  expect(screen.getByRole('heading', { name: 'Pack inventory' })).toBeTruthy();
+});
 
 it('adds an installed file to the inventory immediately and closes its installation panel', async () => {
   useCardLibrary.setState({ snapshot: snapshot(), open: true, tab: 'packs', refresh: async () => {} });

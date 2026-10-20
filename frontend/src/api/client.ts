@@ -2,6 +2,7 @@ import { cardStateSession, stateSessionHeaders } from "../state/cardState";
 import type { BackgroundJob, JobAction, JobsSnapshot } from '../cards/jobTypes';
 import { normalizeCardFinish } from '../cards/cardFinish';
 import { fetchWithRetry } from './fetchWithRetry';
+import { hostedInstanceUrl, isHosted } from '../auth/hostedSession';
 import type { SummoningSnapshot, SummonedInstance } from "../cards/Barracks";
 import type {
   CardConfig,
@@ -38,11 +39,11 @@ export function configureWorkspaceApi(deployed: boolean) {
 }
 
 export function conversationAttachmentUrl(conversationId: string, sessionId: string, file: { version_id: string; path: string }, preview = false): string {
-  return `${API_BASE}/conversations/${encodeURIComponent(conversationId)}/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(file.version_id)}?${new URLSearchParams({ path: file.path, preview: String(preview) })}`;
+  return hostedInstanceUrl(`${API_BASE}/conversations/${encodeURIComponent(conversationId)}/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(file.version_id)}?${new URLSearchParams({ path: file.path, preview: String(preview) })}`);
 }
 
 export function nodeDocumentDownloadUrl(id: string, name: string, sessionId: string | null = cardStateSession(id) ?? null): string {
-  return `${API_BASE}/nodes/${encodeURIComponent(id)}/document/downloads/${encodeURIComponent(name)}${sessionId ? `?state_session=${encodeURIComponent(sessionId)}` : ""}`;
+  return hostedInstanceUrl(`${API_BASE}/nodes/${encodeURIComponent(id)}/document/downloads/${encodeURIComponent(name)}${sessionId ? `?state_session=${encodeURIComponent(sessionId)}` : ""}`);
 }
 
 export class ApiError extends Error {
@@ -802,7 +803,7 @@ export const worldApi = {
   },
   retainedArtifacts<T>(): Promise<T> { return request("/artifacts/retained"); },
   artifactDownloadUrl(collectionId: string, versionId: string, path: string): string {
-    return `${API_BASE}/artifact-collections/${encodeURIComponent(collectionId)}/versions/${encodeURIComponent(versionId)}/content?${new URLSearchParams({ path })}`;
+    return hostedInstanceUrl(`${API_BASE}/artifact-collections/${encodeURIComponent(collectionId)}/versions/${encodeURIComponent(versionId)}/content?${new URLSearchParams({ path })}`);
   },
   lifecycle<T>(retry = false): Promise<T> {
     return request(`/lifecycle${retry ? "/retry-cleanup" : ""}`, retry ? { method: "POST" } : undefined);
@@ -1051,13 +1052,13 @@ export interface SandboxSettings {
 
 export function runtimeWebSocketUrl(): string {
   const configured = import.meta.env.VITE_WS_URL as string | undefined;
-  if (configured) return configured;
+  if (configured && !isHosted()) return configured;
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  return `${protocol}//${window.location.host}/ws/events`;
+  return hostedInstanceUrl(`${protocol}//${window.location.host}/ws/events`);
 }
 
 export function resourceContentUrl(nodeId: string): string {
-  return `${API_BASE}/resources/${encodeURIComponent(nodeId)}/content`;
+  return hostedInstanceUrl(`${API_BASE}/resources/${encodeURIComponent(nodeId)}/content`);
 }
 
 export function normalizeRuntimeEvent(input: unknown): RuntimeEvent {

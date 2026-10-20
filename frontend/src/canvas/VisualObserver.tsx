@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { runtimeWebSocketUrl } from '../api/client';
 import { captureObservation, type ObservationRequest } from './visualObservation';
 import { capturePluginVisual } from '../plugins/visualCapture';
+import { isHosted } from '../auth/hostedSession';
 
 type PluginCaptureRequest = {
   kind: 'plugin_capture'; request_id: string; node_id: string; capture_kind: string;
@@ -14,6 +15,7 @@ function isPluginCaptureRequest(request: ObservationRequest | PluginCaptureReque
 
 export function VisualObserver() {
   useEffect(() => {
+    if (isHosted()) return; // Canvas observation is disabled by the hosted worker policy.
     let active = true;
     let socket: WebSocket | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;

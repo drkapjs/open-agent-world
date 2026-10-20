@@ -31,6 +31,9 @@ class PackInstallationManager:
                     id TEXT NOT NULL, version TEXT NOT NULL, manifest TEXT NOT NULL,
                     digest TEXT NOT NULL, checksums TEXT NOT NULL, PRIMARY KEY(id,version));
                 CREATE TABLE IF NOT EXISTS selections (id TEXT PRIMARY KEY, version TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS startup_receipts (
+                    id TEXT NOT NULL, version TEXT NOT NULL, record TEXT NOT NULL,
+                    PRIMARY KEY(id, version));
                 CREATE TABLE IF NOT EXISTS source_states (id TEXT PRIMARY KEY, enrolled INTEGER NOT NULL);
                 CREATE TABLE IF NOT EXISTS identities (
                     id TEXT NOT NULL, version TEXT NOT NULL, checksums TEXT NOT NULL, PRIMARY KEY(id,version));
@@ -544,6 +547,8 @@ class PackInstallationManager:
             check_environments(manifest, stage, self.root.parent, prepare=False)
             from backend.packs.adapters import prepared_adapter_paths
             prepared_adapter_paths(manifest.adapter, self.root.parent)
+            receipt = self._prepare_startup_receipt(manifest, pack.files, pack.backend_entry,
+                                                    consumer='pending:' + pack.digest)
             with self.connect(write=True) as db:
                 target = self.version_path(manifest.id, manifest.version)
                 if target.exists() or db.execute("SELECT 1 FROM versions WHERE id=? AND version=?", (manifest.id, manifest.version)).fetchone():
@@ -554,6 +559,8 @@ class PackInstallationManager:
                 stage.rename(target)
                 published = target
                 db.execute("INSERT INTO versions VALUES (?,?,?,?,?)", (manifest.id, manifest.version, manifest.model_dump_json(), pack.digest, pack.files['checksums.json'].decode('utf-8')))
+                db.execute("INSERT OR REPLACE INTO startup_receipts VALUES (?,?,?)",
+                           (manifest.id, manifest.version, json.dumps(receipt)))
                 db.execute("INSERT OR IGNORE INTO identities VALUES (?,?,?)", (manifest.id, manifest.version, pack.files['checksums.json'].decode('utf-8')))
                 db.execute('INSERT OR IGNORE INTO distribution_owners VALUES (?,?)', (manifest.id, manifest.owner_id))
                 db.execute("INSERT INTO selections VALUES (?,?) ON CONFLICT(id) DO UPDATE SET version=excluded.version", (manifest.id, manifest.version))
@@ -602,6 +609,7 @@ class PackInstallationManager:
             path = self.version_path(pack_id, version)
             files = {wheel.path: (path / wheel.path).read_bytes() for wheel in manifest.adapter.wheels}
             prepare_adapters(manifest.adapter, files, self.root.parent, consumer=consumer)
+            self._prepare_backend_modules(manifest, consumer=consumer)
             prepare_environments(manifest, path, self.root.parent)
         except BaseException:
             self._end_request(key)
@@ -683,6 +691,7 @@ class PackInstallationManager:
                     path.rename(destination)
                     trash = destination
                 db.execute("DELETE FROM versions WHERE id=? AND version=?", (pack_id, version))
+                db.execute("DELETE FROM startup_receipts WHERE id=? AND version=?", (pack_id, version))
         except BaseException:
             if trash is not None:
                 trash.rename(path)
@@ -690,6 +699,118 @@ class PackInstallationManager:
         if trash:
             shutil.rmtree(trash)
         return self.status()
+
+    def _prepare_startup_receipt(self, manifest, files, entry, *, consumer):
+        """Persist only metadata already accepted by the full archive inspector."""
+        receipt = self._startup_metadata(manifest, files, entry)
+        if manifest.kind == 'plugin' and manifest.schema_version == 3:
+            self._materialize_backend(manifest, files[manifest.entrypoints.backend],
+                                      receipt['backend_sha256'], consumer=consumer)
+        return receipt
+
+    @staticmethod
+    def _startup_metadata(manifest, files, entry):
+        from email.parser import BytesParser
+        import io
+        from zipfile import ZipFile
+        receipt = {'schema': 1, 'entrypoint': entry, 'backend_sha256': None,
+                   'requires_python': '', 'requires': []}
+        if manifest.kind == 'content':
+            return receipt
+        wheel = files[manifest.entrypoints.backend]
+        digest = json_object(files['checksums.json'])[manifest.entrypoints.backend]
+        receipt['backend_sha256'] = digest
+        with ZipFile(io.BytesIO(wheel)) as archive:
+            metadata_path = next(name for name in archive.namelist() if name.endswith('.dist-info/METADATA'))
+            metadata = BytesParser().parsebytes(archive.read(metadata_path))
+        receipt.update(requires_python=metadata.get('Requires-Python', ''),
+                       requires=metadata.get_all('Requires-Dist', []))
+        return receipt
+
+    def _materialize_backend(self, manifest, wheel, digest, *, consumer):
+        from backend.packs.modules import materialize_modules
+        from backend.packs.lifecycle import ManagedResourceLedger
+        ledger = ManagedResourceLedger(self.root.parent)
+        target = self.root / 'cache/modules' / digest
+        # Claim before preparation so concurrent GC cannot remove the result.
+        ledger.register('modules:' + digest, target, 'modules')
+        ledger.claim(consumer, 'modules:' + digest)
+        return materialize_modules(wheel, manifest, self.root / 'cache/modules', expected_digest=digest)
+
+    def _prepare_backend_modules(self, manifest, *, consumer):
+        if manifest.kind == 'plugin' and manifest.schema_version == 3:
+            digest = self._checksums(manifest.id, manifest.version)[manifest.entrypoints.backend]
+            wheel = (self.version_path(manifest.id, manifest.version) / manifest.entrypoints.backend).read_bytes()
+            self._materialize_backend(manifest, wheel, digest, consumer=consumer)
+
+    def _startup_receipt(self, manifest):
+        with self.connect() as db:
+            row = db.execute('SELECT record FROM startup_receipts WHERE id=? AND version=?',
+                             (manifest.id, manifest.version)).fetchone()
+        return json_object(row['record'].encode()) if row else None
+
+    def startup_entrypoint(self, manifest: PackManifest) -> str | None:
+        """Check an installed version, with one full migration for old installs."""
+        from backend.packs.modules import check_module_roots, _regular
+        path = self.version_path(manifest.id, manifest.version)
+        check_module_roots(path, ('manifest.json',), boundary=self.root)
+        actual = PackManifest.model_validate(json_object((path / 'manifest.json').read_bytes()))
+        if actual != manifest:
+            raise ValueError('Installed Pack manifest differs from installation record')
+        manifest.check_compatibility()
+        receipt = self._startup_receipt(manifest)
+        if receipt is None:
+            from backend.packs.environments import installation_lock
+            from backend.startup_progress import startup_stage
+            with installation_lock(self.root / 'startup-locks' / (self._activation_key(manifest.id, manifest.version) + '.lock')):
+                receipt = self._startup_receipt(manifest)
+                if receipt is None:
+                    with startup_stage(f'upgrade Pack installation record ({manifest.id})'):
+                        entry = self.verify_installed(manifest, backend_only=True)
+                        files = {'checksums.json': json.dumps(self._checksums(manifest.id, manifest.version)).encode()}
+                        if manifest.kind == 'plugin':
+                            files[manifest.entrypoints.backend] = (path / manifest.entrypoints.backend).read_bytes()
+                        receipt = self._prepare_startup_receipt(manifest, files, entry,
+                                                               consumer='selected:' + manifest.id)
+                        with self.connect(write=True) as db:
+                            db.execute('INSERT OR REPLACE INTO startup_receipts VALUES (?,?,?)',
+                                       (manifest.id, manifest.version, json.dumps(receipt)))
+        if (not isinstance(receipt, dict) or type(receipt.get('schema')) is not int or receipt['schema'] != 1
+                or set(receipt) != {'schema', 'entrypoint', 'backend_sha256', 'requires_python', 'requires'}
+                or not isinstance(receipt['requires_python'], str) or not isinstance(receipt['requires'], list)
+                or any(not isinstance(value, str) for value in receipt['requires'])):
+            raise ValueError('Unsupported Pack startup receipt; verify or restore the installation')
+        if manifest.kind == 'content':
+            return None
+        digest = self._checksums(manifest.id, manifest.version)[manifest.entrypoints.backend]
+        if receipt.get('backend_sha256') != digest:
+            raise ValueError('Pack startup receipt differs from installation record')
+        import re
+        entry = receipt.get('entrypoint')
+        if not isinstance(entry, str) or not re.fullmatch(re.escape(manifest.module_name) + r'(?:\.[A-Za-z_]\w*)*:[A-Za-z_]\w*', entry):
+            raise ValueError('Invalid installed Pack entry point')
+        _regular(path / manifest.entrypoints.backend, path, directory=False)
+        from backend.packs.archive import check_backend_requirements
+        check_backend_requirements(receipt['requires_python'],
+                                   receipt['requires'] if manifest.schema_version < 3 else ())
+        return entry
+
+    def verify_integrity(self, manifest: PackManifest) -> None:
+        """Explicit full verification; never import, repair or select Pack code."""
+        entry = self.verify_installed(manifest)
+        files = {'checksums.json': json.dumps(self._checksums(manifest.id, manifest.version)).encode()}
+        if manifest.kind == 'plugin':
+            files[manifest.entrypoints.backend] = (self.version_path(manifest.id, manifest.version) / manifest.entrypoints.backend).read_bytes()
+        receipt = self._startup_receipt(manifest)
+        if receipt is not None and receipt != self._startup_metadata(manifest, files, entry):
+            raise ValueError('Pack startup receipt differs from verified archive metadata')
+        from backend.packs.adapters import prepared_adapter_paths
+        prepared_adapter_paths(manifest.adapter, self.root.parent, read_only=True)
+        if manifest.kind == 'plugin' and manifest.schema_version == 3:
+            from backend.packs.modules import verify_modules
+            verify_modules(files[manifest.entrypoints.backend],
+                           manifest, self.root / 'cache/modules',
+                           expected_digest=self._checksums(manifest.id, manifest.version)[manifest.entrypoints.backend])
 
     def verify_installed(self, manifest: PackManifest, *, backend_only=False) -> str | None:
         path = self.version_path(manifest.id, manifest.version)

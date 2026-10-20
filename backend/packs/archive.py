@@ -81,10 +81,7 @@ def inspect_wheel(data: bytes, manifest: PackManifest) -> str:
     package = BytesParser().parsebytes(files[f"{prefix}/METADATA"])
     if package.get("Version") != manifest.version:
         raise ValueError("Backend wheel version differs from manifest")
-    if package.get("Requires-Python"):
-        import platform
-        if Version(platform.python_version()) not in SpecifierSet(package["Requires-Python"]):
-            raise ValueError("Backend wheel requires a different host Python version")
+    requires_python = package.get("Requires-Python", '')
     requirements = tuple(package.get_all("Requires-Dist", []))
     if manifest.schema_version == 3:
         from backend.packs.adapters import check_adapter_dependencies
@@ -94,18 +91,7 @@ def inspect_wheel(data: bytes, manifest: PackManifest) -> str:
             raise ValueError("Adapter dependency declaration differs from wheel metadata")
         check_adapter_dependencies([manifest.adapter])
         requirements = ()
-    for value in requirements:
-        requirement = Requirement(value)
-        if requirement.url:
-            raise ValueError("Backend dependency URLs are unsupported")
-        if requirement.marker and not requirement.marker.evaluate():
-            continue
-        try:
-            version = metadata.version(requirement.name)
-        except metadata.PackageNotFoundError as exc:
-            raise ValueError(f"Backend dependency is not supplied by host: {requirement.name}") from exc
-        if Version(version) not in requirement.specifier:
-            raise ValueError(f"Backend dependency incompatible with host: {requirement}")
+    check_backend_requirements(requires_python, requirements)
     declarations = ConfigParser(interpolation=None)
     declarations.optionxform = str
     try:
@@ -122,6 +108,25 @@ def inspect_wheel(data: bytes, manifest: PackManifest) -> str:
     if not re.fullmatch(re.escape(manifest.module_name) + r"(?:\.[A-Za-z_]\w*)*:[A-Za-z_]\w*", entry):
         raise ValueError("Backend factory must belong to its Pack module")
     return entry
+
+
+def check_backend_requirements(requires_python: str, requirements) -> None:
+    """Runtime compatibility uses installed metadata, without reading wheel bytes."""
+    import platform
+    if Version(platform.python_version()) not in SpecifierSet(requires_python):
+        raise ValueError("Backend wheel requires a different host Python version")
+    for value in requirements:
+        requirement = Requirement(value)
+        if requirement.url:
+            raise ValueError("Backend dependency URLs are unsupported")
+        if requirement.marker and not requirement.marker.evaluate():
+            continue
+        try:
+            version = metadata.version(requirement.name)
+        except metadata.PackageNotFoundError as exc:
+            raise ValueError(f"Backend dependency is not supplied by host: {requirement.name}") from exc
+        if Version(version) not in requirement.specifier:
+            raise ValueError(f"Backend dependency incompatible with host: {requirement}")
 
 
 @dataclass(frozen=True)
