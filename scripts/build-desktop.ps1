@@ -22,10 +22,11 @@ try {
     $payloadRoot = (Resolve-Path -LiteralPath (Join-Path $projectRoot '.open-agent-world/desktop-payload')).Path
     $aliasName = 'nsis-' + [guid]::NewGuid().ToString('N')
     $aliasRoot = Join-Path $projectRoot ".open-agent-world/$aliasName"
-    $configPatch = "$aliasRoot.json"
+    $configPath = Join-Path $projectRoot 'desktop/src-tauri/tauri.conf.json'
+    $originalConfig = [IO.File]::ReadAllBytes($configPath)
     try {
         New-Item -ItemType Directory -Path $aliasRoot | Out-Null
-        $resources = @{ '../../.open-agent-world/desktop-payload/' = $null }
+        $resources = @{}
         $index = 0
         Get-ChildItem -LiteralPath $payloadRoot -Recurse -File | ForEach-Object {
             $name = "$index$($_.Extension)"
@@ -35,19 +36,23 @@ try {
             $index++
         }
         if ($index -eq 0) { throw 'Cannot package an empty payload.' }
-        $patch = @{ bundle = @{ resources = $resources } } | ConvertTo-Json -Depth 4
-        [IO.File]::WriteAllText($configPatch, $patch, [Text.UTF8Encoding]::new($false))
+        # --config is forwarded through TAURI_CONFIG, which has a 32K limit on
+        # Windows. Keep the large resource map in the config file instead, and
+        # restore its exact bytes (including release signing settings) below.
+        $config = [Text.Encoding]::UTF8.GetString($originalConfig) | ConvertFrom-Json
+        $config.bundle.resources = $resources
+        [IO.File]::WriteAllText($configPath, ($config | ConvertTo-Json -Depth 100), [Text.UTF8Encoding]::new($false))
         Push-Location (Join-Path $projectRoot 'desktop')
         try {
             & npm.cmd ci --ignore-scripts --no-audit --no-fund
             if ($LASTEXITCODE -ne 0) { throw 'Desktop dependency installation failed.' }
-            & npm.cmd run build -- --config $configPatch
+            & npm.cmd run build
             if ($LASTEXITCODE -ne 0) { throw 'Desktop installer build failed.' }
         }
         finally { Pop-Location }
     }
     finally {
-        if (Test-Path -LiteralPath $configPatch) { Remove-Item -LiteralPath $configPatch }
+        [IO.File]::WriteAllBytes($configPath, $originalConfig)
         if (Test-Path -LiteralPath $aliasRoot) {
             $resolved = (Resolve-Path -LiteralPath $aliasRoot).Path
             $buildRoot = (Resolve-Path -LiteralPath (Join-Path $projectRoot '.open-agent-world')).Path
