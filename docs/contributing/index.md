@@ -16,6 +16,9 @@ merge commit for `dev` to `main` promotion so ancestry is preserved. Bring a
 necessary stable hotfix back into `dev` through a PR. Never force-push `dev`
 or `main`, and never move a published `v*` tag.
 
+After promotion, merge `main` back into `dev` through a PR so the next release
+branch includes the promotion commit and satisfies the up-to-date requirement.
+
 Promote tested `dev` to `main` through a release PR, wait for checks on the
 resulting `main` commit, then follow [desktop release preparation](../releasing.md).
 PR validation of a synthetic merge commit is not proof for another commit.

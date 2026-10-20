@@ -35,6 +35,8 @@ The **Desktop release** workflow builds Windows x64, macOS Apple Silicon and mac
    updater files. The manifest binds versions, checks, source SHA and asset
    hashes. Complete signing and installed-app requirements before manually
    publishing the draft. No workflow publishes a formal Release automatically.
+8. Merge `main` back into `dev` through a PR after stable promotion, including
+   the promotion commit so subsequent release PRs remain up to date.
 
 ### Version domains
 
