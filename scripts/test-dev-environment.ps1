@@ -1,6 +1,7 @@
 # Exercise the real Windows preflight function with a disposable Python shim.
 # No application process is started/stopped and no packages are downloaded.
 $ErrorActionPreference = 'Stop'
+$savedExitCode = $global:LASTEXITCODE
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $tokens = $null
 $parseErrors = $null
@@ -88,3 +89,5 @@ try {
 }
 Write-Host 'PASS: setup wrapper preserves profile, spaced plugin paths, build mode, and failure status.'
 Remove-Variable OawTestSetupArguments, OawTestSetupExitCode -Scope Global
+Remove-Item -LiteralPath Function:\uv
+$global:LASTEXITCODE = $savedExitCode

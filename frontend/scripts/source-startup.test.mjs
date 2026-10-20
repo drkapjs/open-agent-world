@@ -17,7 +17,8 @@ test('a direct Node launcher finds npm without npm_execpath and preserves the bu
     await writeFile(path.join(root, 'build.mjs'), `import {writeFileSync} from 'node:fs';
       writeFileSync('result.json', JSON.stringify({cwd:process.cwd(), mode:process.env.NODE_ENV}));`);
     await runNpm(['run', 'build'], root, { ...process.env, NODE_ENV: 'production' });
-    assert.deepEqual(JSON.parse(await readFile(path.join(root, 'result.json'), 'utf8')), { cwd: await realpath(root), mode: 'production' });
+    const result = JSON.parse(await readFile(path.join(root, 'result.json'), 'utf8'));
+    assert.deepEqual({ ...result, cwd: await realpath(result.cwd) }, { cwd: await realpath(root), mode: 'production' });
   } finally {
     if (previous === undefined) delete process.env.npm_execpath; else process.env.npm_execpath = previous;
     await rm(root, { recursive: true, force: true });

@@ -244,6 +244,7 @@ def test_namespace_extension_cannot_replace_an_existing_host_file(tmp_path, monk
 
 
 def test_top_level_library_bytecode_is_discarded_before_reverification(tmp_path, monkeypatch):
+    import py_compile
     from backend.packs.adapters import prepared_adapter_paths
     monkeypatch.setattr(sys, 'path', list(sys.path))
     output = io.BytesIO()
@@ -259,6 +260,9 @@ def test_top_level_library_bytecode_is_discarded_before_reverification(tmp_path,
     try:
         from single_fixture import RESULT
         assert RESULT == 91
+        # CI disables implicit bytecode writes. This test deliberately supplies
+        # a cache to verify that explicit integrity verification discards it.
+        py_compile.compile(str(paths[0] / 'single_fixture.py'), doraise=True)
         assert list((paths[0] / '__pycache__').glob('*.pyc'))
         assert prepared_adapter_paths(adapter, tmp_path) == paths
         assert not (paths[0] / '__pycache__').exists()
