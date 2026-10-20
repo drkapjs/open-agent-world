@@ -30,8 +30,15 @@ try {
         $index = 0
         Get-ChildItem -LiteralPath $payloadRoot -Recurse -File | ForEach-Object {
             $name = "$index$($_.Extension)"
-            New-Item -ItemType HardLink -Path (Join-Path $aliasRoot $name) -Value $_.FullName | Out-Null
-            $relative = $_.FullName.Substring($payloadRoot.Length + 1).Replace('\', '/')
+            $sourceFile = $_.FullName
+            # CreateHardLinkW still needs an extended path when the calling
+            # shell does not opt into long paths, even though .NET can list it.
+            $nativeSource = if ($sourceFile.StartsWith('\\?\')) { $sourceFile }
+                elseif ($sourceFile.StartsWith('\\')) { '\\?\UNC\' + $sourceFile.Substring(2) }
+                else { '\\?\' + $sourceFile }
+            try { New-Item -ItemType HardLink -Path (Join-Path $aliasRoot $name) -Value $nativeSource | Out-Null }
+            catch { throw "Cannot stage NSIS resource '$sourceFile': $($_.Exception.Message)" }
+            $relative = $sourceFile.Substring($payloadRoot.Length + 1).Replace('\', '/')
             $resources["../../.open-agent-world/$aliasName/$name"] = "payload/$relative"
             $index++
         }

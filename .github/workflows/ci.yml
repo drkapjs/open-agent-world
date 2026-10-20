@@ -43,7 +43,9 @@ jobs:
   backend:
     name: Backend tests
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    # The complete suite measured 39m20s and 44m21s on hosted runners.
+    # Leave room for runner variance and result upload; test deadlines stay unchanged.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
