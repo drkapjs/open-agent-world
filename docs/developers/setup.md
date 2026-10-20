@@ -63,6 +63,18 @@ Setup and dev both accept Node 22+. The current `matterviz` dependency declares
 Node 24+, so Node 22 displays a compatibility notice instead of blocking setup.
 This does not change the dependency's own engine declaration.
 
+Keep `.open-agent-world` for application state: development profiles, their Pack
+environments, backups, and launcher logs. It is not a disposable test directory;
+partially deleting a profile can remove its identity marker or prepared runtimes.
+Use the F3 reset controls to reset development data with a backup.
+
+Put ad hoc test worlds, pytest `--basetemp` directories, and diagnostic exports
+under `.tmp/`, or use the operating system's temporary directory. The standard
+E2E runner uses `.tmp/playwright/data`; Playwright screenshots, downloads, and
+traces go through `testInfo.outputPath(...)` into `.tmp/playwright/results`.
+Use the default Playwright browser cache rather than storing browser downloads
+inside `.open-agent-world`.
+
 Additional trusted plugins use `-PluginPath @('path/to/plugin')` on PowerShell or
 repeatable `--plugin-path path/to/plugin` on the portable scripts. Pass them to setup
 and dev; setup includes the repository plugins as well. Both use the persistent
