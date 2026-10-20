@@ -53,6 +53,7 @@ Audit date: 2026-10-20. Work branch: `refactor`, initially clean at
 | Desktop self-test imports a Pack dependency before activating Packs | Outdated packaging test assumption found during source audit | Run the same native PDF probe after `create_services` activates the bundled Library adapter; keep PyMuPDF out of host site-packages |
 | macOS Intel rejects a dependency path hook | Platform-specific dependency incompatibility | PyMuPDF4LLM 1.x requires Layout/ONNX. Intel resolves ONNX Runtime 1.23.2, whose coloredlogs dependency ships an executable `.pth`. Retain the rejection and use the existing standalone converter API (0.3.4), where Layout is optional |
 | Windows self-test cannot rename its synthetic profile after closing services | Test lifecycle assumption | Imported Pack modules intentionally retain locks until interpreter exit. Prepare the profile in a child interpreter and wait for exit before the existing backup/restore assertions, matching real update shutdown; do not shorten resource leases |
+| NSIS cannot open a 261-character resource source path | Windows packaging path limit | Temporarily alias the payload root to a free drive during compilation, preserving all resource paths and hashes. Mark the installer long-path aware and verify every installed payload file plus the existing self-test on the disposable Windows runner. Windows installation requires Win32 long paths enabled; the installer does not change system policy |
 
 ## Verification
 

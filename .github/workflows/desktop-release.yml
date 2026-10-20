@@ -137,6 +137,35 @@ jobs:
           uv venv backend/.venv --python 3.12
           if ($LASTEXITCODE -ne 0) { throw 'Python environment creation failed' }
           ./scripts/build-desktop.ps1
+      - name: Install Windows package and verify every payload file
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem desktop/src-tauri/target/release/bundle/nsis/*.exe)
+          if ($installers.Count -ne 1) { throw 'Expected exactly one Windows installer' }
+          $installRoot = Join-Path $env:RUNNER_TEMP 'OAW installer acceptance with spaces'
+          if (Test-Path -LiteralPath $installRoot) { throw 'Installer acceptance requires a fresh directory' }
+          $policy = Get-ItemPropertyValue 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' LongPathsEnabled
+          if ($policy -ne 1) { throw 'Windows installer acceptance requires Win32 long paths enabled' }
+          $process = Start-Process -FilePath $installers[0].FullName -ArgumentList "/S /D=$installRoot" -WindowStyle Hidden -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Installer failed: $($process.ExitCode)" }
+          $env:OAW_INSTALLED_PAYLOAD = Join-Path $installRoot 'payload'
+          @'
+          import hashlib, os
+          from pathlib import Path
+          source = Path(".open-agent-world/desktop-payload")
+          installed = Path(os.environ["OAW_INSTALLED_PAYLOAD"])
+          files = [p.relative_to(source) for p in source.rglob("*") if p.is_file()]
+          assert files and any(len(str(installed / p)) > 260 for p in files)
+          for relative in files:
+              with (source / relative).open("rb") as expected, (installed / relative).open("rb") as actual:
+                  assert hashlib.file_digest(expected, "sha256").digest() == hashlib.file_digest(actual, "sha256").digest(), relative
+          print(f"PASS: all {len(files)} installed payload files match, including long paths")
+          '@ | backend/.venv/Scripts/python.exe -
+          if ($LASTEXITCODE -ne 0) { throw 'Installed payload differs from verified build payload' }
+          $env:PATH = (Join-Path $env:OAW_INSTALLED_PAYLOAD 'tools') + ';' + $env:PATH
+          & (Join-Path $env:OAW_INSTALLED_PAYLOAD 'python/python.exe') -I -B (Join-Path $env:OAW_INSTALLED_PAYLOAD 'launch.py') --self-test
+          if ($LASTEXITCODE -ne 0) { throw 'Installed payload self-test failed' }
       - name: Build macOS installer and verify app
         if: runner.os == 'macOS'
         env:

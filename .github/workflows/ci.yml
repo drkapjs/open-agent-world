@@ -205,6 +205,7 @@ jobs:
         run: |
           ./scripts/test-dev-environment.ps1
           ./scripts/test-dev-startup.ps1
+          ./scripts/test-desktop-build.ps1
       - name: Check startup, access boundaries, deployment, persistence and migration
         run: >-
           backend/.venv/Scripts/python.exe .github/run-backend-tests.py
