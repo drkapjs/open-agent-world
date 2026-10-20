@@ -84,7 +84,8 @@ Audit date: 2026-10-20. Work branch: `refactor`, initially clean at
   deterministic onboarding wait described above; no timeout was increased.
 - Release selection also compares attempt start times: a failed rerun of an
   older workflow record blocks release even if its original run ID is smaller.
-  Focused release quality/configuration tests passed 57 cases.
+  Focused release quality/configuration tests passed 58 cases, including
+  combined-manifest verification for manual previews without a release tag.
 - Current PR checks and final validation results are attached to
   [PR #43](https://github.com/theAfish/open-agent-world/pull/43).
   GitHub reports the PR blocked with review required; no merge was attempted.
@@ -94,3 +95,8 @@ Audit date: 2026-10-20. Work branch: `refactor`, initially clean at
   No skip was added. Windows smoke intentionally overlaps the Linux suite to
   exercise OS behavior; PR merge validation and exact-source release validation
   are different checkout contracts, not interchangeable green checks.
+- Windows core integration on the branch passed 216 tests with one retained
+  platform prerequisite skip after dependency preparation was corrected
+  ([run](https://github.com/theAfish/open-agent-world/actions/runs/39422789329)).
+  That workflow still failed its hosted browser timing check; this partial result
+  is not presented as an overall green run.

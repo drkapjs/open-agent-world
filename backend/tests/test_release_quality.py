@@ -118,6 +118,15 @@ def test_release_manifest_and_notes_trace_all_platforms(release_root):
         assert assets["digest"](release_root / "release-assets" / name) == digest
 
 
+def test_manual_preview_validates_the_same_artifacts_without_claiming_a_release_tag(release_root):
+    path = release_root / "release-assets/release-validation.json"
+    evidence = json.loads(path.read_text())
+    evidence["tag"] = None
+    path.write_text(json.dumps(evidence))
+    assets["assemble"](release_root, "a" * 40, "1.2.3")
+    assert "Channel: manual preview" in (release_root / "release-notes.generated.md").read_text()
+
+
 @pytest.mark.parametrize("damage", ["source", "version", "missing-platform", "changed-installer", "validation"])
 def test_mixed_or_damaged_release_is_rejected(release_root, damage):
     folder = release_root / "release-assets"

@@ -187,7 +187,7 @@ jobs:
           if-no-files-found: error
 
   release:
-    if: github.event_name == 'push' && github.ref_type == 'tag'
+    name: Verify artifacts and prepare release
     needs: [quality, build]
     runs-on: ubuntu-latest
     permissions:
@@ -210,7 +210,17 @@ jobs:
         run: python3 scripts/collect-desktop-update.py --manifest
       - name: Verify complete artifacts and generate traceable release notes
         run: python3 scripts/release-assets.py --assemble
+      - name: Retain verified release evidence for manual previews and tags
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-evidence
+          path: |
+            release-assets/release-manifest.json
+            release-assets/release-validation.json
+            release-notes.generated.md
+          if-no-files-found: error
       - name: Create draft release
+        if: github.event_name == 'push' && github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}

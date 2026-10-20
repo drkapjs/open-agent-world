@@ -33,7 +33,7 @@ def record(root: Path, platform: str, sha: str, version: str) -> None:
 def assemble(root: Path, sha: str, version: str) -> None:
     assets = root / "release-assets"
     validation = json.loads((assets / "release-validation.json").read_text(encoding="utf-8"))
-    if validation["commit"] != sha or validation["version"] != version or validation["tag"] != "v" + version:
+    if validation["commit"] != sha or validation["version"] != version or validation["tag"] not in (None, "v" + version):
         raise ValueError("Validation evidence does not match release checkout")
     records = [json.loads(p.read_text(encoding="utf-8")) for p in sorted(assets.glob("provenance-*.json"))]
     if len(records) != len(PLATFORMS) or {r["platform"] for r in records} != set(PLATFORMS):
@@ -52,8 +52,9 @@ def assemble(root: Path, sha: str, version: str) -> None:
         {**validation, "builds": records, "sha256": files}, indent=2) + "\n", encoding="utf-8")
     notes = (root / "docs/release-notes.md").read_text(encoding="utf-8")
     evidence = "\n".join(f"- [{name}]({run['html_url']})" for name, run in validation["checks"].items())
+    channel = "manual preview" if validation["tag"] is None else "prerelease" if "-" in version else "stable"
     header = (f"# Open Agent World v{version}\n\n"
-              f"Source commit: `{sha}`. Channel: {'prerelease' if '-' in version else 'stable'}.\n\n"
+              f"Source commit: `{sha}`. Channel: {channel}.\n\n"
               f"Verified workflows for this commit:\n\n{evidence}\n\n"
               "All three installers use this source. `release-manifest.json` records their SHA-256 checksums "
               "and validation runs. Signing and installed-app acceptance remain separate release requirements.\n\n")

@@ -19,7 +19,9 @@ The **Desktop release** workflow builds Windows x64, macOS Apple Silicon and mac
    failure, cancellation, or pending run.
 4. Run **Desktop release** manually on that commit's branch to produce preview
    installers. For a feature-branch preview, first manually run all three
-   validation workflows on that branch. No Release is created by manual builds.
+   validation workflows on that branch. Manual builds also verify the combined
+   artifact manifest and retain generated notes in `release-evidence`; they do
+   not create a Release.
 5. Test installation, first launch, model configuration, backup/restore and
    upgrade on Windows x64 and both macOS architectures. Payload self-tests do
    not replace installed-app acceptance.
