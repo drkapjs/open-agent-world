@@ -60,7 +60,10 @@ def verified_run(runs: list[dict], workflow: str, sha: str) -> dict:
                   and r["path"] == f".github/workflows/{workflow}"]
     if not candidates:
         raise ValueError(f"{workflow}: no push/manual validation for {sha}")
-    latest = max(candidates, key=lambda r: (r["id"], r.get("run_attempt", 1)))
+    # A rerun keeps its original run ID. Compare attempt start times first so
+    # rerunning an older record cannot hide a newly observed failure.
+    latest = max(candidates, key=lambda r: (r.get("run_started_at", r.get("created_at", "")),
+                                           r["id"], r.get("run_attempt", 1)))
     if latest["status"] != "completed" or latest["conclusion"] != "success":
         raise ValueError(f"{workflow}: latest run is not successful: {latest['html_url']}")
     return {key: latest[key] for key in ("id", "head_sha", "html_url", "run_attempt")}

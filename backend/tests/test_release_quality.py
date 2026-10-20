@@ -39,6 +39,13 @@ def test_latest_manual_validation_is_accepted():
                                 "ci.yml", "a" * 40)["id"] == 2
 
 
+def test_failure_from_a_new_attempt_of_an_older_run_blocks_release():
+    old_rerun = run(1, run_attempt=2, run_started_at="2026-10-20T12:00:00Z", conclusion="failure")
+    newer_id = run(2, run_started_at="2026-10-20T11:00:00Z")
+    with pytest.raises(ValueError, match="latest run"):
+        gate["verified_run"]([newer_id, old_rerun], "ci.yml", "a" * 40)
+
+
 @pytest.fixture
 def version_root(tmp_path):
     for name in ("frontend/package.json", "frontend/package-lock.json", "desktop/package.json",

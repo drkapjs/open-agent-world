@@ -48,6 +48,7 @@ Audit date: 2026-10-20. Work branch: `refactor`, initially clean at
 | Chinese prose in card-design.md | Documentation defect | Translate prose in the English page; keep the language gate strict |
 | Windows application tests cannot prepare default Packs | CI environment, previously hidden behind the script exit failure | Install declared optional adapters and repository plugin test dependencies in the disposable Windows CI environment, matching the Linux integration job |
 | Greeter optional Python bootstrap has no native platform | CI environment/scope | Retain the original native fixture and assertions; build the same external card with `--host-only`, omitting its unused Sandbox requirement only from the external copy. This validates host installation/loading, not native Sandbox provisioning |
+| Hosted browser test times out on Carol's welcome screen | Test race | A fresh builder profile always has onboarding. Wait for its Start blank control and dismiss it instead of sampling visibility before the asynchronous onboarding state arrives. CI screenshot confirmed the blocking welcome overlay |
 
 ## Verification
 
@@ -76,3 +77,20 @@ Audit date: 2026-10-20. Work branch: `refactor`, initially clean at
   passed, but environment preparation exceeded its timeout and shutdown did not
   drain in time. This is not native Sandbox acceptance; that mode remains a
   separate target-environment requirement. The host-only mode makes no such claim.
+- Host-only Greeter passed both local production-host browser phases, including
+  the declared environment, real card frontend and persisted greeting. Local
+  deployment, publication and hosted-account scenarios passed; Chromium shared
+  UI passed all three tests. The Linux hosted scenario then exposed the
+  deterministic onboarding wait described above; no timeout was increased.
+- Release selection also compares attempt start times: a failed rerun of an
+  older workflow record blocks release even if its original run ID is smaller.
+  Focused release quality/configuration tests passed 57 cases.
+- Current PR checks and final validation results are attached to
+  [PR #43](https://github.com/theAfish/open-agent-world/pull/43).
+  GitHub reports the PR blocked with review required; no merge was attempted.
+- The baseline JUnit contains 2655 cases with zero duplicate `(classname, name)`
+  identities. Its 60 existing skips are explicit native Windows/macOS/WSL/Linux
+  Sandbox, controlled-network, and separate scientific-environment prerequisites.
+  No skip was added. Windows smoke intentionally overlaps the Linux suite to
+  exercise OS behavior; PR merge validation and exact-source release validation
+  are different checkout contracts, not interchangeable green checks.
