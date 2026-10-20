@@ -69,7 +69,7 @@ repository administrators can require its checks in the branch ruleset.
 
 ## Documentation
 
-`docs.yml` checks PRs to `dev`/`main` and pushes to `dev` without path filters:
+`docs.yml` checks PRs to and pushes to `dev`/`main` without path filters:
 removing a source file can break a documentation link even in a code-only PR.
 Its `build` job installs only `scripts/docs-requirements.txt` and runs
 `python scripts/docs.py check`. This validates source inventory, heading/language
