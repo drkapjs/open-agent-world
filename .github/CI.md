@@ -1,5 +1,24 @@
 # Pull request checks
 
+Required merge contexts are `CI required`, `Docs required`, and `Native required`.
+They run without path filters on PRs to and pushes to `dev`/`main`, and on manual
+dispatch. Each aggregate fails unless every dependency succeeds, including all
+matrix targets. Enable them in GitHub rulesets using the
+[administrator instructions](../docs/contributing/index.md#repository-administrator-setup);
+repository code cannot enable those settings.
+
+Frontend CI builds first, using the existing preparation step to install each
+Pack's declared dependencies in its own directory. Source-component tests then
+resolve Pack dependencies without adding them to the host manifest. The same job
+packs the public SDK, builds the existing Greeter outside the checkout, installs
+its `.oawpack`, restarts the production host, and checks cards and frontend assets
+in Chromium with the mock runtime. No Marketplace or model credentials are used.
+
+`Application version consistency` checks all committed application declarations.
+Desktop release requires successful latest runs of all three validation workflows
+on the exact source SHA, then pins every builder to that SHA. Manual preview
+builds have the same gate. See [releasing](../docs/releasing.md).
+
 `ci.yml` extends the existing workflow on PRs targeting `dev` or `main`, pushes
 to those branches, and manual dispatch. Check names already used by branch
 rules remain stable; there are no path filters, blanket skips, or
