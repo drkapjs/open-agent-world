@@ -18,12 +18,6 @@ elif "--self-test" in sys.argv:
     import tempfile
     import google.adk
     import litellm
-    import pymupdf
-    # Plugin modules can load lazily; exercise Library's native host dependency.
-    with pymupdf.open() as pdf:
-        pdf.new_page().insert_text((50, 50), "Bundled Library self-test")
-        with pymupdf.open(stream=pdf.tobytes(), filetype="pdf") as restored:
-            assert "Bundled Library self-test" in restored[0].get_text()
     from backend.config import Settings
     from backend.persistence.database import Database
     from backend.security.llm_settings import LlmSettingsStore
@@ -36,6 +30,13 @@ elif "--self-test" in sys.argv:
         try:
             catalog = services.plugins.catalog()
             assert len(catalog.plugins) > 1, "Bundled plugins are missing"
+            # The loader activates Library's managed adapter; it is not a host
+            # site-packages dependency in a clean desktop payload.
+            import pymupdf
+            with pymupdf.open() as pdf:
+                pdf.new_page().insert_text((50, 50), "Bundled Library self-test")
+                with pymupdf.open(stream=pdf.tobytes(), filetype="pdf") as restored:
+                    assert "Bundled Library self-test" in restored[0].get_text()
             assert (root / "frontend/dist/index.html").is_file()
             sandbox_status = "unsupported" if sys.platform == "darwin" else "ready"
             if sys.platform != "darwin":

@@ -50,6 +50,7 @@ Audit date: 2026-10-20. Work branch: `refactor`, initially clean at
 | Greeter optional Python bootstrap has no native platform | CI environment/scope | Retain the original native fixture and assertions; build the same external card with `--host-only`, omitting its unused Sandbox requirement only from the external copy. This validates host installation/loading, not native Sandbox provisioning |
 | Hosted browser test times out on Carol's welcome screen | Test race | A fresh builder profile always has onboarding. Wait for its Start blank control and dismiss it instead of sampling visibility before the asynchronous onboarding state arrives. CI screenshot confirmed the blocking welcome overlay |
 | All three real desktop builds reject a Knowledge Base dependency wheel | Unbounded dependency across a breaking upstream release | PyMuPDF4LLM 2.0, released on October 19, is an empty compatibility package: its implementation moved into PyMuPDF 2.x. Bound the two owning Packs to the existing 1.x API, retain the Adapter validators, and test real local PDF conversion in backend CI |
+| Desktop self-test imports a Pack dependency before activating Packs | Outdated packaging test assumption found during source audit | Run the same native PDF probe after `create_services` activates the bundled Library adapter; keep PyMuPDF out of host site-packages |
 
 ## Verification
 
