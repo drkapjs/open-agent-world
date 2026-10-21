@@ -555,6 +555,8 @@ class PluginRegistry:
     """Authoritative registry of installed plugins and their owned contributions."""
 
     def __init__(self) -> None:
+        # Startup diagnostics carry no executable contributions or permissions.
+        self.load_failures: list[dict[str, Any]] = []
         self.runtime_requirements: dict[str, tuple[str, ...]] = {}
         self.installed_packs: dict[str, Any] = {}
         self.frontend_modules: dict[str, dict[str, Any]] = {}
@@ -591,7 +593,7 @@ class PluginRegistry:
             raise ValueError(f"plugin {descriptor.id!r} is already installed")
         for dependency in descriptor.requires_plugins:
             self.validate_identifier(dependency, "plugin dependency")
-            if not self.has_plugin(dependency):
+            if not self.is_enabled(dependency):
                 raise PluginCompatibilityError(
                     f"plugin {descriptor.id!r} requires plugin {dependency!r} to be installed first"
                 )
@@ -631,13 +633,16 @@ class PluginRegistry:
         self._normalize_capabilities(staged)
         self._validate_registration(staged)
 
-        self._plugins[descriptor.id] = descriptor
-        self._commit_owned("legion_preset", descriptor.id, self._legion_presets, staged.legion_presets)
-        self._commit_owned("pack", descriptor.id, self._packs, {
+        # Construct all fallible metadata before publishing any contribution.
+        packs = {
             key: PackCatalogItem(**pack.model_dump(), plugin_id=descriptor.id, source="installed" if distribution else "bundled",
                 artwork_url=f"/api/plugins/{descriptor.id}/assets/{pack.artwork_asset}" if pack.artwork_asset else None)
             for key, pack in staged.packs.items()
-        })
+        }
+
+        self._plugins[descriptor.id] = descriptor
+        self._commit_owned("legion_preset", descriptor.id, self._legion_presets, staged.legion_presets)
+        self._commit_owned("pack", descriptor.id, self._packs, packs)
         self._assets.update({(descriptor.id, key): asset for key, asset in staged.assets.items()})
         self._commit_owned("node_type", descriptor.id, self._nodes, staged.nodes)
         self._commit_owned("capability", descriptor.id, self._capabilities, staged.capabilities)
@@ -1010,6 +1015,8 @@ class PluginRegistry:
             raise PluginUnavailableError(f"Plugin {owner!r} is disabled")
 
     def assert_runtime_provider_enabled(self, provider_id: str) -> None:
+        if provider_id not in self._runtime_provider_factories:
+            raise PluginUnavailableError(f"Runtime provider {provider_id!r} is unavailable")
         self._assert_enabled("runtime_provider", provider_id)
 
     def has_trait(self, type_id: str, trait: str) -> bool:

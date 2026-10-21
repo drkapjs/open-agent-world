@@ -11,17 +11,23 @@ const repo = path.dirname(frontendRoot);
 const readJson = async file => JSON.parse(await readFile(file, 'utf8'));
 const exists = async file => { try { await access(file); return true; } catch { return false; } };
 
-export async function sourcePacks() {
+export async function sourcePacks({ strict = true } = {}) {
   const packs = [];
+  if (process.env.OPEN_AGENT_WORLD_CORE_ONLY === '1') return packs;
   for (const parent of ['plugins', 'examples/deployed-workspace/plugins']) {
     for (const directory of await readdir(path.join(repo, parent), { withFileTypes: true })) {
       if (!directory.isDirectory()) continue;
       const root = path.join(repo, parent, directory.name, 'frontend');
       if (!await exists(path.join(root, 'plugin.json'))) continue;
+      try {
       const manifest = await readJson(path.join(root, 'plugin.json'));
       if (manifest.apiVersion !== 1 || !/^[a-z][a-z0-9._-]*$/.test(manifest.pluginId)) throw new Error(`Invalid Pack frontend manifest: ${root}`);
       if (packs.some(pack => pack.owner === manifest.pluginId)) throw new Error(`Duplicate Pack frontend owner: ${manifest.pluginId}`);
       packs.push({ root, owner: manifest.pluginId });
+      } catch (error) {
+        if (strict) throw error;
+        console.error(`Optional Pack unavailable (${root}): ${error.message}`);
+      }
     }
   }
   return packs;
@@ -161,10 +167,16 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   if (process.argv.includes('--check-host')) await checkProject(frontendRoot);
   else {
     if (process.argv.includes('--check')) await checkProject(frontendRoot);
-    for (const pack of await sourcePacks()) {
+    const strict = process.env.OAW_ALLOW_PACK_FAILURES !== '1';
+    for (const pack of await sourcePacks({ strict })) {
+      try {
       if (process.argv.includes('--prepare')) await preparePack(pack);
       else if (process.argv.includes('--check')) await preparePack(pack, { install: false });
       else await buildSourcePack(pack, { force: process.argv.includes('--force') });
+      } catch (error) {
+        if (strict) throw error;
+        console.error(`Optional Pack ${pack.owner} unavailable: ${error.message}`);
+      }
     }
   }
 }

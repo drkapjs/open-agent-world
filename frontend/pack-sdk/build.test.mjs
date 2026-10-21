@@ -20,6 +20,28 @@ async function temporaryDirectory() {
   return mkdtemp(path.join(base, 'pack-build-'));
 }
 
+test('dev serves Core and independent Packs when one build fails, while CI stays strict', async () => {
+  const root = await temporaryDirectory();
+  const packs = [{ owner: 'fixture.broken', root: path.join(root, 'broken') }, { owner: 'fixture.good', root: path.join(root, 'good') }];
+  await mkdir(path.join(packs[1].root, 'dist'), { recursive: true });
+  await writeFile(path.join(packs[1].root, 'dist/index.js'), 'export default "good";');
+  const buildPack = async pack => { if (pack.owner === 'fixture.broken') throw new Error('deliberate missing dependency'); };
+  const discover = async () => packs;
+  const strict = sourcePackArtifacts({ discover, buildPack });
+  await assert.rejects(() => strict.buildStart(), /deliberate missing dependency/);
+  const server = await createServer({ configFile: false, root,
+    server: { host: '127.0.0.1', port: 0 }, plugins: [sourcePackArtifacts({ discover, buildPack })] });
+  try {
+    await server.listen();
+    const base = `http://127.0.0.1:${server.httpServer.address().port}`;
+    assert.equal((await fetch(base + '/assets/packs/fixture.good/index.js')).status, 200);
+    assert.equal((await fetch(base + '/assets/packs/fixture.broken/index.js')).status, 404);
+  } finally {
+    await server.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('published runtime export list matches the complete SDK value surface', () => {
   const root = new URL('../', import.meta.url);
   const configPath = fileURLToPath(new URL('tsconfig.app.json', root));

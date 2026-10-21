@@ -110,13 +110,17 @@ class PackInstallationManager:
         with self.connect(write=True) as db:
             manifests = self.selected(db)
             selected = {'selected:' + key: self.resource_ids(manifest) for key, manifest in manifests.items()}
-            sources = {'source:' + key: self.source_resource_ids(spec) for key, spec in self.source_specs().items()
-                       if self.source_enrolled(key)}
+            # A partial discovery has no authority to release retained source
+            # resources. A healthy restart reconciles this snapshot normally.
+            discovery_complete = not (self.registry and self.registry.load_failures)
+            sources = ({'source:' + key: self.source_resource_ids(spec) for key, spec in self.source_specs().items()
+                       if self.source_enrolled(key)} if discovery_complete else {})
             ledger.replace_claims('selected:', selected)
             # A recovery manager without source discovery has no authority to
             # release source references established by an active application.
             if self.registry is not None:
-                ledger.replace_claims('source:', sources)
+                if discovery_complete:
+                    ledger.replace_claims('source:', sources)
                 self.registry.enrolled_pack_owners = {manifest.owner_id for manifest in manifests.values()} | {
                     spec.owner for key, spec in self.source_specs().items() if self.source_enrolled(key)}
                 self.registry.pack_profile_id = hashlib.sha256(str(self.root.parent).encode()).hexdigest()
@@ -124,7 +128,7 @@ class PackInstallationManager:
             terminal = [row['digest'] for row in db.execute("SELECT digest FROM operations WHERE state IN ('failed','completed')")]
             for digest in terminal:
                 ledger.release_consumer('pending:' + digest)
-        return ledger.collect() if collect else []
+        return ledger.collect() if collect and discovery_complete else []
 
     def _begin_request(self, key):
         from backend.packs.environments import installation_lock
@@ -242,7 +246,7 @@ class PackInstallationManager:
                 adapters = [item.adapter for item in selected.values()]
                 adapters.extend(source_adapter_declaration(candidate, self.root.parent)
                                 for key, candidate in self.source_specs().items()
-                                if key == pack_id or self.source_enrolled(key))
+                                if key == pack_id or (self.registry.has_plugin(candidate.owner) and self.source_enrolled(key)))
                 check_adapter_dependencies(adapters, allow_existing=True)
                 db.execute('INSERT INTO source_states VALUES (?,1) ON CONFLICT(id) DO UPDATE SET enrolled=1', (pack_id,))
             self.reconcile_resources()
@@ -373,7 +377,7 @@ class PackInstallationManager:
             adapters.extend(manifest.adapter for manifest in registry.installed_packs.values()
                             if manifest.schema_version == 3 and selected.get(manifest.id) != manifest)
             for owner, spec in registry.pack_specs.items():
-                if (owner not in {manifest.owner_id for manifest in registry.installed_packs.values()}
+                if (registry.has_plugin(owner) and registry.pack_sources.get(owner) != 'installed'
                         and self.source_enrolled(spec.distribution_id)):
                     adapters.append(source_adapter_declaration(spec, self.root.parent))
         check_adapter_dependencies(adapters, allow_existing=True)
@@ -877,4 +881,5 @@ class PackInstallationManager:
                        loaded=loaded.get(row['id']) == manifest)
         source_restart = any(self.source_enrolled(key) != self.registry.has_plugin(spec.owner)
                              for key, spec in self.source_specs().items())
-        return {"versions": versions, "restart_required": selected != loaded or source_restart}
+        return {"versions": versions, "restart_required": selected != loaded or source_restart,
+                "failures": self.registry.load_failures if self.registry else []}

@@ -47,6 +47,7 @@ def main(argv=None) -> None:
     parser.add_argument("--profile", type=profile_name, help="Prepare this development profile instead of production data")
     parser.add_argument("--plugin-path", action="append", type=Path, default=[], help="Additional trusted source plugin (repeatable)")
     parser.add_argument("--skip-build", action="store_true", help="Prepare for dev without building the production frontend")
+    parser.add_argument("--core-only", action="store_true", help="Install only Core; omit optional Python runtimes and Packs")
     args = parser.parse_args(argv)
     paths = []
     for path in args.plugin_path:
@@ -56,17 +57,23 @@ def main(argv=None) -> None:
         paths.append(path)
     commands = prerequisites(install=True)
     # Keep trusted editable plugins; a host sync must not uninstall them.
+    extras = [] if args.core_only else ["--extra", "adk", "--extra", "litellm"]
     subprocess.run([commands["uv"], "sync", "--project", str(ROOT / "backend"), "--locked",
-                    "--dev", "--extra", "adk", "--extra", "litellm", "--inexact"], cwd=ROOT, check=True)
+                    "--dev", *extras, "--inexact"], cwd=ROOT, check=True)
     python = backend_python()
     if not python.is_file():
         raise RuntimeError(f"Backend Python is missing after sync: {python}")
-    install = [str(python), str(ROOT / "scripts/install-plugins.py")]
+    install = [str(python), str(ROOT / "scripts/install-plugins.py"), "--continue-on-error"]
     if args.profile:
         install += ["--profile", args.profile]
     for path in paths:
         install += ["--additional-path", str(path)]
-    subprocess.run(install, cwd=ROOT, check=True)
+    if not args.core_only:
+        subprocess.run(install, cwd=ROOT, check=True)
+    elif paths:
+        parser.error("--core-only cannot be combined with --plugin-path")
+    build_env = {**os.environ, "OPEN_AGENT_WORLD_CORE_ONLY": "1"} if args.core_only else os.environ.copy()
+    build_env["OAW_ALLOW_PACK_FAILURES"] = "1"
     frontend = ROOT / "frontend"
     # This checker uses only Node built-ins, so it also works before npm ci.
     ready = subprocess.run([commands["node"], str(frontend / "scripts/source-packs.mjs"), "--check-host"],
@@ -78,10 +85,10 @@ def main(argv=None) -> None:
                        cwd=frontend, check=True)
     if args.skip_build:
         for script in ("build:pack-sdk", "prepare:packs"):
-            subprocess.run([commands["npm"], "run", script], cwd=frontend, check=True)
+            subprocess.run([commands["npm"], "run", script], cwd=frontend, env=build_env, check=True)
     else:
         # prebuild prepares the SDK and Pack dependencies once.
-        subprocess.run([commands["npm"], "run", "build"], cwd=frontend, check=True)
+        subprocess.run([commands["npm"], "run", "build"], cwd=frontend, env=build_env, check=True)
     print(f"Setup complete ({'development profile: ' + args.profile if args.profile else 'production'}).", flush=True)
 
 

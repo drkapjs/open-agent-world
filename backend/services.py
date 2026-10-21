@@ -3998,10 +3998,10 @@ def create_services(
     from backend.startup_progress import startup_stage
     with startup_stage("open profile database"):
         database = Database(settings.database_path)
-    with startup_stage("load Pack registry"):
-        plugin_registry = plugins or load_plugin_registry(plugin_directories=settings.plugin_directories, data_root=settings.data_root)
-    world = WorldStore(database, plugin_registry, chunk_size=settings.chunk_size, new_world=new_world)
     try:
+        with startup_stage("load Pack registry"):
+            plugin_registry = plugins or load_plugin_registry(plugin_directories=settings.plugin_directories, data_root=settings.data_root)
+        world = WorldStore(database, plugin_registry, chunk_size=settings.chunk_size, new_world=new_world)
         card_library = CardLibraryStore(database, plugin_registry)
         from backend.migrations.barracks import check_legacy
         check_legacy(database)
@@ -4127,7 +4127,13 @@ def create_services(
         and services.run_manager.default_runtime_provider_id is not None
     ):
         with startup_stage("initialize default Agent provider"):
-            default_provider = services.run_manager.default_provider()
+            from backend.agents import AgentDependencyError
+            from backend.errors import PluginUnavailableError, RuntimeUnavailableError
+            try:
+                default_provider = services.run_manager.default_provider()
+            except (AgentDependencyError, PluginUnavailableError, RuntimeUnavailableError) as exc:
+                logger.warning("Default Agent provider is unavailable: %s", exc)
+                default_provider = None
     else:
         default_provider = None
     if isinstance(default_provider, GoogleAdkAgentRuntime):

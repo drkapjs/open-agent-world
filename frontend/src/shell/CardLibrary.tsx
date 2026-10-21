@@ -179,6 +179,11 @@ export function CardLibrary() {
         {tab === "packs" ? <>
           {library.open && !hosted ? <PackInstaller actionTarget={installAction} installations={installations.state} onInstalled={value => { acceptInstallations(value); setInspectedPack(null); setQuery(''); }} /> : null}
           <PackOperations operations={installations.state?.operations} />
+          {installations.state?.failures?.map((failure, index) => <details key={`${failure.id}:${index}`} className="pack-action-error">
+            <summary>{failure.id} · {t('Unavailable')} ({failure.phase})</summary>
+            <p style={{ overflowWrap: 'anywhere' }}>{failure.error}</p>
+            <p>{t('Repair or reinstall this Pack, then restart OAW to retry. Saved cards and connections are retained.')}</p>
+          </details>)}
           {installations.error && <p className="pack-action-error" role="alert">{installations.error}</p>}
           {packNotice && <p className="pack-restart-note" role="status">{t(packNotice)}</p>}
           {packDetail ? <InstalledPackDetails key={packDetail.pack.definition.id} {...packDetail} snapshot={snapshot}

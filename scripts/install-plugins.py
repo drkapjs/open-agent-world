@@ -94,6 +94,7 @@ def main():
     parser.add_argument("--profile", type=profile_name, help="Prepare dependencies in this development profile, matching backend.launcher")
     parser.add_argument("--constraint", type=Path, help="Preserve the locked host dependency versions")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--continue-on-error", action="store_true", help="Prepare each optional Pack independently; report failures without blocking Core setup")
     args = parser.parse_args()
     if args.target and args.profile:
         parser.error("--target and --profile select different preparation destinations")
@@ -104,6 +105,21 @@ def main():
         if not (path / "pyproject.toml").is_file():
             parser.error(f"Plugin path must contain a pyproject.toml: {path}")
     if not paths:
+        return
+    if args.continue_on_error:
+        failed = []
+        for path in paths:
+            command = [sys.executable, str(Path(__file__).resolve()), str(path), "--python", args.python]
+            for name in ("target", "profile", "constraint"):
+                if value := getattr(args, name):
+                    command += ["--" + name, str(value)]
+            if args.dry_run:
+                command.append("--dry-run")
+            if subprocess.run(command, cwd=ROOT).returncode:
+                failed.append(str(path))
+        if failed:
+            print("Optional Pack preparation failed; Core remains available. Retry install-plugins.py with the individual path:\n"
+                  + "\n".join(failed), file=sys.stderr)
         return
     command = ["uv", "pip", "install", "--no-deps", "--python", args.python]
     if args.dry_run:
