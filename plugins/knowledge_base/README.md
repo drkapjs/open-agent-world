@@ -5,12 +5,13 @@ file and carries three related workflows over the same collection:
 
 - **Literature** — raw data → markdown → full-text search, or → structured JSON
   projection → draft graph → human review → published knowledge graph.
-- **Experiments** — pick a schema describing one specimen record, upload the files
-  of one experiment (a photographed table, a spreadsheet, a note) as one **upload**,
-  and **Extract records** projects them, read as one document, into one or more
+- **Experiments** — upload the files of one experiment (a photographed table, a
+  spreadsheet, a note) and they become one **upload**; **Extract records** confirms
+  its name, description and the schema describing one specimen record, then
+  projects the files, read as one document, into one or more
   structured records — through a connected **Lab assistant** Agent when there is
-  one, else through one model call — → a person reviews each in a schema-driven
-  form (or by asking the Lab assistant) → **publishes** it as approved data.
+  one, else through one model call — → a person reviews each as a table or in a
+  schema-driven form (or by asking the Lab assistant) → **publishes** it as approved data.
 - The knowledge graph is opt-in, not required by either workflow: search answers
   document-level questions and published experiment records answer structured ones
   without ever touching a draft or a review.
@@ -153,24 +154,32 @@ ever shows.
 
 ### Experiment
 
-1. **Experiments** — first choose an **experiment**-kind schema in the toolbar (or
-   **New schema** to write one: one JSON Schema object describes one specimen
-   record). Then **New upload**: name one experiment's set of files and optionally
-   describe them (units, which specimen a photo shows), and **Add files** — a
-   photographed handwritten table, an Excel sheet, a PDF, a note; each converts to
-   markdown as soon as it lands (images through the vision engine). Once every
-   file is converted, **Extract records** reads the whole upload as one document,
-   projects it onto the schema and saves one draft record per specimen, each linked
-   to the files it was read from — by starting the connected Lab assistant when one
-   is connected, or else with one model call through the selected model. The
-   records list right below; click one to review it in a form generated from the
-   schema (typed inputs per field, a **JSON** toggle for the raw data), edit it
-   directly or ask the Lab assistant to in the conversation, then **Publish** —
-   after an explicit confirmation — to mark it approved data. **Re-extract**
-   replaces an upload's drafts and leaves its published records alone;
-   **Unpublish** reopens a record; **Remove upload** deletes its records and keeps
-   its files out of Literature. An experiment record never touches a draft, a
-   review or the published graph.
+1. **Experiments** — **Upload files** (or drop them onto the section): a
+   photographed handwritten table, an Excel sheet, a PDF, a note. One experiment's
+   files become one **upload**, created on the spot and named after its files;
+   each file converts to markdown as soon as it lands (images through the vision
+   engine). Uploads line up as chips above the records; pick one to see its files,
+   **Add files** to it, or edit its details. Once every file is converted, **Extract
+   records** opens a window to confirm the upload's name, description (units, which
+   specimen a photo shows) and **experiment**-kind schema (choose one in the window,
+   or **New schema** first: one JSON Schema object describes one specimen record;
+   the schema is fixed once the upload has records). Confirming reads the whole
+   upload as one document, projects it onto the schema and saves one draft record
+   per specimen, each linked to the files it was read from — by starting the
+   connected Lab assistant when one is connected, or else with one model call
+   through the selected model. The records list below as folded rows; the toolbar's
+   schema filter (or **All schemas**), the upload chips, a status filter and a
+   search box (over names, values, file names and notes) narrow them, and a toggle
+   shows the same records as a table with one column per schema field. Unfold a
+   record to read its data as a table (nested lists and objects as sub-tables,
+   missing required fields flagged), then **Edit** it in a form generated from the
+   schema (typed inputs per field, a **JSON** toggle for the raw data) or ask the
+   Lab assistant to in the conversation, and **Publish** — after an explicit
+   confirmation — to mark it approved data. **Re-extract** offers to replace an
+   upload's drafts and leaves its published records alone; **Unpublish** reopens a
+   record; **Remove upload** deletes its records and keeps its files out of
+   Literature. An experiment record never touches a draft, a review or the
+   published graph.
 2. **Schemas** — the same schema list as Literature's, so an experiment-kind
    schema created here shows up there too, and back.
 

@@ -135,6 +135,16 @@ def test_bundle_update_sets_status_and_can_clear_the_run(store):
         store.update_bundle("missing", name="x")
 
 
+def test_bundle_schema_moves_only_while_it_has_no_records(store):
+    bundle = store.create_bundle(group_id="g1", schema_id="sch1", name="Sheet 1")
+    moved = store.update_bundle(bundle["id"], schema_id="sch2")
+    assert moved["schema_id"] == "sch2"
+    store.create(group_id="g1", schema_id="sch2", name="A", data={}, bundle_id=bundle["id"])
+    with pytest.raises(KnowledgeError):
+        store.update_bundle(bundle["id"], schema_id="sch1")
+    assert store.require_bundle(bundle["id"])["schema_id"] == "sch2"
+
+
 def test_reextraction_drops_only_the_bundle_drafts(store):
     bundle = store.create_bundle(group_id="g1", schema_id="sch1", name="Sheet 1")
     draft = store.create(group_id="g1", schema_id="sch1", name="A", data={}, bundle_id=bundle["id"])

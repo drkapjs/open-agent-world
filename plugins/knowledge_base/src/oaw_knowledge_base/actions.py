@@ -870,6 +870,7 @@ def experiment_bundle_manage(context, arguments):
         return _bounded({"deleted": request.bundle_id, "records_removed": len(removed)})
     bundle = kb.oaw_experiments.update_bundle(
         request.bundle_id, name=request.name, notes=request.notes, status=request.status,
+        schema_id=str(_experiment_schema(kb, request.schema_id).id) if request.schema_id else None,
         run_id=request.run_id if request.status is not None else ...)
     return _bounded({"bundle": _bundle_json(kb, bundle)})
 

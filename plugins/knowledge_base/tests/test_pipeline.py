@@ -725,6 +725,22 @@ def test_deleting_an_upload_removes_its_records_and_keeps_its_files_out_of_liter
     renamed = run(card, actions.experiment_bundle_manage, operation="update", bundle_id=bundle["id"],
                   name="Batch 7b")["bundle"]
     assert renamed["run_id"] == "run-1" and renamed["name"] == "Batch 7b"
+    # The schema is fixed once records exist, and can only ever be an experiment schema.
+    other = run(card, actions.schemas, operation="create", name="Other run",
+                definition=EXPERIMENT_SCHEMA, system_prompt="x", kind="experiment")["schema"]
+    with pytest.raises(KnowledgeError, match="already has records"):
+        run(card, actions.experiment_bundle_manage, operation="update", bundle_id=bundle["id"],
+            schema_id=other["id"])
+    empty = _bundle(card, schema, name="Empty")
+    literature = run(card, actions.schemas, operation="create", name="Lit", definition=SCHEMA,
+                     system_prompt="x")["schema"]
+    with pytest.raises(KnowledgeError):
+        run(card, actions.experiment_bundle_manage, operation="update", bundle_id=empty["id"],
+            schema_id=literature["id"])
+    moved = run(card, actions.experiment_bundle_manage, operation="update", bundle_id=empty["id"],
+                schema_id=other["id"])["bundle"]
+    assert moved["schema_id"] == other["id"]
+    run(card, actions.experiment_bundle_manage, operation="delete", bundle_id=empty["id"])
 
     removed = run(card, actions.experiment_bundle_manage, operation="delete", bundle_id=bundle["id"])
     assert removed["records_removed"] == 1

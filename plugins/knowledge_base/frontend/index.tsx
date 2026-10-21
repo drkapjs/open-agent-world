@@ -6,9 +6,12 @@ import { useModelOptions, useConnectedCards, updateCardConfig } from "@oaw/plugi
 import { hostApiBase as deploymentApiBase } from "@oaw/plugin-api";
 import { ModelSelect, Modal } from "@oaw/plugin-api";
 import { DocumentMarkdown } from "@oaw/plugin-api";
-import { BookOpen, FlaskConical, Settings2, Plus, RefreshCw, MoreHorizontal, FileText, Network, X, Square, ScrollText } from "lucide-react";
+import { BookOpen, FlaskConical, Settings2, Plus, RefreshCw, MoreHorizontal, FileText, Network, X, Square, ScrollText, Upload, Search, ChevronRight, ChevronDown, List, Table2, Pencil } from "lucide-react";
 import { MineruCredentials } from "./MineruCredentials";
 import { GraphMap } from "./GraphMap";
+import { ExtractDialog } from "./ExtractDialog";
+import type { ExtractDetails } from "./ExtractDialog";
+import { RecordGrid, RecordTable, flattenValues } from "./RecordView";
 import "./style.css";
 
 type Settings = { collection_name: string; pdf_engine: string; mineru_base_url: string; vision_model: string };
@@ -91,6 +94,14 @@ const fileBase64 = (file: File) => new Promise<string>((resolve, reject) => {
   reader.onload = () => resolve(String(reader.result).split(",", 2)[1] ?? "");
   reader.readAsDataURL(file);
 });
+
+/** The name an upload gets the moment its files are dropped, before anyone has
+ * typed one: the first file's stem, counting the rest. Confirmed or changed in the
+ * extraction window. */
+const provisionalName = (files: File[]) => {
+  const stem = (files[0]?.name ?? "").replace(/\.[^.]+$/, "") || t("Upload");
+  return files.length > 1 ? `${stem} +${files.length - 1}` : stem;
+};
 
 /** The projection call needs a model, so it goes through the host bridge, not the
  * plugin. The engineering bridge lives at ``/api/...``; a deployment mounts the same
@@ -281,21 +292,33 @@ export function Workspace({ host, card }: PluginViewProps) {
   const [projection, setProjection] = useState<ProjectionDetail>();
   const [draftDetail, setDraftDetail] = useState<DraftDetail>();
   const [experiments, setExperiments] = useState<ExperimentItem[]>([]);
-  const [experimentDetail, setExperimentDetail] = useState<ExperimentDetail>();
-  // The record being edited: its data as the form sees it, its raw JSON when the
-  // person flips to that view, and the name/note fields beside it.
+  // Records open in place: which rows are unfolded, the full detail (sources,
+  // revision) fetched for each as it opens, and the one row being edited — its data
+  // as the form sees it, its raw JSON when the person flips to that view, and the
+  // name/note fields beside it.
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [recordDetails, setRecordDetails] = useState<Record<string, ExperimentDetail>>({});
+  const [editingId, setEditingId] = useState("");
   const [recordDraft, setRecordDraft] = useState<Record<string, unknown>>({});
   const [recordName, setRecordName] = useState("");
   const [recordNote, setRecordNote] = useState("");
   const [recordJson, setRecordJson] = useState("");
   const [rawRecord, setRawRecord] = useState(false);
-  const [publishPending, setPublishPending] = useState<Pending>();
-  // Experiment: everything below the schema bar is scoped to one experiment schema.
+  const [publishPending, setPublishPending] = useState<Pending & { record_id: string }>();
+  // How the records are narrowed and shown: free text, status, and list or grid.
+  const [recordQuery, setRecordQuery] = useState("");
+  const [recordStatus, setRecordStatus] = useState<"" | "draft" | "published">("");
+  const [recordView, setRecordView] = useState<"list" | "grid">("list");
+  // Experiment: "" shows every schema's uploads and records; a chosen id narrows to it.
   const [experimentSchemaId, setExperimentSchemaId] = useState("");
-  const [experimentSchema, setExperimentSchema] = useState<SchemaDetail>();
+  // Full definitions by schema id — the record tables and forms need the properties,
+  // which the schema list does not carry.
+  const [schemaDetails, setSchemaDetails] = useState<Record<string, SchemaDetail>>({});
   const [bundles, setBundles] = useState<Bundle[]>([]);
   const [bundleId, setBundleId] = useState("");
-  const [bundleEditor, setBundleEditor] = useState<{ name: string; notes: string }>();
+  // The upload-details window: confirming name/description/schema before an
+  // extraction, or just editing them.
+  const [dialog, setDialog] = useState<{ mode: "extract" | "edit" }>();
   // A running extraction: which upload, and which agent to watch until it is done.
   const [extracting, setExtracting] = useState<{ bundle_id: string; agent_id: string; started_at: string }>();
   // The agent run behind the selected upload's last extraction, read from the host's
@@ -557,7 +580,10 @@ export function Workspace({ host, card }: PluginViewProps) {
     const result = editor.id
       ? await call("schemas", { operation: "update", schema_id: editor.id, ...payload })
       : await call("schemas", { operation: "create", ...payload });
-    setSchemaId((result.schema as SchemaItem).id);
+    const saved = result.schema as SchemaItem;
+    // The experiment tables and forms read definitions from a cache; an edit refills it.
+    setSchemaDetails(previous => { const next = { ...previous }; delete next[saved.id]; return next; });
+    setSchemaId(saved.id);
     setEditor(undefined);
     await refresh();
   });
@@ -591,48 +617,84 @@ export function Workspace({ host, card }: PluginViewProps) {
     await loadDraft(built.id);
   });
 
+  // The full record (sources, revision) behind a row, fetched as it opens and kept
+  // until the list refreshes it.
   const loadExperiment = useCallback(async (id: string) => {
     const current = generation.current;
     const result = await call("experiments", { operation: "get", record_id: id });
-    if (generation.current !== current) return;
+    if (generation.current !== current) return undefined;
     const detail = result.experiment as ExperimentDetail;
-    setExperimentDetail(detail); setPublishPending(undefined);
-    setRecordDraft(detail.data); setRecordName(detail.name); setRecordNote(detail.note ?? "");
-    setRecordJson(pretty(detail.data));
+    setRecordDetails(previous => ({ ...previous, [id]: detail }));
+    return detail;
   }, [call]);
 
-  // The schema bar's choice: an explicit pick, else the first experiment schema.
+  const toggleRecord = (id: string) => {
+    setExpanded(previous => {
+      const next = new Set(previous);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+    if (!expanded.has(id) && !recordDetails[id]) void loadExperiment(id).catch(reason => setError(message(reason)));
+  };
+
+  const openRecord = (id: string) => {
+    setRecordView("list");
+    if (!expanded.has(id)) toggleRecord(id);
+  };
+
+  const beginEdit = (record: ExperimentItem) => {
+    const detail = recordDetails[record.id];
+    const data = detail?.data ?? record.data;
+    setEditingId(record.id); setPublishPending(undefined); setRawRecord(false);
+    setRecordDraft(data); setRecordName(detail?.name ?? record.name); setRecordNote(detail?.note ?? record.note ?? "");
+    setRecordJson(pretty(data));
+  };
+
+  // The schema bar's choice: "" means every experiment schema at once.
   const experimentSchemas = schemas.filter(item => item.kind === "experiment");
-  const currentExperimentSchemaId = experimentSchemas.some(item => item.id === experimentSchemaId)
-    ? experimentSchemaId : (experimentSchemas[0]?.id ?? "");
-  // The record form needs the full definition, which the list does not carry.
+  const currentExperimentSchemaId = experimentSchemas.some(item => item.id === experimentSchemaId) ? experimentSchemaId : "";
+  // Fetch the definition of every experiment schema in view once; the tables, the
+  // grid's columns and the edit form all read from this cache.
   useEffect(() => {
-    if (!currentExperimentSchemaId) { setExperimentSchema(undefined); return; }
+    const wanted = experimentSchemas.map(item => item.id).filter(id => !(id in schemaDetails));
+    if (!wanted.length) return;
     const current = generation.current;
-    call("schemas", { operation: "get", schema_id: currentExperimentSchemaId }).then(value => {
-      if (generation.current === current) setExperimentSchema(value.schema as SchemaDetail);
-    }).catch(reason => { if (generation.current === current) setError(message(reason)); });
-  }, [call, currentExperimentSchemaId]);
+    Promise.allSettled(wanted.map(id => call("schemas", { operation: "get", schema_id: id }))).then(results => {
+      if (generation.current !== current) return;
+      const loaded: Record<string, SchemaDetail> = {};
+      results.forEach(result => { if (result.status === "fulfilled") { const detail = result.value.schema as SchemaDetail; loaded[detail.id] = detail; } });
+      if (Object.keys(loaded).length) setSchemaDetails(previous => ({ ...previous, ...loaded }));
+    });
+    // schemaDetails is what this effect fills; keying on the schema list is enough.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [call, schemas]);
 
-  const createBundle = () => bundleEditor && perform(async () => {
-    if (!currentExperimentSchemaId) throw new Error(t("Choose an experiment schema first"));
-    if (!bundleEditor.name.trim()) throw new Error(t("Name the upload first"));
-    const result = await call("experiment_bundle_manage", { operation: "create", schema_id: currentExperimentSchemaId,
-      name: bundleEditor.name.trim(), notes: bundleEditor.notes, ...(activeGroup ? { group_id: activeGroup } : {}) });
-    setBundleEditor(undefined); setBundleId((result.bundle as Bundle).id);
-    await refresh();
-  });
-
-  const saveBundleNotes = (bundle: Bundle, notes: string) => perform(async () => {
-    if (notes === bundle.notes) return;
-    await call("experiment_bundle_manage", { operation: "update", bundle_id: bundle.id, notes });
+  // Dropping files is how an upload comes to exist: it is created on the spot under
+  // the schema in view (or the only one), named after its files, and every file
+  // starts converting at once. Name, description and schema are confirmed later, in
+  // the extraction window.
+  const uploadNewBundle = (files: FileList | File[]) => perform(async () => {
+    const list = Array.from(files);
+    if (!list.length) return;
+    const schemaId = currentExperimentSchemaId || experimentSchemas[0]?.id;
+    if (!schemaId) throw new Error(t("Create an experiment schema first"));
+    const result = await call("experiment_bundle_manage", { operation: "create", schema_id: schemaId,
+      name: provisionalName(list), notes: "", ...(activeGroup ? { group_id: activeGroup } : {}) });
+    const bundle = result.bundle as Bundle;
+    for (const file of list) {
+      const content = await fileBase64(file);
+      await call("experiment_ingest", { bundle_id: bundle.id, filename: file.name, content_base64: content,
+        media_type: file.type || "application/octet-stream" });
+    }
+    setBundleId(bundle.id);
+    setNotice(t("{v0} file(s) uploaded as \"{v1}\" · converting", { v0: list.length, v1: bundle.name }));
     await refresh();
   });
 
   const deleteBundle = (bundle: Bundle) => perform(async () => {
     await call("experiment_bundle_manage", { operation: "delete", bundle_id: bundle.id });
     if (bundleId === bundle.id) setBundleId("");
-    if (experimentDetail?.bundle_id === bundle.id) setExperimentDetail(undefined);
+    if (experiments.some(item => item.id === editingId && item.bundle_id === bundle.id)) setEditingId("");
     setNotice(t("Upload \"{v0}\" removed", { v0: bundle.name }));
     await refresh();
   });
@@ -655,7 +717,7 @@ export function Workspace({ host, card }: PluginViewProps) {
   // only watches it until idle. Otherwise the host bridge makes one JSON-mode model
   // call and hands the result to the same experiment_save, so a record is validated
   // and evidence-linked identically whichever path produced it.
-  const extractRecords = (bundle: Bundle, replace: boolean) => perform(async () => {
+  const runExtraction = async (bundle: Bundle, replace: boolean) => {
     const agent = labAgents[0];
     if (agent && host.runAgent && !deployed) {
       const schema = schemas.find(item => item.id === bundle.schema_id);
@@ -693,6 +755,25 @@ export function Workspace({ host, card }: PluginViewProps) {
       : invalid
         ? t("Extracted {v0} record(s); {v1} do not satisfy the schema — open them to see why", { v0: records.length, v1: invalid })
         : t("Extracted {v0} record(s) from \"{v1}\" · review and publish them below", { v0: records.length, v1: bundle.name }));
+    await refresh();
+  };
+
+  // The extraction window's confirm: settle whatever changed about the upload, then
+  // (in extract mode) read it. The window closes as soon as the work starts; an
+  // error lands in the section's banner like any other.
+  const confirmDialog = (bundle: Bundle, mode: "extract" | "edit", details: ExtractDetails) => perform(async () => {
+    setDialog(undefined);
+    let target = bundle;
+    const patch: Record<string, unknown> = {};
+    if (details.name !== bundle.name) patch.name = details.name;
+    if (details.notes !== bundle.notes) patch.notes = details.notes;
+    if (details.schema_id !== bundle.schema_id) patch.schema_id = details.schema_id;
+    if (Object.keys(patch).length) {
+      const result = await call("experiment_bundle_manage", { operation: "update", bundle_id: bundle.id, ...patch });
+      target = result.bundle as Bundle;
+    }
+    if (mode === "extract") { await runExtraction(target, details.replace); return; }
+    setNotice(t("Upload details saved"));
     await refresh();
   });
 
@@ -771,45 +852,45 @@ export function Workspace({ host, card }: PluginViewProps) {
       .finally(() => setStopping(false));
   };
 
-  const saveRecordEdits = () => experimentDetail && perform(async () => {
+  const saveRecordEdits = (record: ExperimentItem) => perform(async () => {
     let data = recordDraft;
     if (rawRecord) {
       try { data = JSON.parse(recordJson); }
       catch { throw new Error(t("The record data must be valid JSON")); }
     }
     if (!recordName.trim()) throw new Error(t("Name the record first"));
-    await call("experiment_update", { record_id: experimentDetail.id, name: recordName.trim(), data,
-      note: recordNote, expected_revision: experimentDetail.revision });
+    await call("experiment_update", { record_id: record.id, name: recordName.trim(), data,
+      note: recordNote, expected_revision: record.revision });
+    setEditingId("");
     setNotice(t("Changes saved"));
     await refresh();
-    await loadExperiment(experimentDetail.id);
+    await loadExperiment(record.id);
   });
 
-  const publishRecord = (confirmed?: Pending) => experimentDetail && perform(async () => {
-    const args = confirmed?.args ?? { operation: "publish", record_id: experimentDetail.id,
-      expected_revision: experimentDetail.revision };
+  const publishRecord = (record: ExperimentItem, confirmed?: Pending) => perform(async () => {
+    const args = confirmed?.args ?? { operation: "publish", record_id: record.id, expected_revision: record.revision };
     const result = await call("experiment_review", args, !!confirmed);
     if (result.status === "confirmation_required") {
-      setPublishPending({ args, reasons: (result.reasons as string[]) ?? [] });
+      setPublishPending({ record_id: record.id, args, reasons: (result.reasons as string[]) ?? [] });
       return;
     }
     setPublishPending(undefined);
-    setNotice(t("Record \"{v0}\" published", { v0: experimentDetail.name }));
+    setNotice(t("Record \"{v0}\" published", { v0: record.name }));
     await refresh();
-    await loadExperiment(experimentDetail.id);
+    await loadExperiment(record.id);
   });
 
-  const unpublishRecord = () => experimentDetail && perform(async () => {
-    await call("experiment_review", { operation: "unpublish", record_id: experimentDetail.id,
-      expected_revision: experimentDetail.revision });
-    setNotice(t("Record \"{v0}\" is a draft again", { v0: experimentDetail.name }));
+  const unpublishRecord = (record: ExperimentItem) => perform(async () => {
+    await call("experiment_review", { operation: "unpublish", record_id: record.id, expected_revision: record.revision });
+    setNotice(t("Record \"{v0}\" is a draft again", { v0: record.name }));
     await refresh();
-    await loadExperiment(experimentDetail.id);
+    await loadExperiment(record.id);
   });
 
-  const deleteRecord = () => experimentDetail && perform(async () => {
-    await call("experiment_review", { operation: "delete", record_id: experimentDetail.id });
-    setExperimentDetail(undefined);
+  const deleteRecord = (record: ExperimentItem) => perform(async () => {
+    await call("experiment_review", { operation: "delete", record_id: record.id });
+    if (editingId === record.id) setEditingId("");
+    setExpanded(previous => { const next = new Set(previous); next.delete(record.id); return next; });
     setNotice(t("Record deleted"));
     await refresh();
   });
@@ -860,10 +941,40 @@ export function Workspace({ host, card }: PluginViewProps) {
   const activeGroupObject = groups.find(item => item.id === activeGroup);
   const pendingSources = sources.filter(item => !item.markdown);
   const experimentSchemaIds = new Set(experimentSchemas.map(item => item.id));
-  const schemaBundles = bundles.filter(item => item.schema_id === currentExperimentSchemaId);
+  const schemaName = (id: string) => schemas.find(item => item.id === id)?.name ?? shortId(id);
+  const schemaBundles = bundles.filter(item => !currentExperimentSchemaId || item.schema_id === currentExperimentSchemaId);
   const selectedBundle = schemaBundles.find(item => item.id === bundleId);
-  const schemaRecords = experiments.filter(item => item.schema_id === currentExperimentSchemaId
+  const scopedRecords = experiments.filter(item => (!currentExperimentSchemaId || item.schema_id === currentExperimentSchemaId)
     && (!selectedBundle || item.bundle_id === selectedBundle.id));
+  // The filter bar: status, then free text against everything a person might
+  // remember about a record — its name, note, upload, schema, file names, and
+  // every value inside its data.
+  const query = recordQuery.trim().toLowerCase();
+  const bundleById = new Map(bundles.map(item => [item.id, item]));
+  const filteredRecords = scopedRecords.filter(item => {
+    if (recordStatus && item.status !== recordStatus) return false;
+    if (!query) return true;
+    const bundle = item.bundle_id ? bundleById.get(item.bundle_id) : undefined;
+    const haystack = [item.name, item.note ?? "", bundle?.name ?? "", schemaName(item.schema_id),
+      ...(bundle?.files.map(file => file.filename) ?? []), ...flattenValues(item.data)].join("\n").toLowerCase();
+    return haystack.includes(query);
+  });
+  // The grid shows one schema's columns when one is in view; across schemas, the
+  // union of their properties so every record still has somewhere to put its values.
+  const gridDefinition = (() => {
+    const ids = Array.from(new Set(filteredRecords.map(item => item.schema_id)));
+    if (ids.length === 1) return schemaDetails[ids[0]]?.definition as Record<string, unknown> | undefined;
+    const properties: Record<string, unknown> = {};
+    ids.forEach(id => Object.assign(properties, (schemaDetails[id]?.definition as { properties?: Record<string, unknown> } | undefined)?.properties ?? {}));
+    return { properties };
+  })();
+  const runHint = canRunAgents
+    ? t("Runs the connected {v0}, which reads the upload page by page and saves the records itself.", { v0: labAgents[0]?.name ?? "" })
+    : t("Extraction runs as one model call through the selected model.");
+  const extractBlocker = !canExtract
+    ? (deployed ? t("This deployment has no default model configured yet.")
+      : t("Configure a model connection in OAW Settings, or connect an Agent to this card with the Knowledge experiment relationship, to extract records."))
+    : (extracting || selectedBundle?.status === "extracting") ? t("An extraction is already running.") : "";
   const literatureSchemas = schemas.filter(item => item.kind === "literature");
   // Every literature schema is a candidate to become the graph schema; whichever
   // one is not currently chosen is "custom" — Projections runs and reviews it, but
@@ -1298,8 +1409,10 @@ export function Workspace({ host, card }: PluginViewProps) {
           <label className="knowledge-groupselect">
             <span className="knowledge-visually-hidden">{t("Experiment schema")}</span>
             <select aria-label={t("Experiment schema")} value={currentExperimentSchemaId} disabled={busy || !experimentSchemas.length}
-              onChange={event => { setExperimentSchemaId(event.target.value); setBundleId(""); setExperimentDetail(undefined); }}>
-              {!experimentSchemas.length && <option value="">{t("No experiment schema yet")}</option>}
+              onChange={event => { setExperimentSchemaId(event.target.value); setBundleId(""); setEditingId(""); }}>
+              {!experimentSchemas.length
+                ? <option value="">{t("No experiment schema yet")}</option>
+                : <option value="">{t("All schemas")}</option>}
               {experimentSchemas.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
             </select>
           </label>
@@ -1308,45 +1421,66 @@ export function Workspace({ host, card }: PluginViewProps) {
               id: "", name: "", description: "", system_prompt: "", kind: "experiment",
               definition: pretty({ type: "object", required: ["sample_id"], properties: { sample_id: { type: "string", description: "Specimen label" } } }),
             }); }}><Plus size={14} />{t("New schema")}</button>
-            {currentExperimentSchemaId && <button type="button" className="knowledge-primary" disabled={busy || !!bundleEditor}
-              onClick={() => setBundleEditor({ name: "", notes: "" })}><Plus size={14} />{t("New upload")}</button>}
+            {!!experimentSchemas.length && <label className={`knowledge-upload${busy ? " is-disabled" : ""}`}
+              title={t("Starts a new upload from the chosen files · up to 32 MiB per file")}>
+              <Upload size={14} />{t("Upload files")}
+              <input className="knowledge-visually-hidden" type="file" multiple disabled={busy}
+                aria-label={t("Upload files as a new experiment upload")}
+                onChange={event => {
+                  const files = Array.from(event.target.files ?? []);
+                  event.target.value = "";
+                  if (files.length) void uploadNewBundle(files);
+                }} />
+            </label>}
           </div>
         </WorkspaceToolbar>
         <Banner error={error} notice={notice} />
         {!experimentSchemas.length && <WorkspaceEmptyState title={t("Start with a schema")}
           description={t("An experiment schema describes one specimen record: its fields, their types, and the prompt that extracts them. Create one, then upload your files.")}
           actions={<button type="button" onClick={() => { setCategory("experiment"); setExperimentTab("schemas"); }}>{t("Schemas")}</button>} />}
-        {bundleEditor && <div className="knowledge-form knowledge-bundle-editor">
-          <label>{t("Upload name")}<input value={bundleEditor.name} disabled={busy} autoFocus placeholder={t("e.g. Batch 7 conductivity")}
-            onChange={event => setBundleEditor({ ...bundleEditor, name: event.target.value })} /></label>
-          <label>{t("Description (optional)")}<textarea value={bundleEditor.notes} disabled={busy} rows={2}
-            placeholder={t("What the files show, units, which specimen a photo is of…")}
-            onChange={event => setBundleEditor({ ...bundleEditor, notes: event.target.value })} /></label>
-          <div className="knowledge-formbar">
-            <button type="button" className="knowledge-primary" disabled={busy || !bundleEditor.name.trim()}
-              onClick={() => void createBundle()}>{t("Create upload")}</button>
-            <button type="button" disabled={busy} onClick={() => setBundleEditor(undefined)}>{t("Cancel")}</button>
-          </div>
-        </div>}
-        {!!currentExperimentSchemaId && <div className="knowledge-bundles">
-          {!schemaBundles.length && !bundleEditor && <WorkspaceEmptyState title={t("No uploads for this schema yet")}
-            description={t("An upload is one experiment's files — a photographed table, a spreadsheet, a note — read together as one document and projected into records.")}
-            actions={<button type="button" disabled={busy} onClick={() => setBundleEditor({ name: "", notes: "" })}>{t("New upload")}</button>} />}
+        {!!experimentSchemas.length && <div className="knowledge-bundles"
+          onDragOver={event => { if (event.dataTransfer.types.includes("Files")) event.preventDefault(); }}
+          onDrop={event => {
+            const files = Array.from(event.dataTransfer.files ?? []);
+            if (!files.length) return;
+            event.preventDefault();
+            if (busy) return;
+            if (selectedBundle) void uploadToBundle(selectedBundle, files); else void uploadNewBundle(files);
+          }}>
+          {!schemaBundles.length && <div className="knowledge-dropzone">
+            <Upload size={22} />
+            <strong>{t("Drop an experiment's files here")}</strong>
+            <p>{t("A photographed table, a spreadsheet, a PDF, a note — the files of one experiment become one upload, convert as they land, and are read together when you extract records.")}</p>
+            <label className={`knowledge-upload${busy ? " is-disabled" : ""}`}>
+              <Upload size={14} />{t("Choose files")}
+              <input className="knowledge-visually-hidden" type="file" multiple disabled={busy}
+                aria-label={t("Choose files for a new experiment upload")}
+                onChange={event => {
+                  const files = Array.from(event.target.files ?? []);
+                  event.target.value = "";
+                  if (files.length) void uploadNewBundle(files);
+                }} />
+            </label>
+          </div>}
           {!!schemaBundles.length && <div className="knowledge-bundle-chips" role="tablist" aria-label={t("Uploads")}>
             <button type="button" role="tab" aria-selected={!selectedBundle} onClick={() => setBundleId("")}>{t("All records")}
-              <span className="knowledge-total">{experiments.filter(item => item.schema_id === currentExperimentSchemaId).length}</span></button>
+              <span className="knowledge-total">{experiments.filter(item => !currentExperimentSchemaId || item.schema_id === currentExperimentSchemaId).length}</span></button>
             {schemaBundles.map(item => <button key={item.id} type="button" role="tab" aria-selected={selectedBundle?.id === item.id}
-              onClick={() => setBundleId(item.id)}>{item.name}
+              title={item.notes || undefined} onClick={() => setBundleId(item.id)}>{item.name}
               <span className="knowledge-total">{item.records}</span>
+              {!currentExperimentSchemaId && <span className="knowledge-chip-schema">{schemaName(item.schema_id)}</span>}
               {(item.status === "extracting" || extracting?.bundle_id === item.id) && <span className="knowledge-running">{t("extracting…")}</span>}
               {item.status === "failed" && <span className="knowledge-error">{t("failed")}</span>}
             </button>)}
           </div>}
           {selectedBundle && <details className="knowledge-disclosure knowledge-workflow knowledge-bundle" open>
             <summary>{t("Files in \"{v0}\"", { v0: selectedBundle.name })} <span className="knowledge-total">{selectedBundle.files.length}</span></summary>
-            <label className="knowledge-record-field">{t("Description")}<textarea defaultValue={selectedBundle.notes} disabled={busy} rows={2}
-              key={selectedBundle.id} placeholder={t("What the files show, units, which specimen a photo is of…")}
-              onBlur={event => void saveBundleNotes(selectedBundle, event.target.value)} /></label>
+            <div className="knowledge-bundle-meta">
+              <span className="knowledge-badge">{schemaName(selectedBundle.schema_id)}</span>
+              <p className="knowledge-meta">{selectedBundle.notes || t("No description yet — add units, what the files show, which specimen a photo is of.")}</p>
+              <button type="button" className="knowledge-icon-button" disabled={busy || !!extracting} aria-label={t("Edit upload details")}
+                title={t("Edit upload details")} onClick={() => setDialog({ mode: "edit" })}><Pencil size={14} /></button>
+            </div>
             {!selectedBundle.files.length
               ? <p className="knowledge-empty">{t("Add the files that describe this experiment: images, spreadsheets, PDFs, text. Each converts as soon as it is uploaded.")}</p>
               : <ul className="knowledge-list knowledge-bundle-files">
@@ -1373,8 +1507,8 @@ export function Workspace({ host, card }: PluginViewProps) {
               <button type="button" className="knowledge-primary"
                 disabled={busy || !canExtract || !!extracting || selectedBundle.status === "extracting"
                   || !selectedBundle.files.length || selectedBundle.files.some(file => file.state !== "converted")}
-                title={canRunAgents ? t("Runs the connected {v0}", { v0: labAgents[0]?.name ?? "" }) : t("One model call through the selected model")}
-                onClick={() => void extractRecords(selectedBundle, selectedBundle.records > 0)}>
+                title={runHint}
+                onClick={() => setDialog({ mode: "extract" })}>
                 {selectedBundle.records > 0 ? t("Re-extract records") : t("Extract records")}</button>
               {(extracting?.bundle_id === selectedBundle.id || selectedBundle.status === "extracting") && !deployed &&
                 <button type="button" className="knowledge-danger" disabled={stopping}
@@ -1441,71 +1575,114 @@ export function Workspace({ host, card }: PluginViewProps) {
               </>}
             </Modal>}
           </details>}
-          <div className={`knowledge-split${experimentDetail ? " has-detail" : ""}`}>
-          <div className="knowledge-source-pane">
-          {!schemaRecords.length && !!schemaBundles.length && <WorkspaceEmptyState title={t("No records yet")}
+          {!!schemaBundles.length && <div className="knowledge-filterbar" role="search">
+            <label className="knowledge-filter-search">
+              <span className="knowledge-visually-hidden">{t("Search records")}</span>
+              <Search size={14} aria-hidden />
+              <input type="search" value={recordQuery} placeholder={t("Search records: name, value, file, note…")}
+                aria-label={t("Search records")} onChange={event => setRecordQuery(event.target.value)} />
+            </label>
+            <label className="knowledge-groupselect">
+              <span className="knowledge-visually-hidden">{t("Status")}</span>
+              <select aria-label={t("Status")} value={recordStatus} onChange={event => setRecordStatus(event.target.value as "" | "draft" | "published")}>
+                <option value="">{t("All statuses")}</option>
+                <option value="draft">{t("Draft")}</option>
+                <option value="published">{t("Published")}</option>
+              </select>
+            </label>
+            <span className="knowledge-meta knowledge-filter-count" role="status">
+              {filteredRecords.length === scopedRecords.length
+                ? t("{v0} record(s)", { v0: scopedRecords.length })
+                : t("{v0} of {v1} record(s)", { v0: filteredRecords.length, v1: scopedRecords.length })}</span>
+            {(query || recordStatus) && <button type="button" onClick={() => { setRecordQuery(""); setRecordStatus(""); }}><X size={13} />{t("Clear")}</button>}
+            <div className="knowledge-view-toggle" role="group" aria-label={t("View")}>
+              <button type="button" aria-pressed={recordView === "list"} title={t("List")} aria-label={t("List")} onClick={() => setRecordView("list")}><List size={14} /></button>
+              <button type="button" aria-pressed={recordView === "grid"} title={t("Table")} aria-label={t("Table")} onClick={() => setRecordView("grid")}><Table2 size={14} /></button>
+            </div>
+          </div>}
+          {!scopedRecords.length && !!schemaBundles.length && <WorkspaceEmptyState title={t("No records yet")}
             description={selectedBundle ? t("Add this upload's files, then extract records from them.")
               : t("Choose an upload above to add files and extract records.")} />}
-          <ul className="knowledge-list knowledge-record-list">
-            {schemaRecords.map(item => <li key={item.id}>
-              <button type="button" aria-pressed={experimentDetail?.id === item.id} disabled={busy}
-                onClick={() => void loadExperiment(item.id)}>
-                <span>{item.name}</span>
-                <small>{item.status === "published" ? t("published") : t("draft")}
-                  {item.validation?.valid === false ? ` · ${t("does not satisfy the schema")}` : ""}
-                  {!selectedBundle && item.bundle_id ? ` · ${bundles.find(b => b.id === item.bundle_id)?.name ?? shortId(item.bundle_id)}` : ""}</small>
-              </button>
-            </li>)}
-          </ul>
-          </div>
-          {experimentDetail && <div className="knowledge-detail knowledge-record-detail">
-            <div className="knowledge-reading-toolbar">
-              <h4>{experimentDetail.name}</h4>
-              <span className={`knowledge-badge knowledge-status-${experimentDetail.status}`}>{experimentDetail.status === "published" ? t("Published") : t("Draft")}</span>
-              <button type="button" aria-pressed={rawRecord} disabled={busy}
-                onClick={() => { if (!rawRecord) setRecordJson(pretty(recordDraft)); else { try { setRecordDraft(JSON.parse(recordJson)); } catch { /* keep the form's last good value */ } } setRawRecord(!rawRecord); }}>{t("JSON")}</button>
-            </div>
-            <p className="knowledge-meta">{t("revision {v0} · from {v1}", { v0: experimentDetail.revision,
-              v1: experimentDetail.sources.map(link => link.filename ?? shortId(link.source_id)).join(", ") || "—" })}</p>
-            {experimentDetail.validation?.valid === false && <p role="alert" className="knowledge-error">
-              {(experimentDetail.validation.errors ?? experimentDetail.validation.missing ?? []).join("; ") || t("Does not satisfy the schema")}</p>}
-            {experimentDetail.status === "published"
-              ? <>
-                <pre>{pretty(experimentDetail.data)}</pre>
-                {experimentDetail.note && <p className="knowledge-meta">{experimentDetail.note}</p>}
-                <div className="knowledge-formbar">
-                  <button type="button" disabled={busy} onClick={() => void unpublishRecord()}>{t("Unpublish")}</button>
-                </div>
-              </>
-              : <>
-                <label className="knowledge-record-field">{t("Name")}<input value={recordName} disabled={busy}
-                  onChange={event => setRecordName(event.target.value)} /></label>
-                {rawRecord
-                  ? <label className="knowledge-record-field">{t("Data (JSON)")}<textarea value={recordJson} disabled={busy} rows={10}
-                      spellCheck={false} onChange={event => setRecordJson(event.target.value)} /></label>
-                  : experimentSchema
-                    ? <RecordForm definition={experimentSchema.definition} value={recordDraft} disabled={busy} onChange={setRecordDraft} />
-                    : <p role="status">{t("Loading schema…")}</p>}
-                <label className="knowledge-record-field">{t("Note")}<input value={recordNote} disabled={busy}
-                  placeholder={t("Where it came from, what was unclear…")} onChange={event => setRecordNote(event.target.value)} /></label>
-                <p className="knowledge-meta">{t("You can also ask the Lab assistant to change this record in the conversation — refer to it as \"{v0}\".", { v0: experimentDetail.name })}</p>
-                {publishPending ? <div role="alert" className="knowledge-confirm">
-                  <strong>{t("Publish this record?")}</strong>
-                  <p>{publishPending.reasons.join(" ")}</p>
-                  <div className="knowledge-formbar">
-                    <button type="button" className="knowledge-primary" disabled={busy}
-                      onClick={() => void publishRecord(publishPending)}>{t("Confirm and publish")}</button>
-                    <button type="button" disabled={busy} onClick={() => setPublishPending(undefined)}>{t("Cancel")}</button>
-                  </div>
-                </div> : <div className="knowledge-formbar">
-                  <button type="button" disabled={busy} onClick={() => void saveRecordEdits()}>{t("Save changes")}</button>
-                  <button type="button" className="knowledge-primary" disabled={busy || experimentDetail.validation?.valid === false}
-                    onClick={() => void publishRecord()}>{t("Publish")}</button>
-                  <button type="button" disabled={busy} onClick={() => void deleteRecord()}>{t("Delete")}</button>
+          {!!scopedRecords.length && !filteredRecords.length && <p className="knowledge-empty">{t("No records match the current filters.")}</p>}
+          {recordView === "grid" && !!filteredRecords.length && <RecordGrid definition={gridDefinition} showBundle={!selectedBundle}
+            onOpen={openRecord} records={filteredRecords.map(item => ({ id: item.id, name: item.name, status: item.status, data: item.data,
+              validation: item.validation, updated_at: item.updated_at,
+              bundle: item.bundle_id ? (bundleById.get(item.bundle_id)?.name ?? shortId(item.bundle_id)) : undefined }))} />}
+          {recordView === "list" && !!filteredRecords.length && <ul className="knowledge-record-rows">
+            {filteredRecords.map(item => {
+              const open = expanded.has(item.id);
+              const detail = recordDetails[item.id];
+              const record = detail && detail.revision >= item.revision ? detail : item;
+              const definition = schemaDetails[item.schema_id]?.definition;
+              const editing = editingId === item.id;
+              const bundle = item.bundle_id ? bundleById.get(item.bundle_id) : undefined;
+              return <li key={item.id} className={`knowledge-record-row${open ? " is-open" : ""}`}>
+                <button type="button" className="knowledge-record-summary" aria-expanded={open} onClick={() => toggleRecord(item.id)}>
+                  {open ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                  <span className="knowledge-record-title">{item.name}</span>
+                  <span className={`knowledge-badge knowledge-status-${item.status}`}>{item.status === "published" ? t("Published") : t("Draft")}</span>
+                  {item.validation?.valid === false && <span className="knowledge-error">{t("does not satisfy the schema")}</span>}
+                  <small className="knowledge-meta">
+                    {!selectedBundle && bundle ? `${bundle.name} · ` : ""}
+                    {!currentExperimentSchemaId ? `${schemaName(item.schema_id)} · ` : ""}
+                    {new Date(item.updated_at).toLocaleString()}</small>
+                </button>
+                {open && <div className="knowledge-record-body">
+                  {record.validation?.valid === false && <p role="alert" className="knowledge-error">
+                    {(record.validation.errors ?? record.validation.missing ?? []).join("; ") || t("Does not satisfy the schema")}</p>}
+                  {editing
+                    ? <>
+                      <div className="knowledge-reading-toolbar">
+                        <label className="knowledge-record-field knowledge-record-name">{t("Name")}<input value={recordName} disabled={busy}
+                          onChange={event => setRecordName(event.target.value)} /></label>
+                        <button type="button" aria-pressed={rawRecord} disabled={busy}
+                          onClick={() => { if (!rawRecord) setRecordJson(pretty(recordDraft)); else { try { setRecordDraft(JSON.parse(recordJson)); } catch { /* keep the form's last good value */ } } setRawRecord(!rawRecord); }}>{t("JSON")}</button>
+                      </div>
+                      {rawRecord
+                        ? <label className="knowledge-record-field">{t("Data (JSON)")}<textarea value={recordJson} disabled={busy} rows={10}
+                            spellCheck={false} onChange={event => setRecordJson(event.target.value)} /></label>
+                        : definition
+                          ? <RecordForm definition={definition} value={recordDraft} disabled={busy} onChange={setRecordDraft} />
+                          : <p role="status">{t("Loading schema…")}</p>}
+                      <label className="knowledge-record-field">{t("Note")}<input value={recordNote} disabled={busy}
+                        placeholder={t("Where it came from, what was unclear…")} onChange={event => setRecordNote(event.target.value)} /></label>
+                      <p className="knowledge-meta">{t("You can also ask the Lab assistant to change this record in the conversation — refer to it as \"{v0}\".", { v0: record.name })}</p>
+                      <div className="knowledge-formbar">
+                        <button type="button" className="knowledge-primary" disabled={busy} onClick={() => void saveRecordEdits(record)}>{t("Save changes")}</button>
+                        <button type="button" disabled={busy} onClick={() => setEditingId("")}>{t("Cancel")}</button>
+                      </div>
+                    </>
+                    : <>
+                      <RecordTable definition={definition} data={record.data} validation={record.validation} />
+                      <p className="knowledge-meta">{t("revision {v0} · from {v1}", { v0: record.revision,
+                        v1: detail ? (detail.sources.map(link => link.filename ?? shortId(link.source_id)).join(", ") || "—") : "…" })}
+                        {record.note ? ` · ${record.note}` : ""}</p>
+                      {publishPending?.record_id === item.id ? <div role="alert" className="knowledge-confirm">
+                        <strong>{t("Publish this record?")}</strong>
+                        <p>{publishPending.reasons.join(" ")}</p>
+                        <div className="knowledge-formbar">
+                          <button type="button" className="knowledge-primary" disabled={busy}
+                            onClick={() => void publishRecord(record, publishPending)}>{t("Confirm and publish")}</button>
+                          <button type="button" disabled={busy} onClick={() => setPublishPending(undefined)}>{t("Cancel")}</button>
+                        </div>
+                      </div> : <div className="knowledge-formbar">
+                        {record.status === "published"
+                          ? <button type="button" disabled={busy} onClick={() => void unpublishRecord(record)}>{t("Unpublish")}</button>
+                          : <>
+                            <button type="button" disabled={busy} onClick={() => beginEdit(record)}><Pencil size={13} />{t("Edit")}</button>
+                            <button type="button" className="knowledge-primary" disabled={busy || record.validation?.valid === false}
+                              onClick={() => void publishRecord(record)}>{t("Publish")}</button>
+                            <button type="button" className="knowledge-danger" disabled={busy} onClick={() => void deleteRecord(record)}>{t("Delete")}</button>
+                          </>}
+                      </div>}
+                    </>}
                 </div>}
-              </>}
-          </div>}
-          </div>
+              </li>;
+            })}
+          </ul>}
+          {dialog && selectedBundle && <ExtractDialog key={`${selectedBundle.id}:${dialog.mode}`} bundle={selectedBundle} mode={dialog.mode}
+            schemas={experimentSchemas} busy={busy} canExtract={canExtract} runHint={runHint} blocker={extractBlocker}
+            onClose={() => setDialog(undefined)} onConfirm={details => void confirmDialog(selectedBundle, dialog.mode, details)} />}
         </div>}
         </div>
       </WorkspaceSection>}

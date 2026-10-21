@@ -202,8 +202,13 @@ class ExperimentRecordStore:
             rows = connection.execute(query).mappings().all()
         return [_bundle_json(row) for row in rows]
 
-    def update_bundle(self, bundle_id, *, name=None, notes=None, status=None, run_id=...):
-        """``run_id`` uses an ellipsis sentinel so ``None`` can clear it explicitly."""
+    def update_bundle(self, bundle_id, *, name=None, notes=None, schema_id=None, status=None,
+                      run_id=...):
+        """``run_id`` uses an ellipsis sentinel so ``None`` can clear it explicitly.
+
+        ``schema_id`` may only move while the bundle holds no records: each record was
+        validated against the schema it was extracted with, so the two must agree.
+        """
         if status is not None and status not in BUNDLE_STATUSES:
             raise KnowledgeError(f"status must be one of {BUNDLE_STATUSES}")
         values = {"updated_at": datetime.now(timezone.utc)}
@@ -211,6 +216,11 @@ class ExperimentRecordStore:
             values["name"] = name
         if notes is not None:
             values["notes"] = notes
+        if schema_id is not None:
+            if self.list(bundle_id=bundle_id, limit=1):
+                raise KnowledgeError("This upload already has records; re-extract after "
+                                     "removing them to change its schema")
+            values["schema_id"] = str(schema_id)
         if status is not None:
             values["status"] = status
         if run_id is not ...:
