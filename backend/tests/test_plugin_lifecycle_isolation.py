@@ -200,3 +200,28 @@ def test_optional_runtime_restore_failure_cleans_agent_records_and_blocks_future
         with pytest.raises(AgentNotFoundError):
             asyncio.run(runtime.get_agent(agent.id))
     services.close()
+
+
+@pytest.mark.parametrize('core', [False, True])
+def test_core_runtime_failure_and_optional_cleanup_timeout_are_fatal(tmp_path, core):
+    from backend.agents import MockAgentRuntime
+    class BrokenRuntime(MockAgentRuntime):
+        async def create_agent(self, config):
+            await super().create_agent(config)
+            raise ValueError('runtime restoration failed')
+        async def delete_agent(self, agent_id):
+            await asyncio.sleep(60)
+    base = create_builtin_registry()
+    provider_id = 'core.mock' if core else 'test.runtime'
+    if not core:
+        base.install(PluginDefinition(PluginDescriptor(id='test.provider', version='1.0', plugin_api_version='1.38'),
+            lambda r: r.register_runtime_provider(provider_id, lambda capabilities: BrokenRuntime(capabilities))))
+    services = create_services(Settings.for_data_root(tmp_path), plugins=base)
+    if core:
+        services.install_runtime_provider(provider_id, BrokenRuntime(services.run_manager.capability_provider))
+    services.run_manager.cleanup_timeout_seconds = .01
+    card = services.world.create_card(CardCreate(type='agent', config={'runtime_provider_id': provider_id}))
+    with pytest.raises(ValueError if core else PluginIntegrityError):
+        asyncio.run(services.run_manager.restore_agent(card))
+    assert services.world.get_card(card.id).id == card.id
+    services.close()

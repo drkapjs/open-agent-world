@@ -663,6 +663,9 @@ class RunManager:
             owner = self.plugins.runtime_provider_owner_id(provider_id)
         except ValueError:
             owner = None
+        if owner == 'open-agent-world.core' and provider_id == 'core.mock':
+            # Unlike the optional Google SDK adapter, this runtime is Core code.
+            raise error
         affected = set()
         if owner and owner != 'open-agent-world.core':
             affected = self.plugins.mark_unavailable(owner, 'runtime', error, source='runtime_provider')
@@ -699,7 +702,13 @@ class RunManager:
                 agents = [key for key, value in self._agent_provider_ids.items() if value == runtime_id]
                 for agent_id in dict.fromkeys(([card.id] if runtime_id == provider_id else []) + list(reversed(agents))):
                     try:
-                        await provider.delete_agent(agent_id)
+                        cleanup = asyncio.create_task(provider.delete_agent(agent_id))
+                        done, _ = await asyncio.wait({cleanup}, timeout=self.cleanup_timeout_seconds)
+                        if not done:
+                            cleanup.cancel()
+                            cleanup.add_done_callback(lambda task: None if task.cancelled() else task.exception())
+                            raise PluginIntegrityError(f'Runtime provider {provider_id} restore cleanup timed out')
+                        cleanup.result()
                     except AgentNotFoundError:
                         pass
                     except Exception as cleanup_error:
