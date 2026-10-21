@@ -154,12 +154,13 @@ ever shows.
 
 ### Experiment
 
-1. **Experiments** — **Upload files** (or drop them onto the section): a
-   photographed handwritten table, an Excel sheet, a PDF, a note. One experiment's
-   files become one **upload**, created on the spot and named after its files;
-   each file converts to markdown as soon as it lands (images through the vision
-   engine). Uploads line up as chips above the records; pick one to see its files,
-   **Add files** to it, or edit its details. Once every file is converted, **Extract
+1. **Experiments** — drop files onto the strip under the toolbar (or **Choose
+   files**): a photographed handwritten table, an Excel sheet, a PDF, a note. One
+   experiment's files become one **upload**, created on the spot and named after
+   its files; each file converts to markdown as soon as it lands (images through
+   the vision engine). Uploads line up as chips below the strip; pick one to see
+   its files, drop or **Add files** onto it, or edit its details — the strip's
+   **New upload from files** starts another upload instead. Once every file is converted, **Extract
    records** opens a window to confirm the upload's name, description (units, which
    specimen a photo shows) and **experiment**-kind schema (choose one in the window,
    or **New schema** first: one JSON Schema object describes one specimen record;

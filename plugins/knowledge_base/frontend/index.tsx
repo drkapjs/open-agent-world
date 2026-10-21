@@ -1421,17 +1421,6 @@ export function Workspace({ host, card }: PluginViewProps) {
               id: "", name: "", description: "", system_prompt: "", kind: "experiment",
               definition: pretty({ type: "object", required: ["sample_id"], properties: { sample_id: { type: "string", description: "Specimen label" } } }),
             }); }}><Plus size={14} />{t("New schema")}</button>
-            {!!experimentSchemas.length && <label className={`knowledge-upload${busy ? " is-disabled" : ""}`}
-              title={t("Starts a new upload from the chosen files · up to 32 MiB per file")}>
-              <Upload size={14} />{t("Upload files")}
-              <input className="knowledge-visually-hidden" type="file" multiple disabled={busy}
-                aria-label={t("Upload files as a new experiment upload")}
-                onChange={event => {
-                  const files = Array.from(event.target.files ?? []);
-                  event.target.value = "";
-                  if (files.length) void uploadNewBundle(files);
-                }} />
-            </label>}
           </div>
         </WorkspaceToolbar>
         <Banner error={error} notice={notice} />
@@ -1447,12 +1436,17 @@ export function Workspace({ host, card }: PluginViewProps) {
             if (busy) return;
             if (selectedBundle) void uploadToBundle(selectedBundle, files); else void uploadNewBundle(files);
           }}>
-          {!schemaBundles.length && <div className="knowledge-dropzone">
-            <Upload size={22} />
-            <strong>{t("Drop an experiment's files here")}</strong>
-            <p>{t("A photographed table, a spreadsheet, a PDF, a note — the files of one experiment become one upload, convert as they land, and are read together when you extract records.")}</p>
+          {/* The drop zone is always here, between the toolbar and the uploads, so the
+              way files come in never moves: tall and explanatory before the first upload,
+              a one-line strip once there are uploads to show below it. */}
+          <div className={`knowledge-dropzone${schemaBundles.length ? " is-compact" : ""}`}>
+            <Upload size={schemaBundles.length ? 16 : 22} />
+            <strong>{selectedBundle
+              ? t("Drop files here to add them to \"{v0}\"", { v0: selectedBundle.name })
+              : t("Drop an experiment's files here")}</strong>
+            {!schemaBundles.length && <p>{t("A photographed table, a spreadsheet, a PDF, a note — the files of one experiment become one upload, convert as they land, and are read together when you extract records.")}</p>}
             <label className={`knowledge-upload${busy ? " is-disabled" : ""}`}>
-              <Upload size={14} />{t("Choose files")}
+              <Upload size={14} />{schemaBundles.length ? t("New upload from files") : t("Choose files")}
               <input className="knowledge-visually-hidden" type="file" multiple disabled={busy}
                 aria-label={t("Choose files for a new experiment upload")}
                 onChange={event => {
@@ -1461,7 +1455,7 @@ export function Workspace({ host, card }: PluginViewProps) {
                   if (files.length) void uploadNewBundle(files);
                 }} />
             </label>
-          </div>}
+          </div>
           {!!schemaBundles.length && <div className="knowledge-bundle-chips" role="tablist" aria-label={t("Uploads")}>
             <button type="button" role="tab" aria-selected={!selectedBundle} onClick={() => setBundleId("")}>{t("All records")}
               <span className="knowledge-total">{experiments.filter(item => !currentExperimentSchemaId || item.schema_id === currentExperimentSchemaId).length}</span></button>
@@ -1539,7 +1533,7 @@ export function Workspace({ host, card }: PluginViewProps) {
               <button type="button" onClick={() => setRunLogOpen(true)}><ScrollText size={13} /> {t("View log")}</button>
             </div>}
             {runLogOpen && selectedBundle.run_id && <Modal title={t("Extraction log · {v0}", { v0: selectedBundle.name })}
-              className="knowledge-runlog-modal" onClose={() => setRunLogOpen(false)}
+              className="knowledge-modal knowledge-runlog-modal" onClose={() => setRunLogOpen(false)}
               actions={<>
                 {(extracting?.bundle_id === selectedBundle.id || selectedBundle.status === "extracting") &&
                   <button type="button" className="knowledge-danger" disabled={stopping}

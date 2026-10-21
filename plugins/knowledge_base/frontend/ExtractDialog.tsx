@@ -30,7 +30,7 @@ export function ExtractDialog({ bundle, schemas, mode, busy, canExtract, runHint
   const confirmDisabled = busy || !name.trim() || !schemaId || (extracting && (!canExtract || !converted || !!blocker));
   const submit = () => { if (!confirmDisabled) onConfirm({ name: name.trim(), notes, schema_id: schemaId, replace }); };
   return <Modal title={extracting ? t("Extract records from this upload") : t("Upload details")} busy={busy}
-    className="knowledge-extract-dialog" onClose={onClose}
+    className="knowledge-modal knowledge-extract-dialog" onClose={onClose}
     actions={<>
       <button type="button" className="knowledge-primary" disabled={confirmDisabled} onClick={submit}>
         {extracting ? (bundle.records > 0 && replace ? t("Re-extract records") : t("Extract records")) : t("Save details")}</button>
