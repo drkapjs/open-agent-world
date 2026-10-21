@@ -156,6 +156,12 @@ and uses the existing installation-acceptance 120-second response budget, while
 still asserting the real response, same-page catalog and persistence. Core runtime
 failure and provider cleanup timeout checks also passed in a separate 21-test run.
 
+Full Linux CI then completed 2660 tests with 60 retained skips and one teardown
+error: a Sandbox cancellation test left its injected cleanup timeout active during
+the application's newly bounded shutdown. The injection is now scoped to the
+cancel operation. Its conflict, pending-cleanup and live-command assertions remain;
+normal fixture shutdown uses the actual cleanup implementation.
+
 ## Remaining independent work
 
 - Publish a supported standalone Python CLI and public SDK release channel.
