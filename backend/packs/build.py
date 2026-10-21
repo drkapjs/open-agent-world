@@ -283,7 +283,9 @@ def build_project(source: Path, output: Path, *, backend_wheel: Path | None = No
     files.update(dependency_files)
     if frontend_dir is None:
         if spec.frontend is not None:
-            raise ValueError("A declared frontend requires --frontend-dir with its prebuilt artifacts")
+            raise ValueError("A declared frontend requires --frontend-dir with its prebuilt artifacts "
+                             "(run the project's `npm run build` first, or remove [components.frontend] "
+                             "from oaw.pack.toml for a configuration-only card)")
         files['frontend/index.js'] = b'export default {apiVersion:1,views:{}};\n'
     else:
         frontend_dir = Path(frontend_dir).resolve(strict=True)
