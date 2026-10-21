@@ -1,6 +1,8 @@
 """Prepare a source checkout explicitly; normal dev/start never install packages."""
 from __future__ import annotations
 
+import json
+import tempfile
 import argparse
 import os
 from pathlib import Path
@@ -42,7 +44,7 @@ def prerequisites(*, install: bool, warn: bool = True) -> dict[str, str]:
     return found
 
 
-def main(argv=None) -> None:
+def main(argv=None) -> int | None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--profile", type=profile_name, help="Prepare this development profile instead of production data")
     parser.add_argument("--plugin-path", action="append", type=Path, default=[], help="Additional trusted source plugin (repeatable)")
@@ -71,30 +73,66 @@ def main(argv=None) -> None:
         install += ["--profile", args.profile]
     for path in paths:
         install += ["--additional-path", str(path)] if args.with_plugins else [str(path)]
+    pack_results = None
     if args.with_plugins or paths:
-        subprocess.run(install, cwd=ROOT, check=True)
-    build_env = os.environ.copy() if args.with_plugins else {**os.environ, "OPEN_AGENT_WORLD_CORE_ONLY": "1"}
-    build_env["OAW_ALLOW_PACK_FAILURES"] = "1"
-    frontend = ROOT / "frontend"
-    # This checker uses only Node built-ins, so it also works before npm ci.
-    ready = subprocess.run([commands["node"], str(frontend / "scripts/source-packs.mjs"), "--check-host"],
-                           cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
-    if ready:
-        print("Reusing installed frontend dependencies.", flush=True)
+        with tempfile.TemporaryDirectory(prefix="oaw-setup-") as directory:
+            report = Path(directory) / "packs.json"
+            result = subprocess.run([*install, "--report", str(report)], cwd=ROOT)
+            if result.returncode not in (0, 3) or not report.is_file():
+                raise RuntimeError("Optional Pack installer failed before reporting results; Core backend dependencies are prepared. Retry scripts/install-plugins.py.")
+            pack_results = json.loads(report.read_text(encoding="utf-8"))
+    with tempfile.TemporaryDirectory(prefix="oaw-frontend-setup-") as directory:
+        frontend_report = Path(directory) / "failures.jsonl"
+        build_env = os.environ.copy() if args.with_plugins else {**os.environ, "OPEN_AGENT_WORLD_CORE_ONLY": "1"}
+        build_env["OAW_ALLOW_PACK_FAILURES"] = "1"
+        build_env["OAW_PACK_FAILURE_REPORT"] = str(frontend_report)
+        frontend = ROOT / "frontend"
+        # This checker uses only Node built-ins, so it also works before npm ci.
+        ready = subprocess.run([commands["node"], str(frontend / "scripts/source-packs.mjs"), "--check-host"],
+                               cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+        if ready:
+            print("Reusing installed frontend dependencies.", flush=True)
+        else:
+            subprocess.run([commands["npm"], "ci", "--include=dev", "--ignore-scripts", "--no-audit", "--no-fund"],
+                           cwd=frontend, check=True)
+        if args.skip_build:
+            for script in ("build:pack-sdk", "prepare:packs"):
+                subprocess.run([commands["npm"], "run", script], cwd=frontend, env=build_env, check=True)
+        else:
+            # prebuild prepares the SDK and Pack dependencies once.
+            subprocess.run([commands["npm"], "run", "build"], cwd=frontend, env=build_env, check=True)
+        frontend_failures = [json.loads(line) for line in frontend_report.read_text(encoding="utf-8").splitlines()] if frontend_report.is_file() else []
+    for failure in frontend_failures:
+        row = next((row for row in pack_results or [] if failure['id'] in (row['id'], row.get('owner'))), None)
+        if row is not None:
+            row['ready'] = False
+            row['error'] += "\nFrontend: " + failure['error']
+            row['frontend'] = True
+        else:
+            if pack_results is None:
+                pack_results = []
+            pack_results.append({**failure, 'ready': False, 'path': '', 'frontend': True})
+    failed = [row for row in pack_results or [] if not row["ready"]]
+    print("Core ready.", flush=True)
+    if pack_results is None:
+        print("Optional Packs: not requested (Core-only setup). Use --with-plugins to prepare them.", flush=True)
     else:
-        subprocess.run([commands["npm"], "ci", "--include=dev", "--ignore-scripts", "--no-audit", "--no-fund"],
-                       cwd=frontend, check=True)
-    if args.skip_build:
-        for script in ("build:pack-sdk", "prepare:packs"):
-            subprocess.run([commands["npm"], "run", script], cwd=frontend, env=build_env, check=True)
-    else:
-        # prebuild prepares the SDK and Pack dependencies once.
-        subprocess.run([commands["npm"], "run", "build"], cwd=frontend, env=build_env, check=True)
+        print(f"Optional Packs: {len(pack_results) - len(failed)} ready, {len(failed)} failed", flush=True)
+        for row in pack_results:
+            print(f"  {row['id']}: {'FAILED' if not row['ready'] else 'ready'}", flush=True)
+        for row in failed:
+            print(f"Failed: {row['id']}\n{row['error']}\nRetry: " + subprocess.list2cmdline(
+                ([str(python), str(ROOT / 'scripts/setup.py'), '--with-plugins'] if row.get('frontend') else
+                 [str(python), str(ROOT / 'scripts/install-plugins.py'), row['path']]) +
+                (['--profile', args.profile] if args.profile else [])), file=sys.stderr, flush=True)
+    if failed:
+        print("Setup partially complete; Core remains usable. Repair failed Packs and restart OAW.", file=sys.stderr, flush=True)
+        return 3
     print(f"Setup complete ({'development profile: ' + args.profile if args.profile else 'production'}).", flush=True)
 
 
 if __name__ == "__main__":
     try:
-        main()
+        raise SystemExit(main())
     except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
-        raise SystemExit(str(exc)) from exc
+        raise SystemExit("Setup failed before Core readiness was confirmed: " + str(exc)) from exc

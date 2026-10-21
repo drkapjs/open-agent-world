@@ -1,7 +1,7 @@
 import { createReadStream } from 'node:fs';
 import { cp, readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
-import { buildSourcePack, sourcePacks } from '../scripts/source-packs.mjs';
+import { buildSourcePack, sourcePacks, reportPackFailure } from '../scripts/source-packs.mjs';
 
 const types = { '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.wasm': 'application/wasm', '.svg': 'image/svg+xml', '.png': 'image/png', '.gif': 'image/gif', '.jpg': 'image/jpeg', '.woff': 'font/woff', '.woff2': 'font/woff2' };
 
@@ -21,7 +21,7 @@ export function sourcePackArtifacts({ discover = sourcePacks, buildPack = buildS
       catch (error) {
         if (strict) throw error;
         failed.add(pack.owner);
-        console.error(`Optional Pack ${pack.owner} unavailable: ${error.message}`);
+        await reportPackFailure(pack.owner, error);
       }
     }
   };

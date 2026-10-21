@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { spawn } from 'node:child_process';
-import { access, mkdir, readFile, readdir, realpath, symlink, writeFile } from 'node:fs/promises';
+import { appendFile, access, mkdir, readFile, readdir, realpath, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildRuntime, cachedBuild, digest, filesFingerprint, installedFingerprint, treeFiles, treeFingerprint } from './build-cache.mjs';
@@ -10,6 +10,13 @@ export const frontendRoot = fileURLToPath(new URL('../', import.meta.url));
 const repo = path.dirname(frontendRoot);
 const readJson = async file => JSON.parse(await readFile(file, 'utf8'));
 const exists = async file => { try { await access(file); return true; } catch { return false; } };
+
+export async function reportPackFailure(id, error) {
+  console.error(`Optional Pack ${id} unavailable: ${error.message}`);
+  if (process.env.OAW_PACK_FAILURE_REPORT) {
+    await appendFile(process.env.OAW_PACK_FAILURE_REPORT, JSON.stringify({ id, error: error.message }) + '\n');
+  }
+}
 
 export async function sourcePacks({ strict = true } = {}) {
   const packs = [];
@@ -26,7 +33,7 @@ export async function sourcePacks({ strict = true } = {}) {
       packs.push({ root, owner: manifest.pluginId });
       } catch (error) {
         if (strict) throw error;
-        console.error(`Optional Pack unavailable (${root}): ${error.message}`);
+        await reportPackFailure(root, error);
       }
     }
   }
@@ -185,7 +192,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       else await buildSourcePack(pack, { force: process.argv.includes('--force') });
       } catch (error) {
         if (strict) throw error;
-        console.error(`Optional Pack ${pack.owner} unavailable: ${error.message}`);
+        await reportPackFailure(pack.owner, error);
       }
     }
   }

@@ -97,3 +97,17 @@ The mock runtime is for deterministic debugging; it is not a language model. The
 Application internals are useful for debugging the host, but plugin implementation should use these public imports. Integration tests can use host services to verify discovery and persistence.
 
 Continue with [Your first plugin](first-plugin.md). For host development and broader checks, see [Run from source](../getting-started.md#development-and-verification).
+
+## Setup results
+
+Core-only setup prints `Core ready` and `Optional Packs: not requested`.
+With `--with-plugins` (or explicit plugin paths), setup reports each Pack and a
+ready/failed count. Backend preparation and frontend build failures appear in
+the final summary with their cause and a retry command. Core preparation still
+finishes when an optional Pack fails.
+
+Exit code `0` means the requested setup completed; `3` means optional Packs
+failed while Core remains usable; other nonzero exits indicate setup did not
+reach confirmed Core readiness. `install-plugins.py --continue-on-error` also
+returns `3` after attempting the remaining Packs when any preparation fails.
+After repairing a Pack, restart OAW to activate it.

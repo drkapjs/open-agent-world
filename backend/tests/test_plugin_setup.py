@@ -177,3 +177,58 @@ def test_invalid_profile_fails_before_installation(installer, monkeypatch):
         module.main()
     assert error.value.code == 2
     assert not calls
+
+
+def test_partial_preparation_reports_identity_reason_and_continues(installer, monkeypatch, tmp_path, capsys):
+    import json
+    module, plugin, calls = installer
+    other = tmp_path / 'other'
+    other.mkdir()
+    (other / 'pyproject.toml').write_text('[project]\nname="other"\n')
+    (plugin / 'oaw.pack.toml').write_text('[distribution]\nid="knowledge.base"\n')
+    report = tmp_path / 'report.json'
+    def run(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 1 if str(plugin) in command else 0,
+            stderr='Incompatible shared adapter dependency: pymupdf4llm<0.4 (available 1.28.2)' if str(plugin) in command else '')
+    monkeypatch.setattr(module.subprocess, 'run', run)
+    monkeypatch.setattr(sys, 'argv', ['install-plugins.py', str(plugin), str(other), '--continue-on-error', '--report', str(report), '--profile', 'demo'])
+    assert module.main() == 3
+    assert len(calls) == 2
+    results = json.loads(report.read_text())
+    assert [row['ready'] for row in results] == [False, True]
+    output = capsys.readouterr()
+    assert '1 ready, 1 failed' in output.out
+    assert 'knowledge.base: Incompatible shared adapter dependency' in output.err
+    assert '--profile demo' in output.err
+
+
+@pytest.mark.parametrize('platform,machine,version,allowed', [
+    ('win32', 'AMD64', '1.28.2', True), ('linux', 'x86_64', '1.28.2', True),
+    ('darwin', 'arm64', '1.28.2', True), ('darwin', 'x86_64', '1.28.2', False),
+    ('darwin', 'x86_64', '0.3.4', True), ('win32', 'AMD64', '2.0.0', False),
+])
+def test_pdf_dependency_keeps_api_and_intel_mac_adapter_boundaries(platform, machine, version, allowed):
+    import tomllib
+    from packaging.requirements import Requirement
+    project = Path(__file__).resolve().parents[2] / 'plugins/knowledge_base/pyproject.toml'
+    requirements = [Requirement(value) for value in tomllib.loads(project.read_text())['project']['dependencies']]
+    active = [r for r in requirements if r.name == 'pymupdf4llm' and r.marker.evaluate(
+        {'sys_platform': platform, 'platform_machine': machine})]
+    assert len(active) == 1
+    assert (version in active[0].specifier) == allowed
+
+
+def test_failed_discovery_is_included_even_when_no_pack_can_be_prepared(installer, monkeypatch, tmp_path, capsys):
+    import json
+    module, _, calls = installer
+    plugin = tmp_path / 'plugins' / 'broken'
+    plugin.mkdir(parents=True)
+    (plugin / 'pyproject.toml').write_text('not valid toml')
+    report = tmp_path / 'report.json'
+    monkeypatch.setattr(module, 'ROOT', tmp_path)
+    monkeypatch.setattr(sys, 'argv', ['install-plugins.py', '--continue-on-error', '--report', str(report)])
+    assert module.main() == 3
+    assert not calls
+    assert json.loads(report.read_text())[0]['path'] == str(plugin)
+    assert '0 ready, 1 failed' in capsys.readouterr().out

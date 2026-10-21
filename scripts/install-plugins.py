@@ -5,6 +5,7 @@ belongs in setup/build, never in an HTTP request or application startup.
 """
 from __future__ import annotations
 
+import json
 import argparse
 from pathlib import Path
 import subprocess
@@ -78,7 +79,7 @@ with ledger.lease_many(resources, label='source-setup') as consumer:
 """
 
 
-def plugin_paths(directory: Path, *, strict=True) -> list[Path]:
+def plugin_paths(directory: Path, *, strict=True, failures=None) -> list[Path]:
     paths = []
     for manifest in sorted(directory.glob("*/pyproject.toml")):
         try:
@@ -89,6 +90,8 @@ def plugin_paths(directory: Path, *, strict=True) -> list[Path]:
             if strict:
                 raise
             print(f"Optional Pack discovery failed ({manifest}): {exc}", file=sys.stderr)
+            if failures is not None:
+                failures.append({"id": str(manifest.parent), "path": str(manifest.parent), "ready": False, "error": str(exc)})
     return paths
 
 
@@ -101,21 +104,26 @@ def main():
     parser.add_argument("--target", type=Path, help="Install non-editable packages into a desktop payload")
     parser.add_argument("--profile", type=profile_name, help="Prepare dependencies in this development profile, matching backend.launcher")
     parser.add_argument("--constraint", type=Path, help="Preserve the locked host dependency versions")
+    parser.add_argument("--report", type=Path, help="Write per-Pack preparation results as JSON")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--continue-on-error", action="store_true", help="Prepare each optional Pack independently; report failures without blocking Core setup")
     args = parser.parse_args()
     if args.target and args.profile:
         parser.error("--target and --profile select different preparation destinations")
-    defaults = args.paths or (plugin_paths(ROOT / "plugins", strict=False) if args.continue_on_error else plugin_paths(ROOT / "plugins"))
+    discovery_failures = []
+    defaults = args.paths or (plugin_paths(ROOT / "plugins", strict=False, failures=discovery_failures) if args.continue_on_error else plugin_paths(ROOT / "plugins"))
     paths = list(dict.fromkeys(path.resolve() for path in [*defaults, *args.additional_path]))
     # Validate the whole request before invoking a package manager.
     for path in paths:
         if not (path / "pyproject.toml").is_file():
             parser.error(f"Plugin path must contain a pyproject.toml: {path}")
-    if not paths:
+    if not paths and not discovery_failures:
+        if args.report:
+            args.report.write_text("[]", encoding="utf-8")
+        print("Optional Packs: none discovered", flush=True)
         return
     if args.continue_on_error:
-        failed = []
+        results = discovery_failures
         for path in paths:
             command = [sys.executable, str(Path(__file__).resolve()), str(path), "--python", args.python]
             for name in ("target", "profile", "constraint"):
@@ -123,12 +131,28 @@ def main():
                     command += ["--" + name, str(value)]
             if args.dry_run:
                 command.append("--dry-run")
-            if subprocess.run(command, cwd=ROOT).returncode:
-                failed.append(str(path))
+            try:
+                project = tomllib.loads((path / "pyproject.toml").read_text(encoding="utf-8"))
+                manifest = path / "oaw.pack.toml"
+                declaration = tomllib.loads(manifest.read_text(encoding="utf-8")) if manifest.is_file() else {}
+                identity = declaration.get("distribution", {}).get("id") or project["project"]["name"]
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                results.append({"id": str(path), "path": str(path), "ready": False, "error": str(exc)})
+                continue
+            print(f"Preparing {identity} ...", flush=True)
+            result = subprocess.run(command, cwd=ROOT, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
+            if result.stderr:
+                print(result.stderr, file=sys.stderr, end="", flush=True)
+            results.append({"id": identity, "owner": declaration.get("plugin", {}).get("owner"), "path": str(path), "ready": result.returncode == 0,
+                            "error": (result.stderr.strip()[-4000:] or f"Installer exited with code {result.returncode}") if result.returncode else ""})
+        if args.report:
+            args.report.write_text(json.dumps(results, ensure_ascii=False), encoding="utf-8")
+        failed = [row for row in results if not row["ready"]]
+        print(f"Optional Packs: {len(results) - len(failed)} {'checked' if args.dry_run else 'ready'}, {len(failed)} failed", flush=True)
         if failed:
             print("Optional Pack preparation failed; Core remains available. Retry install-plugins.py with the individual path:\n"
-                  + "\n".join(failed), file=sys.stderr)
-        return
+                  + "\n".join(f"{row['id']}: {row['error']}\nRetry: {subprocess.list2cmdline([sys.executable, str(Path(__file__).resolve()), row['path'], '--python', args.python, *(['--profile', args.profile] if args.profile else [])])}" for row in failed), file=sys.stderr)
+        return 3 if failed else 0
     command = ["uv", "pip", "install", "--no-deps", "--python", args.python]
     # Schema 3 source discovery already adds the source path. Installing an
     # editable copy repeats that authority and leaves stale entrypoint metadata.
@@ -160,4 +184,9 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        raise SystemExit(main())
+    except subprocess.CalledProcessError as exc:
+        # The child already printed the cause. Avoid burying it in a traceback
+        # containing the entire inline preparation script.
+        raise SystemExit(f"Pack preparation failed (exit {exc.returncode}); see the error above.") from None

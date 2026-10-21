@@ -29,6 +29,8 @@ test('dev serves Core and independent Packs when one build fails, while CI stays
   const discover = async () => packs;
   const strict = sourcePackArtifacts({ discover, buildPack });
   await assert.rejects(() => strict.buildStart(), /deliberate missing dependency/);
+  const previousReport = process.env.OAW_PACK_FAILURE_REPORT;
+  process.env.OAW_PACK_FAILURE_REPORT = path.join(root, 'setup-failures.jsonl');
   const server = await createServer({ configFile: false, root,
     server: { host: '127.0.0.1', port: 0 }, plugins: [sourcePackArtifacts({ discover, buildPack })] });
   try {
@@ -36,7 +38,11 @@ test('dev serves Core and independent Packs when one build fails, while CI stays
     const base = `http://127.0.0.1:${server.httpServer.address().port}`;
     assert.equal((await fetch(base + '/assets/packs/fixture.good/index.js')).status, 200);
     assert.equal((await fetch(base + '/assets/packs/fixture.broken/index.js')).status, 404);
+    assert.deepEqual(JSON.parse((await readFile(process.env.OAW_PACK_FAILURE_REPORT, 'utf8')).trim()),
+      { id: 'fixture.broken', error: 'deliberate missing dependency' });
   } finally {
+    if (previousReport === undefined) delete process.env.OAW_PACK_FAILURE_REPORT;
+    else process.env.OAW_PACK_FAILURE_REPORT = previousReport;
     await server.close();
     await rm(root, { recursive: true, force: true });
   }
