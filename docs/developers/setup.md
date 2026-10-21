@@ -40,6 +40,9 @@ Open the URL printed by the launcher. Ports can change when the usual ones are o
 Setup is the installation entrypoint on every platform, backed by `scripts/setup.py`.
 Run it when creating a profile or changing dependencies. `--skip-build` / `-SkipBuild`
 prepares the SDK and Pack dependencies without building the production frontend.
+Add `--verbose` (PowerShell: `-Verbose`) to show verbose backend sync output and
+stream Pack dependency wheel downloads, resolution, and builds live. Without it,
+Pack wheel resolution keeps its output captured and reports periodic progress.
 Ordinary `dev` launches only check the environment and build source assets; they do
 not run uv sync, editable installs, setup hooks, or npm ci. Missing or stale
 dependencies produce an error pointing back to setup. The launchers and `npm run dev`

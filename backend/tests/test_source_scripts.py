@@ -28,7 +28,8 @@ def scripts(monkeypatch):
 
 
 @pytest.mark.parametrize("profile,skip_build,ready", [(None, False, False), ("demo", True, True), ("demo", False, True)])
-def test_setup_routes_all_platforms_through_persistent_interpreter(scripts, monkeypatch, tmp_path, profile, skip_build, ready):
+@pytest.mark.parametrize("verbose", [False, True])
+def test_setup_routes_all_platforms_through_persistent_interpreter(scripts, monkeypatch, tmp_path, profile, skip_build, ready, verbose):
     setup, _, _ = scripts
     root = tmp_path / "checkout with spaces"
     python = root / "backend/.venv/python"
@@ -40,6 +41,8 @@ def test_setup_routes_all_platforms_through_persistent_interpreter(scripts, monk
     monkeypatch.setattr(setup, "ROOT", root)
     monkeypatch.setattr(setup, "backend_python", lambda: python)
     monkeypatch.setattr(setup, "prerequisites", lambda **kw: {key: key for key in ("uv", "node", "npm")})
+    monkeypatch.delenv("OPEN_AGENT_WORLD_SETUP_VERBOSE", raising=False)
+    monkeypatch.setenv("SETUP_TEST_INHERITED", "preserved")
     calls = []
 
     def run(command, **kwargs):
@@ -52,10 +55,16 @@ def test_setup_routes_all_platforms_through_persistent_interpreter(scripts, monk
         args += ["--profile", profile]
     if skip_build:
         args += ["--skip-build"]
+    if verbose:
+        args += ["--verbose"]
     setup.main(args)
     commands = [command for command, _ in calls]
     assert commands[0][:2] == ["uv", "sync"]
     assert "--locked" in commands[0] and "--inexact" in commands[0]
+    assert ("--verbose" in commands[0]) == verbose
+    assert calls[1][1]["env"].get("OPEN_AGENT_WORLD_SETUP_VERBOSE") == ("1" if verbose else None)
+    assert calls[1][1]["env"]["SETUP_TEST_INHERITED"] == "preserved"
+    assert "OPEN_AGENT_WORLD_SETUP_VERBOSE" not in setup.os.environ
     assert commands[1][:2] == [str(python), str(root / "scripts/install-plugins.py")]
     assert commands[1][-2:] == ["--additional-path", str(extra)]
     assert ("--profile" in commands[1]) == bool(profile)

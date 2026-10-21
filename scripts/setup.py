@@ -47,6 +47,7 @@ def main(argv=None) -> None:
     parser.add_argument("--profile", type=profile_name, help="Prepare this development profile instead of production data")
     parser.add_argument("--plugin-path", action="append", type=Path, default=[], help="Additional trusted source plugin (repeatable)")
     parser.add_argument("--skip-build", action="store_true", help="Prepare for dev without building the production frontend")
+    parser.add_argument("--verbose", action="store_true", help="Show verbose dependency output, including live Pack wheel resolution")
     args = parser.parse_args(argv)
     paths = []
     for path in args.plugin_path:
@@ -57,7 +58,8 @@ def main(argv=None) -> None:
     commands = prerequisites(install=True)
     # Keep trusted editable plugins; a host sync must not uninstall them.
     subprocess.run([commands["uv"], "sync", "--project", str(ROOT / "backend"), "--locked",
-                    "--dev", "--extra", "adk", "--extra", "litellm", "--inexact"], cwd=ROOT, check=True)
+                    "--dev", "--extra", "adk", "--extra", "litellm", "--inexact",
+                    *(["--verbose"] if args.verbose else [])], cwd=ROOT, check=True)
     python = backend_python()
     if not python.is_file():
         raise RuntimeError(f"Backend Python is missing after sync: {python}")
@@ -66,7 +68,10 @@ def main(argv=None) -> None:
         install += ["--profile", args.profile]
     for path in paths:
         install += ["--additional-path", str(path)]
-    subprocess.run(install, cwd=ROOT, check=True)
+    install_env = os.environ.copy()
+    if args.verbose:
+        install_env["OPEN_AGENT_WORLD_SETUP_VERBOSE"] = "1"
+    subprocess.run(install, cwd=ROOT, check=True, env=install_env)
     frontend = ROOT / "frontend"
     # This checker uses only Node built-ins, so it also works before npm ci.
     ready = subprocess.run([commands["node"], str(frontend / "scripts/source-packs.mjs"), "--check-host"],

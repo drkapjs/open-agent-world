@@ -11,5 +11,6 @@ $setupArguments = @('run', '--no-project', '--python', '>=3.11', (Join-Path $PSS
 if ($Profile) { $setupArguments += @('--profile', $Profile) }
 foreach ($path in $PluginPath) { $setupArguments += @('--plugin-path', $path) }
 if ($SkipBuild) { $setupArguments += '--skip-build' }
+if ($PSBoundParameters['Verbose']) { $setupArguments += '--verbose' }
 & uv @setupArguments
 if ($LASTEXITCODE -ne 0) { throw "Setup failed (exit code $LASTEXITCODE)." }
