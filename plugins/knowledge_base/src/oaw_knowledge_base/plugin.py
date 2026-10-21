@@ -18,7 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .errors import KnowledgeError, operator_message
 from .lifecycle import KnowledgeLifecycle
-from .operations import EXTRACT_ACTIONS, OPERATIONS, READ_ACTIONS
+from .operations import EXPERIMENT_ACTIONS, EXTRACT_ACTIONS, OPERATIONS, READ_ACTIONS
 from .preset import definition as research_preset
 from .data_source import DATA_SOURCE
 
@@ -45,11 +45,17 @@ DEPLOYMENT_FIELDS = {
     "save_projection": frozenset({"projection"}),
     "projections": frozenset({"projection", "projections"}),
     "draft": frozenset({"drafts", "draft"}),
-    "experiment_assemble_prompt": frozenset({"group_id", "schema_id", "schema_name", "definition",
-                                             "system_prompt", "contributions", "suggested_name"}),
-    "experiment_save": frozenset({"record"}),
+    "experiment_bundles": frozenset({"bundles", "bundle"}),
+    "experiment_bundle_manage": frozenset({"bundle", "deleted", "records_removed"}),
+    "experiment_ingest": frozenset({"source", "job", "bundle_id"}),
+    "experiment_extract_prompt": frozenset({"bundle_id", "bundle_name", "notes", "group_id", "schema_id",
+                                            "schema_name", "schema_version", "system_prompt", "definition",
+                                            "field_descriptions", "instruction", "files", "total_characters",
+                                            "offset", "markdown", "has_more"}),
+    "experiment_save": frozenset({"records", "bundle_id", "invalid"}),
     "experiments": frozenset({"experiments", "experiment"}),
     "experiment_update": frozenset({"experiment"}),
+    "experiment_review": frozenset({"experiment", "deleted", "status", "reasons", "message"}),
     "review": frozenset({"decision", "draft_id", "status", "reasons", "message", "fact", "event",
                          "graph"}),
     "graph_schema": frozenset({"schema_id"}),
@@ -64,13 +70,16 @@ def _surface(*names, config_fields=frozenset()):
 
 
 def _deployment():
-    """What a published release of the Knowledge research Legion can do.
+    """What a published release of the Lab Manager Legion can do.
 
     ``settings`` never appears here: the collection name, PDF engine and MinerU URL
     stay engineering-only, matching "it does not mount ... model settings". Every
     other business action a person uses to drive the pipeline — upload, convert,
-    search, project, choose the graph schema, build a draft, review, publish — is
-    exactly what a deployed release is for, so it is granted. The layout can place
+    search, project, choose the graph schema, build a draft, review, publish, upload
+    an experiment and publish its records — is exactly what a deployed release is
+    for, so it is granted. Experiment extraction in a release goes through the
+    model bridge with the pre-chosen default model, since a release carries no
+    agent edges for the connected-agent path. The layout can place
     this card as one whole pane (``surface``) or extract each section into its own
     tab (``sections``); both are covered so either shape of a saved workspace can
     publish. Section names match the card's own frontend's WorkspaceSection ids —
@@ -95,8 +104,10 @@ def _deployment():
             "graph": _surface("graph", "graph_schema", "projections", "save_projection",
                               "projection_prompt", "draft", "review",
                               config_fields={"default_model"}),
-            "experiments": _surface("projections", "experiments", "experiment_assemble_prompt",
-                                    "experiment_save", "experiment_update",
+            "experiments": _surface("overview", "jobs", "schemas", "experiment_bundles",
+                                    "experiment_bundle_manage", "experiment_ingest",
+                                    "experiment_extract_prompt", "experiment_save", "experiments",
+                                    "experiment_update", "experiment_review",
                                     config_fields={"default_model"}),
         },
     )
@@ -187,6 +198,8 @@ class KnowledgeBasePlugin:
              "Can read this knowledge base: sources, extracted markdown, schemas, projections, drafts and the published graph."),
             ("extract", "Knowledge extract", "extract", EXTRACT_ACTIONS,
              "Can read this knowledge base and add projections and draft graphs. Drafts stay unpublished until a person approves them on the canvas."),
+            ("experiment", "Knowledge experiment", "experiment", EXPERIMENT_ACTIONS,
+             "Can read this knowledge base, project an experiment upload into draft records and edit drafts when asked. Records stay unpublished until a person publishes them on the canvas."),
         ):
             registration.register_relationship(RelationshipDefinition(
                 id=f"{PREFIX}.{access}", label=label, short_label=short, description=description,

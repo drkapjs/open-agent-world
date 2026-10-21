@@ -154,3 +154,28 @@
   .knowledge-grid { padding: 6px 12px 14px; }
   .knowledge-tabstrip button { flex: 1; padding: 7px 5px; }
 }
+
+/* Experiment: schema bar → uploads → records with a schema-driven form. */
+.knowledge-bundles { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.knowledge-bundle-editor { padding: 12px; border: 1px solid var(--line); border-radius: 8px; }
+.knowledge-bundle-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.knowledge-bundle-chips > button { display: inline-flex; align-items: center; gap: 6px; }
+.knowledge-bundle-chips > button[aria-selected="true"] { background: var(--accent-soft); border-color: var(--accent); }
+.knowledge-bundle-files { gap: 4px; }
+.knowledge-bundle-file { display: flex; align-items: center; gap: 8px; padding: 4px 6px; }
+.knowledge-bundle-file > svg { flex: none; color: var(--ink-soft); }
+.knowledge-record-form { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; }
+.knowledge-record-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.knowledge-record-field textarea { font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; }
+.knowledge-record-field textarea[aria-invalid="true"] { border-color: var(--danger, #c0392b); }
+.knowledge-record-label { display: flex; flex-direction: column; gap: 1px; }
+.knowledge-record-label small { color: var(--ink-soft); font-size: 11px; line-height: 1.4; }
+.knowledge-record-detail .knowledge-reading-toolbar h4 { margin: 0; flex: 1; }
+.knowledge-status-published { background: color-mix(in srgb, var(--success, #2e8b57) 15%, transparent); }
+.knowledge-status-draft { background: color-mix(in srgb, var(--warning) 15%, transparent); }
+.knowledge-runlog .knowledge-events code { margin-right: 4px; }
+.knowledge-danger { color: var(--danger, #c0392b); border-color: color-mix(in srgb, var(--danger, #c0392b) 40%, transparent); }
+.knowledge-danger:hover:not(:disabled) { background: color-mix(in srgb, var(--danger, #c0392b) 10%, transparent); }
+.knowledge-runlog-modal .ui-modal-content { display: flex; flex-direction: column; gap: 10px; min-width: min(640px, 90vw); }
+.knowledge-runlog-events { max-height: 50vh; overflow: auto; font-size: 12px; }
+.knowledge-runlog-events small { color: var(--ink-soft); font-variant-numeric: tabular-nums; }

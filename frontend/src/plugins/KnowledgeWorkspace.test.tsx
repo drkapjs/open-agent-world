@@ -346,30 +346,74 @@ it("projects the selected document through the host bridge, never the plugin", a
     .findByText("Projection projection-1 saved")).toBeTruthy();
 });
 
-it("assembles an experiment record from selected projections through the host bridge", async () => {
-  const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({
-    record: { id: "record-x", name: "A1", status: "draft", revision: 1,
-      data: { sample_id: "A1", conductivity: 1.3 }, conflicts: [] } }) }));
-  vi.stubGlobal("fetch", fetchMock);
-  const action = open(async name => {
-    if (name === "schemas") return { schemas: [EXPERIMENT_SCHEMA] };
-    if (name === "projections") return { projections: [EXPERIMENT_PROJECTION] };
-    if (name === "experiments") return { experiments: [] };
-    return undefined;
+const BUNDLE = { id: "bundle-1", group_id: "collection-1", schema_id: "schema-2", name: "Batch 7", notes: "",
+  status: "ready", run_id: null, created_at: "2026-09-23T00:00:00Z", updated_at: "2026-09-23T00:00:00Z",
+  files: [{ source_id: "source-9", filename: "batch7.csv", media_type: "text/csv", size: 128,
+    state: "converted", job_id: "job-9", error: null }], records: 0 };
+const RECORD = { id: "record-x", group_id: "collection-1", schema_id: "schema-2", bundle_id: "bundle-1", name: "A1",
+  data: { sample_id: "A1", conductivity: 1.2 }, validation: { valid: true }, note: null, status: "draft",
+  revision: 1, created_by: "agent:lab", created_at: "2026-09-23T00:00:00Z", updated_at: "2026-09-23T00:00:00Z" };
+const EXPERIMENT_DEFINITION = { type: "object", required: ["sample_id"],
+  properties: { sample_id: { type: "string" }, conductivity: { type: "number", description: "S/cm" } } };
+
+it("extracts records from an upload through a connected Lab assistant run, then publishes one on confirmation", async () => {
+  // The Lab assistant is connected with the experiment relationship; the Librarian
+  // (read only) is not offered for extraction.
+  useWorldStore.setState({
+    cards: [{ id: "card-1", type: "knowledge.base", name: "Knowledge" }, { id: "lab", type: "agent", name: "Lab assistant" },
+      { id: "librarian", type: "agent", name: "Librarian" }] as unknown as WorldCard[],
+    edges: [{ id: "e1", source: "lab", target: "card-1", relationship: "knowledge.base.experiment" },
+      { id: "e2", source: "librarian", target: "card-1", relationship: "knowledge.base.read" }] as unknown as WorldEdge[],
+    catalog: TEST_CATALOG,
   });
+  let extracted = false;
+  let published = false;
+  const runAgent = vi.fn(async () => { extracted = true; });
+  const getAgentInfo = vi.fn(async () => ({ session_id: "s", status: extracted ? "idle" : "running", active_run_id: null }));
+  const action = open(async (name, args, confirm) => {
+    if (name === "schemas" && args.operation === "get") return { schema: { ...EXPERIMENT_SCHEMA, definition: EXPERIMENT_DEFINITION, system_prompt: "x", field_descriptions: null } };
+    if (name === "schemas") return { schemas: [EXPERIMENT_SCHEMA] };
+    if (name === "experiment_bundles" && args.operation === "get") return { bundle: { ...BUNDLE, status: extracted ? "extracted" : "ready", records: extracted ? 1 : 0 } };
+    if (name === "experiment_bundles") return { bundles: [{ ...BUNDLE, status: extracted ? "extracted" : "ready", records: extracted ? 1 : 0 }] };
+    if (name === "experiments" && args.operation === "get") return { experiment: { ...RECORD, status: published ? "published" : "draft", sources: [{ source_id: "source-9", filename: "batch7.csv" }] } };
+    if (name === "experiments") return { experiments: extracted ? [{ ...RECORD, status: published ? "published" : "draft" }] : [] };
+    if (name === "experiment_bundle_manage") return { bundle: BUNDLE };
+    if (name === "experiment_review") {
+      if (!confirm) return { status: "confirmation_required", reasons: ["Publishing marks this record as approved data."] };
+      published = true;
+      return { experiment: { ...RECORD, status: "published", revision: 2, sources: [] } };
+    }
+    return undefined;
+  }, { host: { runAgent, getAgentInfo } });
 
   fireEvent.click(await screen.findByRole("button", { name: "Experiment" }));
   const region = within(await screen.findByRole("region", { name: "Experiments" }));
-  fireEvent.click(region.getByLabelText("Select projection projection-1"));
-  fireEvent.click(region.getByRole("button", { name: "Assemble experiment record from 1 selected" }));
+  fireEvent.click(await region.findByRole("tab", { name: /Batch 7/ }));
+  fireEvent.click(await region.findByRole("button", { name: "Extract records" }));
 
-  await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-  const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
-  expect(url).toBe("/api/knowledge/card-1/assemble");
-  expect(JSON.parse(String(init.body))).toEqual({
-    projection_ids: ["projection-1"], model: "oaw:model:model-1" });
+  await waitFor(() => expect(runAgent).toHaveBeenCalledTimes(1));
+  const [agentId, prompt] = runAgent.mock.calls[0] as unknown as [string, string];
+  expect(agentId).toBe("lab");
+  expect(prompt).toContain("EXPERIMENT EXTRACTION REQUEST");
+  expect(JSON.parse(prompt.split("\n")[2])).toMatchObject({ bundle_id: "bundle-1", schema_id: "schema-2", replace_drafts: false });
+  expect(action).toHaveBeenCalledWith("experiment_bundle_manage",
+    expect.objectContaining({ operation: "update", bundle_id: "bundle-1", status: "extracting" }), undefined);
+  // The card never saves records itself: that is the agent's tool call.
   expect(action.mock.calls.some(([name]) => name === "experiment_save")).toBe(false);
-  expect(await region.findByText(/Experiment record "A1" assembled/)).toBeTruthy();
+
+  // The agent goes idle; the record it saved appears and opens in the form.
+  const record = await region.findByRole("button", { name: /A1/ }, { timeout: 8000 });
+  fireEvent.click(record);
+  const field = await region.findByLabelText(/conductivity/) as HTMLInputElement;
+  expect(field.value).toBe("1.2");
+
+  fireEvent.click(region.getByRole("button", { name: "Publish" }));
+  expect(await region.findByText("Publish this record?")).toBeTruthy();
+  expect(action.mock.calls.filter(([name, , confirm]) => name === "experiment_review" && confirm)).toHaveLength(0);
+  fireEvent.click(region.getByRole("button", { name: "Confirm and publish" }));
+  await waitFor(() => expect(action).toHaveBeenCalledWith("experiment_review",
+    expect.objectContaining({ operation: "publish", record_id: "record-x" }), true));
+  expect(await region.findByText(/Record "A1" published/)).toBeTruthy();
 });
 
 it("keeps the graph empty until the person confirms the approval", async () => {
@@ -472,6 +516,132 @@ it("lets an engineer pick a connected agent's model from the Knowledge card's Se
   expect(await region.findByText("Librarian")).toBeTruthy();
   fireEvent.change(region.getByLabelText("Librarian’s model"), { target: { value: "oaw:default" } });
   expect(updateCard).toHaveBeenCalledWith("agent-1", { config: { model: "oaw:default" } });
+});
+
+it("extracts records through the host bridge when no Lab assistant is connected", async () => {
+  const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({
+    records: [RECORD, { ...RECORD, id: "record-y", name: "A2" }], invalid: 0, bundle_id: "bundle-1", truncated: false }) }));
+  vi.stubGlobal("fetch", fetchMock);
+  const runAgent = vi.fn();
+  const action = open(async (name, args) => {
+    if (name === "schemas") return { schemas: [EXPERIMENT_SCHEMA] };
+    if (name === "experiment_bundles") return { bundles: [BUNDLE] };
+    if (name === "experiments") return { experiments: [] };
+    return undefined;
+  }, { host: { runAgent } });
+
+  fireEvent.click(await screen.findByRole("button", { name: "Experiment" }));
+  const region = within(await screen.findByRole("region", { name: "Experiments" }));
+  fireEvent.click(await region.findByRole("tab", { name: /Batch 7/ }));
+  fireEvent.click(await region.findByRole("button", { name: "Extract records" }));
+
+  await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+  const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+  expect(url).toBe("/api/knowledge/card-1/extract");
+  expect(JSON.parse(String(init.body))).toEqual({ bundle_id: "bundle-1", model: "oaw:model:model-1", replace_drafts: false });
+  // No agent run, and the card never saves records itself: the bridge hands them to the plugin.
+  expect(runAgent).not.toHaveBeenCalled();
+  expect(action.mock.calls.some(([name]) => name === "experiment_save")).toBe(false);
+  expect(await region.findByText(/Extracted 2 record\(s\) from "Batch 7"/)).toBeTruthy();
+});
+
+it("summarises a failed extraction under the upload and opens its full run log in a window", async () => {
+  const run = { run_id: "run-77", agent_id: "lab", status: "failed", created_at: "2026-10-21T06:12:27Z",
+    finished_at: "2026-10-21T06:13:11Z", error: "Expecting property name enclosed in double quotes",
+    lifecycle: { model_requests: [{ model_request: 1, finish_reason: "STOP", elapsed_ms: 4441 }, { model_request: 2, error_type: "JSONDecodeError" }] } };
+  const activity = { items: [
+    { id: "a1", type: "agent_progress", timestamp: "2026-10-21T06:12:27Z", text: "agent · model request 1 started" },
+    { id: "a2", type: "tool_completed", timestamp: "2026-10-21T06:12:31Z", name: "knowledge_experiment_extract_prompt", success: true },
+    { id: "a3", type: "agent_progress", timestamp: "2026-10-21T06:13:11Z", text: "agent · model request 2, attempt 1 interrupted (JSONDecodeError)" }] };
+  vi.stubGlobal("fetch", vi.fn(async (url: string) => ({ ok: true, json: async () =>
+    url.endsWith("/runs/run-77") ? run : url.includes("/runs/run-77/activity") ? activity : { configured: false, source: null } })));
+  open(async name => {
+    if (name === "schemas") return { schemas: [EXPERIMENT_SCHEMA] };
+    if (name === "experiment_bundles") return { bundles: [{ ...BUNDLE, status: "failed", run_id: "run-77" }] };
+    if (name === "experiments") return { experiments: [] };
+    return undefined;
+  });
+
+  fireEvent.click(await screen.findByRole("button", { name: "Experiment" }));
+  const region = within(await screen.findByRole("region", { name: "Experiments" }));
+  fireEvent.click(await region.findByRole("tab", { name: /Batch 7/ }));
+
+  // The summary is inline; the timeline waits behind "View log".
+  const summary = within(await region.findByRole("alert"));
+  expect(summary.getByText("Expecting property name enclosed in double quotes")).toBeTruthy();
+  expect(summary.getByText(/interrupted mid-stream \(#2 JSONDecodeError\)/)).toBeTruthy();
+  expect(region.queryByText("knowledge_experiment_extract_prompt")).toBeNull();
+
+  fireEvent.click(summary.getByRole("button", { name: "View log" }));
+  const dialog = within(await screen.findByRole("dialog", { name: /Extraction log · Batch 7/ }));
+  expect(await dialog.findByText("knowledge_experiment_extract_prompt")).toBeTruthy();
+  expect(dialog.getByText(/model request 2, attempt 1 interrupted/)).toBeTruthy();
+  expect(dialog.getByText(/STOP · 4\.4s/)).toBeTruthy();
+  // A finished run offers no Stop.
+  expect(dialog.queryByRole("button", { name: /Stop/ })).toBeNull();
+  fireEvent.click(dialog.getByRole("button", { name: "Close" }));
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: /Extraction log/ })).toBeNull());
+});
+
+it("lets the person stop a running extraction and watch its log live", async () => {
+  useWorldStore.setState({
+    cards: [{ id: "card-1", type: "knowledge.base", name: "Knowledge" }, { id: "lab", type: "agent", name: "Lab assistant" }] as unknown as WorldCard[],
+    edges: [{ id: "e1", source: "lab", target: "card-1", relationship: "knowledge.base.experiment" }] as unknown as WorldEdge[],
+    catalog: TEST_CATALOG,
+  });
+  const stopped: string[] = [];
+  const run = { run_id: "run-88", agent_id: "lab", status: "running", created_at: "2099-01-01T00:00:00Z", finished_at: null, error: null, lifecycle: { model_requests: [] } };
+  vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+    if (init?.method === "POST" && url.endsWith("/agents/lab/stop")) { stopped.push(url); return { ok: true, json: async () => ({}) }; }
+    return { ok: true, json: async () => url.includes("runs?agent_id=lab") ? [run] : url.endsWith("/runs/run-88") ? run
+      : url.includes("/runs/run-88/activity") ? { items: [{ id: "p1", type: "agent_progress", timestamp: "2099-01-01T00:00:01Z", text: "agent · model request 1 started" }] }
+      : { configured: false, source: null } };
+  }));
+  const runAgent = vi.fn(async () => undefined);
+  // The agent stays "running" for the whole test, so the completion poller never fires.
+  const getAgentInfo = vi.fn(async () => ({ session_id: "s", status: "running", active_run_id: "run-88" }));
+  let bundleStatus = "ready", bundleRun: string | null = null;
+  open(async (name, args) => {
+    if (name === "schemas") return { schemas: [EXPERIMENT_SCHEMA] };
+    if (name === "experiment_bundles") return { bundles: [{ ...BUNDLE, status: bundleStatus, run_id: bundleRun }] };
+    if (name === "experiments") return { experiments: [] };
+    if (name === "experiment_bundle_manage") { bundleStatus = String(args.status ?? bundleStatus); if (args.run_id) bundleRun = String(args.run_id); return { bundle: BUNDLE }; }
+    return undefined;
+  }, { host: { runAgent, getAgentInfo } });
+
+  fireEvent.click(await screen.findByRole("button", { name: "Experiment" }));
+  const region = within(await screen.findByRole("region", { name: "Experiments" }));
+  fireEvent.click(await region.findByRole("tab", { name: /Batch 7/ }));
+  fireEvent.click(await region.findByRole("button", { name: "Extract records" }));
+  await waitFor(() => expect(runAgent).toHaveBeenCalled());
+
+  // Stop and View log appear while the run is underway; the window is live.
+  fireEvent.click(await region.findByRole("button", { name: "View log" }));
+  const dialog = within(await screen.findByRole("dialog", { name: /Extraction log/ }));
+  expect(await dialog.findByText(/model request 1 started/)).toBeTruthy();
+  expect(dialog.getByText(/live/)).toBeTruthy();
+  fireEvent.click(dialog.getByRole("button", { name: "Stop extraction" }));
+  await waitFor(() => expect(stopped).toEqual([expect.stringMatching(/\/agents\/lab\/stop$/)]));
+});
+
+it("stores the vision model as a card setting, blank for the OAW default model", async () => {
+  const saved: Record<string, unknown>[] = [];
+  const action = open(async (name, args) => {
+    if (name === "settings") { saved.push(args); return { settings: { collection_name: "Knowledge base",
+      pdf_engine: "auto", mineru_base_url: "", vision_model: (args.vision_model as string) ?? "" } }; }
+    return undefined;
+  });
+  fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+  const region = within(await screen.findByRole("region", { name: "Settings" }));
+  const picker = await region.findByLabelText("Vision model for images") as HTMLSelectElement;
+  expect(picker.value).toBe("oaw:default");
+
+  fireEvent.change(picker, { target: { value: "oaw:model:model-1" } });
+  await waitFor(() => expect(saved).toContainEqual({ vision_model: "oaw:model:model-1" }));
+  fireEvent.change(region.getByLabelText("Vision model for images"), { target: { value: "oaw:default" } });
+  await waitFor(() => expect(saved).toContainEqual({ vision_model: "" }));
+  // The key never passes through the card: only a model reference is stored.
+  expect(action.mock.calls.every(([, args]) => !JSON.stringify(args).includes("api_key"))).toBe(true);
 });
 
 it("hides engineering settings and posts through the deployment bridge when deployed", async () => {

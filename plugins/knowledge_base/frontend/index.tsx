@@ -1,16 +1,17 @@
 import { t, useLocale, useWorkspaceSections, WorkspaceEmptyState, WorkspaceSection, WorkspaceToolbar } from "@oaw/plugin-api";
 import type { FrontendPlugin, PluginViewProps } from "@oaw/plugin-api";
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { useModelOptions, useConnectedCards, updateCardConfig } from "@oaw/plugin-api";
 import { hostApiBase as deploymentApiBase } from "@oaw/plugin-api";
-import { ModelSelect } from "@oaw/plugin-api";
+import { ModelSelect, Modal } from "@oaw/plugin-api";
 import { DocumentMarkdown } from "@oaw/plugin-api";
-import { BookOpen, FlaskConical, Settings2, Plus, RefreshCw, MoreHorizontal, FileText, Network, X } from "lucide-react";
+import { BookOpen, FlaskConical, Settings2, Plus, RefreshCw, MoreHorizontal, FileText, Network, X, Square, ScrollText } from "lucide-react";
 import { MineruCredentials } from "./MineruCredentials";
 import { GraphMap } from "./GraphMap";
 import "./style.css";
 
-type Settings = { collection_name: string; pdf_engine: string; mineru_base_url: string };
+type Settings = { collection_name: string; pdf_engine: string; mineru_base_url: string; vision_model: string };
 type Group = { id: string; name: string; source_count: number; created_at: string; is_default: boolean };
 type Overview = { collection: { id: string; name: string }; groups: Group[]; settings: Settings;
   engines: string[]; counts: Record<string, number>; active_jobs: number;
@@ -43,17 +44,28 @@ type JobEvent = { event: string; step: string | null; message: string | null; le
   occurred_at: string };
 type SearchResult = { source_id: string; filename: string | null; record_id: string | null;
   group_id: string | null; group_name: string | null; heading_path: string | null; excerpt: string };
-type ExperimentConflict = { field: string; values: { value: unknown; source_id: string }[] };
-type ExperimentItem = { id: string; group_id: string; schema_id: string; name: string;
-  data: Record<string, unknown>; conflicts: ExperimentConflict[]; status: "draft" | "confirmed";
+type ExperimentItem = { id: string; group_id: string; schema_id: string; bundle_id: string | null; name: string;
+  data: Record<string, unknown>; validation: { valid?: boolean; errors?: string[]; missing?: string[] } | null;
+  note: string | null; status: "draft" | "published";
   revision: number; created_by: string | null; created_at: string; updated_at: string };
-type ExperimentDetail = ExperimentItem & {
-  evidence: { record_id: string; projection_id: string; source_id: string; artifact_id: string | null }[] };
+type ExperimentDetail = ExperimentItem & { sources: { source_id: string; filename: string | null }[] };
+type BundleFile = { source_id: string; filename: string; media_type: string; size: number;
+  state: "pending" | "converting" | "converted" | "failed"; job_id: string | null; error: string | null };
+type Bundle = { id: string; group_id: string; schema_id: string; name: string; notes: string;
+  status: "ready" | "extracting" | "extracted" | "failed" | "deleted"; run_id: string | null;
+  created_at: string; updated_at: string; files: BundleFile[]; records: number };
+type Property = { type?: string | string[]; enum?: unknown[]; description?: string; title?: string };
+type RunSummary = { run_id: string; agent_id: string; status: string; error: string | null;
+  created_at: string; finished_at: string | null;
+  lifecycle?: { model_requests?: { model_request: number; error_type?: string; elapsed_ms?: number;
+    elapsed_seconds?: number; idle_seconds?: number; finish_reason?: string }[] } };
+type RunActivity = { id: string; type: string; timestamp: string; text?: string; name?: string;
+  success?: boolean; interrupted?: boolean };
 /** An approval the card asked the person to confirm before it publishes a fact. */
 type Pending = { args: Record<string, unknown>; reasons: string[] };
 
-/** Literature stays the deep, general-purpose workflow; Experiment is a small,
- * shared-infrastructure workflow that reuses Schemas from the same collection.
+/** Literature stays the deep, general-purpose workflow; Experiment turns one upload
+ * of several files into reviewed records against a schema it shares with Literature.
  * Settings only ever appears for the engineering view. */
 type Category = "literature" | "experiment" | "settings";
 type LiteratureTab = "sources" | "schemas" | "projections" | "graph";
@@ -92,16 +104,115 @@ async function request(path: string, body: unknown, deployed: boolean) {
   return data as Record<string, unknown>;
 }
 
+/** Read a host API resource (engineering canvas only — the run log is not part of
+ * a deployed release, which carries no agent edges to start a run with). */
+async function fetchHost<T>(path: string): Promise<T> {
+  const response = await fetch(`${deploymentApiBase}/${path}`);
+  if (!response.ok) throw new Error(t("Request failed ({v0})", { v0: response.status }));
+  return response.json() as Promise<T>;
+}
+
+async function postHost(path: string) {
+  const response = await fetch(`${deploymentApiBase}/${path}`, { method: "POST" });
+  if (!response.ok) throw new Error(t("Request failed ({v0})", { v0: response.status }));
+}
+
+/** The newest run of one agent — what ``runAgent`` just started, since the host
+ * does not hand the id back to a plugin. */
+async function latestRun(agentId: string): Promise<RunSummary | undefined> {
+  const runs = await fetchHost<RunSummary[]>(`runs?agent_id=${encodeURIComponent(agentId)}`);
+  return [...runs].sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
+}
+
 /** The shared error/notice banner, duplicated at the top of every section so it is
  * visible whichever one is showing — the alternative (once, in the shared toolbar)
  * is invisible whenever a layout extracts every section into its own tab, exactly
- * the shape the "Knowledge research" preset uses. */
+ * the shape the "Lab Manager" preset uses. */
 function Banner({ error, notice }: { error: string; notice: string }) {
   if (!error && !notice) return null;
   return <>
     {error && <p role="alert" className="knowledge-error">{error}</p>}
     {notice && <p role="status" className="knowledge-notice">{notice}</p>}
   </>;
+}
+
+const propertyTypes = (property: Property) => {
+  const value = property.type;
+  return new Set(Array.isArray(value) ? value : value ? [value] : []);
+};
+
+/** One input per schema property, typed from the JSON Schema; anything the form
+ * cannot type (objects, arrays, untyped fields) is edited as JSON in place. The raw
+ * JSON toggle beside the form stays the escape hatch for everything else. */
+function RecordForm({ definition, value, disabled, onChange }: {
+  definition: Record<string, unknown>; value: Record<string, unknown>; disabled: boolean;
+  onChange: (next: Record<string, unknown>) => void;
+}) {
+  const properties = (definition.properties ?? {}) as Record<string, Property>;
+  const required = new Set((definition.required as string[] | undefined) ?? []);
+  const [jsonDrafts, setJsonDrafts] = useState<Record<string, string>>({});
+  const [jsonErrors, setJsonErrors] = useState<Record<string, boolean>>({});
+  const set = (key: string, next: unknown) => {
+    const copy = { ...value };
+    if (next === undefined) delete copy[key]; else copy[key] = next;
+    onChange(copy);
+  };
+  const extra = Object.keys(value).filter(key => !(key in properties));
+  const jsonField = (key: string, label: ReactNode) => {
+    const text = jsonDrafts[key] ?? pretty(value[key] ?? null);
+    return <label key={key} className="knowledge-record-field">{label}
+      <textarea value={text} disabled={disabled} rows={3} spellCheck={false}
+        aria-invalid={jsonErrors[key] || undefined}
+        onChange={event => {
+          const next = event.target.value;
+          setJsonDrafts({ ...jsonDrafts, [key]: next });
+          try { set(key, next.trim() ? JSON.parse(next) : undefined); setJsonErrors({ ...jsonErrors, [key]: false }); }
+          catch { setJsonErrors({ ...jsonErrors, [key]: true }); }
+        }} />
+      {jsonErrors[key] && <small className="knowledge-error">{t("Not valid JSON")}</small>}
+    </label>;
+  };
+  return <div className="knowledge-record-form">
+    {Object.entries(properties).map(([key, property]) => {
+      const types = propertyTypes(property);
+      const label = <span className="knowledge-record-label">
+        <span>{property.title || key}{required.has(key) ? " *" : ""}</span>
+        {property.description && <small>{property.description}</small>}
+      </span>;
+      const current = value[key];
+      if (property.enum) {
+        return <label key={key} className="knowledge-record-field">{label}
+          <select value={current === undefined ? "" : String(current)} disabled={disabled}
+            onChange={event => set(key, event.target.value === "" ? undefined
+              : property.enum!.find(option => String(option) === event.target.value))}>
+            <option value="">—</option>
+            {property.enum.map(option => <option key={String(option)} value={String(option)}>{String(option)}</option>)}
+          </select></label>;
+      }
+      if (types.has("boolean") && types.size <= 2) {
+        return <label key={key} className="knowledge-record-field">{label}
+          <select value={current === undefined || current === null ? "" : String(current)} disabled={disabled}
+            onChange={event => set(key, event.target.value === "" ? undefined : event.target.value === "true")}>
+            <option value="">—</option><option value="true">true</option><option value="false">false</option>
+          </select></label>;
+      }
+      if ((types.has("number") || types.has("integer")) && !types.has("string") && !types.has("object") && !types.has("array")) {
+        return <label key={key} className="knowledge-record-field">{label}
+          <input type="number" step={types.has("integer") ? 1 : "any"} disabled={disabled}
+            value={typeof current === "number" ? current : ""}
+            onChange={event => set(key, event.target.value === "" ? undefined
+              : types.has("integer") ? parseInt(event.target.value, 10) : Number(event.target.value))} /></label>;
+      }
+      if (types.has("string") && !types.has("object") && !types.has("array")) {
+        return <label key={key} className="knowledge-record-field">{label}
+          <input type="text" disabled={disabled} value={typeof current === "string" ? current : current === undefined || current === null ? "" : String(current)}
+            onChange={event => set(key, event.target.value === "" ? undefined : event.target.value)} /></label>;
+      }
+      return jsonField(key, label);
+    })}
+    {extra.map(key => jsonField(key, <span className="knowledge-record-label"><span>{key}</span>
+      <small>{t("Not in the schema")}</small></span>))}
+  </div>;
 }
 
 function Preview({ host, card }: PluginViewProps) {
@@ -169,10 +280,31 @@ export function Workspace({ host, card }: PluginViewProps) {
   const [chosen, setChosen] = useState<string[]>([]);
   const [projection, setProjection] = useState<ProjectionDetail>();
   const [draftDetail, setDraftDetail] = useState<DraftDetail>();
-  const [chosenExperiment, setChosenExperiment] = useState<string[]>([]);
   const [experiments, setExperiments] = useState<ExperimentItem[]>([]);
   const [experimentDetail, setExperimentDetail] = useState<ExperimentDetail>();
-  const [experimentDataDraft, setExperimentDataDraft] = useState("");
+  // The record being edited: its data as the form sees it, its raw JSON when the
+  // person flips to that view, and the name/note fields beside it.
+  const [recordDraft, setRecordDraft] = useState<Record<string, unknown>>({});
+  const [recordName, setRecordName] = useState("");
+  const [recordNote, setRecordNote] = useState("");
+  const [recordJson, setRecordJson] = useState("");
+  const [rawRecord, setRawRecord] = useState(false);
+  const [publishPending, setPublishPending] = useState<Pending>();
+  // Experiment: everything below the schema bar is scoped to one experiment schema.
+  const [experimentSchemaId, setExperimentSchemaId] = useState("");
+  const [experimentSchema, setExperimentSchema] = useState<SchemaDetail>();
+  const [bundles, setBundles] = useState<Bundle[]>([]);
+  const [bundleId, setBundleId] = useState("");
+  const [bundleEditor, setBundleEditor] = useState<{ name: string; notes: string }>();
+  // A running extraction: which upload, and which agent to watch until it is done.
+  const [extracting, setExtracting] = useState<{ bundle_id: string; agent_id: string; started_at: string }>();
+  // The agent run behind the selected upload's last extraction, read from the host's
+  // run API: status, error and the tool/progress timeline, so a failure is explained
+  // right here rather than in a conversation the run never belonged to.
+  const [runLog, setRunLog] = useState<{ run: RunSummary; activity: RunActivity[] }>();
+  const [runLogError, setRunLogError] = useState("");
+  const [runLogOpen, setRunLogOpen] = useState(false);
+  const [stopping, setStopping] = useState(false);
   const [reviewNotes, setReviewNotes] = useState("");
   const [pending, setPending] = useState<Pending>();
   const [notice, setNotice] = useState("");
@@ -198,6 +330,11 @@ export function Workspace({ host, card }: PluginViewProps) {
   // this is engineering-only anyway, so an empty list there is both correct and safe.
   const connectedCards = useConnectedCards(card.id, { direction: "incoming", relationshipPrefix: "knowledge.base.", trait: "core.agent" });
   const connectedAgents = deployed ? [] : connectedCards;
+  // Extraction is an Agent run: only an agent holding the experiment relationship
+  // can read the upload and save its records, so only those are offered.
+  const labAgents = useConnectedCards(card.id, { direction: "incoming", relationshipPrefix: "knowledge.base.experiment", trait: "core.agent" });
+  const canRunAgents = !deployed && typeof host.runAgent === "function" && labAgents.length > 0;
+  const canExtract = canRunAgents || !!selectedModel;
 
 
   const call = useCallback((action: string, args: Record<string, unknown> = {}, confirm?: boolean) =>
@@ -228,10 +365,11 @@ export function Workspace({ host, card }: PluginViewProps) {
       call("schemas", { operation: "list" }),
       call("projections", { limit: 100, ...groupArgs() }),
       call("draft", { operation: "list", ...groupArgs() }), call("jobs", { limit: 20, ...groupFilter() }),
-      call("experiments", { limit: 100, ...groupArgs() }),
+      call("experiments", { limit: 200, ...groupArgs() }),
+      call("experiment_bundles", { limit: 100, ...groupArgs() }),
     ]);
     if (generation.current !== current) return;
-    const [summary, sourceList, schemaList, projectionList, draftList, jobList, experimentList] =
+    const [summary, sourceList, schemaList, projectionList, draftList, jobList, experimentList, bundleList] =
       results.map(result => result.status === "fulfilled" ? result.value : undefined);
     if (summary) {
       setOverview(summary as Overview); setSettings((summary as Overview).settings);
@@ -243,6 +381,7 @@ export function Workspace({ host, card }: PluginViewProps) {
     if (draftList) setDrafts((draftList.drafts as DraftItem[]) ?? []);
     if (jobList) setJobs((jobList.jobs as Job[]) ?? []);
     setExperiments((experimentList?.experiments as ExperimentItem[]) ?? []);
+    setBundles((bundleList?.bundles as Bundle[]) ?? []);
     // A core section failing is still worth surfacing; "experiments" not being
     // published on an older release is not a real error, so it never blocks this.
     const coreFailure = results.slice(0, 6).find(result => result.status === "rejected");
@@ -457,44 +596,222 @@ export function Workspace({ host, card }: PluginViewProps) {
     const result = await call("experiments", { operation: "get", record_id: id });
     if (generation.current !== current) return;
     const detail = result.experiment as ExperimentDetail;
-    setExperimentDetail(detail);
-    setExperimentDataDraft(pretty(detail.data));
+    setExperimentDetail(detail); setPublishPending(undefined);
+    setRecordDraft(detail.data); setRecordName(detail.name); setRecordNote(detail.note ?? "");
+    setRecordJson(pretty(detail.data));
   }, [call]);
 
-  const assembleExperiment = () => perform(async () => {
-    if (!chosenExperiment.length) throw new Error(t("Select at least one projection first"));
-    if (!selectedModel) throw new Error(deployed
-      ? t("This deployment has no default model configured yet")
-      : t("Configure a model connection first"));
-    const result = await request(`knowledge/${card.id}/assemble`, {
-      projection_ids: chosenExperiment, model: selectedModel }, deployed);
-    const built = result.record as { id: string; name: string; conflicts: unknown[] };
-    setNotice(built.conflicts.length
-      ? t("Experiment record \"{v0}\" assembled with {v1} field(s) to review", {
-          v0: built.name, v1: built.conflicts.length })
-      : t("Experiment record \"{v0}\" assembled", { v0: built.name }));
-    setChosenExperiment([]);
+  // The schema bar's choice: an explicit pick, else the first experiment schema.
+  const experimentSchemas = schemas.filter(item => item.kind === "experiment");
+  const currentExperimentSchemaId = experimentSchemas.some(item => item.id === experimentSchemaId)
+    ? experimentSchemaId : (experimentSchemas[0]?.id ?? "");
+  // The record form needs the full definition, which the list does not carry.
+  useEffect(() => {
+    if (!currentExperimentSchemaId) { setExperimentSchema(undefined); return; }
+    const current = generation.current;
+    call("schemas", { operation: "get", schema_id: currentExperimentSchemaId }).then(value => {
+      if (generation.current === current) setExperimentSchema(value.schema as SchemaDetail);
+    }).catch(reason => { if (generation.current === current) setError(message(reason)); });
+  }, [call, currentExperimentSchemaId]);
+
+  const createBundle = () => bundleEditor && perform(async () => {
+    if (!currentExperimentSchemaId) throw new Error(t("Choose an experiment schema first"));
+    if (!bundleEditor.name.trim()) throw new Error(t("Name the upload first"));
+    const result = await call("experiment_bundle_manage", { operation: "create", schema_id: currentExperimentSchemaId,
+      name: bundleEditor.name.trim(), notes: bundleEditor.notes, ...(activeGroup ? { group_id: activeGroup } : {}) });
+    setBundleEditor(undefined); setBundleId((result.bundle as Bundle).id);
     await refresh();
-    await loadExperiment(built.id);
   });
 
-  const saveExperimentEdits = () => experimentDetail && perform(async () => {
-    let data: Record<string, unknown>;
-    try { data = JSON.parse(experimentDataDraft); }
-    catch { throw new Error(t("The experiment data must be valid JSON")); }
-    await call("experiment_update", { operation: "update", record_id: experimentDetail.id,
-      data, expected_revision: experimentDetail.revision });
+  const saveBundleNotes = (bundle: Bundle, notes: string) => perform(async () => {
+    if (notes === bundle.notes) return;
+    await call("experiment_bundle_manage", { operation: "update", bundle_id: bundle.id, notes });
+    await refresh();
+  });
+
+  const deleteBundle = (bundle: Bundle) => perform(async () => {
+    await call("experiment_bundle_manage", { operation: "delete", bundle_id: bundle.id });
+    if (bundleId === bundle.id) setBundleId("");
+    if (experimentDetail?.bundle_id === bundle.id) setExperimentDetail(undefined);
+    setNotice(t("Upload \"{v0}\" removed", { v0: bundle.name }));
+    await refresh();
+  });
+
+  const uploadToBundle = (bundle: Bundle, files: FileList | File[]) => perform(async () => {
+    const list = Array.from(files);
+    if (!list.length) return;
+    for (const file of list) {
+      const content = await fileBase64(file);
+      await call("experiment_ingest", { bundle_id: bundle.id, filename: file.name, content_base64: content,
+        media_type: file.type || "application/octet-stream" });
+    }
+    setNotice(t("{v0} uploaded · converting", { v0: list.length }));
+    await refresh();
+  });
+
+  // Two ways to turn an upload into records. With a Lab assistant connected
+  // (knowledge.base.experiment), Extract is a real Agent run: the agent reads the
+  // upload through its knowledge tools and saves the records itself, and the card
+  // only watches it until idle. Otherwise the host bridge makes one JSON-mode model
+  // call and hands the result to the same experiment_save, so a record is validated
+  // and evidence-linked identically whichever path produced it.
+  const extractRecords = (bundle: Bundle, replace: boolean) => perform(async () => {
+    const agent = labAgents[0];
+    if (agent && host.runAgent && !deployed) {
+      const schema = schemas.find(item => item.id === bundle.schema_id);
+      await call("experiment_bundle_manage", { operation: "update", bundle_id: bundle.id, status: "extracting", run_id: null });
+      const request = { bundle_id: bundle.id, bundle_name: bundle.name, schema_id: bundle.schema_id,
+        schema_name: schema?.name ?? null, knowledge_card: card.id, replace_drafts: replace,
+        files: bundle.files.map(file => file.filename) };
+      await host.runAgent(agent.id, [
+        "Perform the experiment extraction described by the JSON data below.",
+        "EXPERIMENT EXTRACTION REQUEST", JSON.stringify(request), "END EXPERIMENT EXTRACTION REQUEST",
+        "Call knowledge_experiment_extract_prompt with this bundle_id and read the whole document (follow has_more with offset),",
+        "produce one record per specimen, sample, run or table row, save them in one knowledge_experiment_save call",
+        `with replace_drafts=${replace ? "true" : "false"}, then report what you saved and what was unclear.`,
+      ].join("\n"));
+      const startedAt = new Date().toISOString();
+      setExtracting({ bundle_id: bundle.id, agent_id: agent.id, started_at: startedAt });
+      setNotice(t("{v0} is extracting records from \"{v1}\"…", { v0: agent.name, v1: bundle.name }));
+      // Remember which run this was, so the log can be reopened after a reload.
+      const run = await latestRun(agent.id).catch(() => undefined);
+      if (run && run.created_at >= startedAt.slice(0, 19)) {
+        await call("experiment_bundle_manage", { operation: "update", bundle_id: bundle.id, status: "extracting", run_id: run.run_id }).catch(() => undefined);
+      }
+      await refresh();
+      return;
+    }
+    if (!selectedModel) throw new Error(deployed
+      ? t("This deployment has no default model configured yet")
+      : t("Configure a model connection first, or connect a Lab assistant agent"));
+    const result = await request(`knowledge/${card.id}/extract`, {
+      bundle_id: bundle.id, model: selectedModel, replace_drafts: replace }, deployed);
+    const records = result.records as unknown[];
+    const invalid = result.invalid as number;
+    setNotice(result.truncated
+      ? t("Extracted {v0} record(s) from the first part of a very long upload", { v0: records.length })
+      : invalid
+        ? t("Extracted {v0} record(s); {v1} do not satisfy the schema — open them to see why", { v0: records.length, v1: invalid })
+        : t("Extracted {v0} record(s) from \"{v1}\" · review and publish them below", { v0: records.length, v1: bundle.name }));
+    await refresh();
+  });
+
+  useEffect(() => {
+    if (!extracting) return;
+    let active = true;
+    const timer = window.setInterval(() => {
+      host.getAgentInfo(extracting.agent_id).then(async info => {
+        const state = info as { status?: string; active_run_id?: string | null };
+        if (!active || state.status === "running" || state.active_run_id) return;
+        active = false; window.clearInterval(timer);
+        const current = generation.current;
+        const result = await call("experiment_bundles", { operation: "get", bundle_id: extracting.bundle_id }).catch(() => undefined);
+        if (generation.current !== current) return;
+        const bundle = result?.bundle as Bundle | undefined;
+        if (bundle?.status === "extracting") {
+          const run = await latestRun(extracting.agent_id).catch(() => undefined);
+          await call("experiment_bundle_manage", { operation: "update", bundle_id: bundle.id, status: "failed",
+            run_id: run?.run_id ?? bundle.run_id }).catch(() => undefined);
+          setNotice(run?.error
+            ? t("The agent run failed: {v0} — see the extraction log below", { v0: run.error })
+            : t("The agent finished without saving any records — see the extraction log below"));
+        } else if (bundle) {
+          setNotice(t("{v0} record(s) extracted from \"{v1}\" · review and publish them below", { v0: bundle.records, v1: bundle.name }));
+        }
+        setExtracting(undefined); setStopping(false);
+        await refresh();
+      }).catch(() => undefined);
+    }, 2500);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [extracting, host, call, refresh]);
+
+  const loadRunLog = useCallback(async (runId: string) => {
+    const current = generation.current;
+    setRunLogError("");
+    try {
+      const [run, activity] = await Promise.all([
+        fetchHost<RunSummary>(`runs/${encodeURIComponent(runId)}`),
+        fetchHost<{ items: RunActivity[] }>(`runs/${encodeURIComponent(runId)}/activity?limit=100`)]);
+      if (generation.current === current) setRunLog({ run, activity: activity.items ?? [] });
+    } catch (reason) {
+      if (generation.current === current) { setRunLog(undefined); setRunLogError(message(reason)); }
+    }
+  }, []);
+
+  // A failed extraction loads its log so the summary under the upload is ready;
+  // a running one is polled below while the log window is open.
+  useEffect(() => {
+    const bundle = bundles.find(item => item.id === bundleId);
+    if (!deployed && bundle?.run_id && bundle.status === "failed" && runLog?.run.run_id !== bundle.run_id) void loadRunLog(bundle.run_id);
+    // runLog is deliberately not a dependency: it is what this effect sets.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bundles, bundleId, deployed, loadRunLog]);
+
+  // While the log window is open on a running extraction, keep it live.
+  useEffect(() => {
+    const bundle = bundles.find(item => item.id === bundleId);
+    const runId = bundle?.run_id;
+    if (!runLogOpen || !runId) return;
+    void loadRunLog(runId);
+    if (!extracting && bundle?.status !== "extracting") return;
+    const timer = window.setInterval(() => { void loadRunLog(runId); }, 2000);
+    return () => window.clearInterval(timer);
+  }, [runLogOpen, bundles, bundleId, extracting, loadRunLog]);
+
+  // Stop asks the host to stop the agent (the same thing its own card's Stop does);
+  // the completion poller then sees the agent idle, finds no records, and marks the
+  // upload failed with the run id, so the log explains the interruption.
+  const stopExtraction = (bundle: Bundle) => {
+    const agentId = extracting?.agent_id ?? labAgents[0]?.id;
+    if (!agentId) return;
+    setStopping(true);
+    void postHost(`agents/${encodeURIComponent(agentId)}/stop`)
+      .then(() => setNotice(t("Stopping the extraction of \"{v0}\"…", { v0: bundle.name })))
+      .catch(reason => setError(message(reason)))
+      .finally(() => setStopping(false));
+  };
+
+  const saveRecordEdits = () => experimentDetail && perform(async () => {
+    let data = recordDraft;
+    if (rawRecord) {
+      try { data = JSON.parse(recordJson); }
+      catch { throw new Error(t("The record data must be valid JSON")); }
+    }
+    if (!recordName.trim()) throw new Error(t("Name the record first"));
+    await call("experiment_update", { record_id: experimentDetail.id, name: recordName.trim(), data,
+      note: recordNote, expected_revision: experimentDetail.revision });
     setNotice(t("Changes saved"));
     await refresh();
     await loadExperiment(experimentDetail.id);
   });
 
-  const confirmExperiment = () => experimentDetail && perform(async () => {
-    await call("experiment_update", { operation: "confirm", record_id: experimentDetail.id,
-      expected_revision: experimentDetail.revision });
-    setNotice(t("Experiment record confirmed"));
+  const publishRecord = (confirmed?: Pending) => experimentDetail && perform(async () => {
+    const args = confirmed?.args ?? { operation: "publish", record_id: experimentDetail.id,
+      expected_revision: experimentDetail.revision };
+    const result = await call("experiment_review", args, !!confirmed);
+    if (result.status === "confirmation_required") {
+      setPublishPending({ args, reasons: (result.reasons as string[]) ?? [] });
+      return;
+    }
+    setPublishPending(undefined);
+    setNotice(t("Record \"{v0}\" published", { v0: experimentDetail.name }));
     await refresh();
     await loadExperiment(experimentDetail.id);
+  });
+
+  const unpublishRecord = () => experimentDetail && perform(async () => {
+    await call("experiment_review", { operation: "unpublish", record_id: experimentDetail.id,
+      expected_revision: experimentDetail.revision });
+    setNotice(t("Record \"{v0}\" is a draft again", { v0: experimentDetail.name }));
+    await refresh();
+    await loadExperiment(experimentDetail.id);
+  });
+
+  const deleteRecord = () => experimentDetail && perform(async () => {
+    await call("experiment_review", { operation: "delete", record_id: experimentDetail.id });
+    setExperimentDetail(undefined);
+    setNotice(t("Record deleted"));
+    await refresh();
   });
 
   const decide = (operation: "submit" | "approve" | "reject", confirmed?: Pending) =>
@@ -534,7 +851,7 @@ export function Workspace({ host, card }: PluginViewProps) {
     await host.updateConfig({ default_model: value });
   });
 
-  const current = settings ?? { collection_name: "", pdf_engine: "auto", mineru_base_url: "" };
+  const current = settings ?? { collection_name: "", pdf_engine: "auto", mineru_base_url: "", vision_model: "" };
   const currentSource = sources.find(item => item.id === selectedSource);
   const running = jobs.filter(job => ACTIVE.has(job.status));
   // A search can drop the selected entity; the panel follows what is on the map.
@@ -542,8 +859,11 @@ export function Workspace({ host, card }: PluginViewProps) {
   const groups = overview?.groups ?? [];
   const activeGroupObject = groups.find(item => item.id === activeGroup);
   const pendingSources = sources.filter(item => !item.markdown);
-  const experimentSchemaIds = new Set(schemas.filter(item => item.kind === "experiment").map(item => item.id));
-  const experimentProjections = projections.filter(item => experimentSchemaIds.has(item.schema_id));
+  const experimentSchemaIds = new Set(experimentSchemas.map(item => item.id));
+  const schemaBundles = bundles.filter(item => item.schema_id === currentExperimentSchemaId);
+  const selectedBundle = schemaBundles.find(item => item.id === bundleId);
+  const schemaRecords = experiments.filter(item => item.schema_id === currentExperimentSchemaId
+    && (!selectedBundle || item.bundle_id === selectedBundle.id));
   const literatureSchemas = schemas.filter(item => item.kind === "literature");
   // Every literature schema is a candidate to become the graph schema; whichever
   // one is not currently chosen is "custom" — Projections runs and reviews it, but
@@ -632,6 +952,20 @@ export function Workspace({ host, card }: PluginViewProps) {
             onBlur={event => void saveSettings({ mineru_base_url: event.target.value })} />
         </label>
         <MineruCredentials cardId={card.id} onSaved={refresh} />
+        {/* Images (a photographed table, a chart) are transcribed by a vision-capable
+            model the plugin calls from its own conversion job. The picker is the same
+            catalog agents use; "" means the OAW default model. The OAW_VISION_*
+            variables (card secret, global environment variables, process env) remain
+            the fallback when no connection resolves. */}
+        <div className="knowledge-agent-model knowledge-vision-model">
+          <span>{t("Vision model for images")}</span>
+          <ModelSelect label={t("Vision model for images")}
+            value={current.vision_model || "oaw:default"}
+            onChange={value => void saveSettings({ vision_model: value === "oaw:default" ? "" : value })} />
+        </div>
+        <p className="knowledge-meta">{(overview?.engines ?? []).includes("vision")
+          ? t("Images convert through this model. Pick an OpenAI-compatible connection whose model can read images.")
+          : t("No vision model resolves yet: choose one here, set a default model in OAW Settings, or add OAW_VISION_BASE_URL and OAW_VISION_API_KEY under Settings → Environment variables.")}</p>
         <details className="knowledge-disclosure"><summary>{t("Available engines")}</summary>
           <p>{(overview?.engines ?? []).join(", ") || "—"}</p></details>
         </section>
@@ -957,75 +1291,222 @@ export function Workspace({ host, card }: PluginViewProps) {
         </div>
       </WorkspaceSection>}
 
-      {((category === "experiment" && experimentTab === "experiments") || isDetached("experiments")) && <WorkspaceSection id="experiments" title={t("Experiments")} className="knowledge-section">
+      {((category === "experiment" && experimentTab === "experiments") || isDetached("experiments")) && <WorkspaceSection id="experiments" title={t("Experiments")} layout={{ min_width: 320, min_height: 320, ideal_width: 960, ideal_height: 640 }} className="knowledge-section">
         <div className="knowledge-section" data-detached={isDetached("experiments") || undefined}>
         <WorkspaceToolbar label={t("Experiments")} className="knowledge-section-toolbar">
-          {groupSelect}<div className="knowledge-heading-actions">{refreshControls}</div>
+          {groupSelect}
+          <label className="knowledge-groupselect">
+            <span className="knowledge-visually-hidden">{t("Experiment schema")}</span>
+            <select aria-label={t("Experiment schema")} value={currentExperimentSchemaId} disabled={busy || !experimentSchemas.length}
+              onChange={event => { setExperimentSchemaId(event.target.value); setBundleId(""); setExperimentDetail(undefined); }}>
+              {!experimentSchemas.length && <option value="">{t("No experiment schema yet")}</option>}
+              {experimentSchemas.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
+            </select>
+          </label>
+          <div className="knowledge-heading-actions">{refreshControls}
+            <button type="button" disabled={busy} onClick={() => { setCategory("experiment"); setExperimentTab("schemas"); setEditor({
+              id: "", name: "", description: "", system_prompt: "", kind: "experiment",
+              definition: pretty({ type: "object", required: ["sample_id"], properties: { sample_id: { type: "string", description: "Specimen label" } } }),
+            }); }}><Plus size={14} />{t("New schema")}</button>
+            {currentExperimentSchemaId && <button type="button" className="knowledge-primary" disabled={busy || !!bundleEditor}
+              onClick={() => setBundleEditor({ name: "", notes: "" })}><Plus size={14} />{t("New upload")}</button>}
+          </div>
         </WorkspaceToolbar>
         <Banner error={error} notice={notice} />
-        {(experimentProjections.length > 0 || experiments.length > 0) && <details className="knowledge-disclosure knowledge-workflow" open={!experiments.length || undefined}>
-        <summary>{t("Select projections to assemble")}</summary>
-        {!experimentProjections.length
-          ? <p className="knowledge-empty">{t("Project a document against an experiment-kind schema first, in Sources.")}</p>
-          : <ul className="knowledge-list">
-              {experimentProjections.map(item => <li key={item.id} className="knowledge-checkrow">
-                <label><input type="checkbox" checked={chosenExperiment.includes(item.id)} disabled={busy}
-                  onChange={event => setChosenExperiment(event.target.checked
-                    ? [...chosenExperiment, item.id] : chosenExperiment.filter(value => value !== item.id))} />
-                  <span className="knowledge-visually-hidden">{t("Select projection {v0}", { v0: shortId(item.id) })}</span>
-                </label>
-                <span className="knowledge-checkrow-label">
-                  <span>{item.summary || shortId(item.id)}</span>
-                  <small>{schemas.find(s => s.id === item.schema_id)?.name ?? shortId(item.schema_id)}</small>
-                </span>
-              </li>)}
-            </ul>}
-        <button type="button" className="knowledge-primary" disabled={busy || !chosenExperiment.length}
-          onClick={() => void assembleExperiment()}>
-          {t("Assemble experiment record from {v0} selected", { v0: chosenExperiment.length })}</button>
-
-        </details>}
-        <div className={`knowledge-split${experimentDetail ? " has-detail" : ""}`}>
-        <div className="knowledge-source-pane">
-        {!experiments.length && <WorkspaceEmptyState title={t("No experiment records yet.")}
-          description={experimentProjections.length ? t("Combine extractions into an experiment record, then review and confirm.")
-            : t("Project a document against an experiment-kind schema first, in Sources.")}
-          actions={!experimentProjections.length && <button type="button" onClick={() => { setCategory("literature"); setLiteratureTab("sources"); }}>{t("Sources")}</button>} />}
-        <ul className="knowledge-list knowledge-record-list">
-          {experiments.map(item => <li key={item.id}>
-            <button type="button" aria-pressed={experimentDetail?.id === item.id} disabled={busy}
-              onClick={() => void loadExperiment(item.id)}>
-              <span>{item.name}</span>
-              <small>{item.status} · {t("revision {v0}", { v0: item.revision })}
-                {item.conflicts.length ? ` · ${t("{v0} to review", { v0: item.conflicts.length })}` : ""}</small>
-            </button>
-          </li>)}
-        </ul>
-        </div>
-        {experimentDetail && <div className="knowledge-detail">
-          <h4>{experimentDetail.name}</h4>
-          <p className="knowledge-meta">{t("{v0} · revision {v1} · evidence: {v2}", {
-            v0: experimentDetail.status, v1: experimentDetail.revision,
-            v2: experimentDetail.evidence.map(link => shortId(link.source_id)).join(", ") || "—" })}</p>
-          {!!experimentDetail.conflicts.length && <div role="alert" className="knowledge-confirm">
-            <strong>{t("Sources disagree on these fields")}</strong>
-            <ul className="knowledge-relations">
-              {experimentDetail.conflicts.map((conflict, index) => <li key={index}>
-                <code>{conflict.field}</code>: {conflict.values.map(v =>
-                  `${JSON.stringify(v.value)} (${shortId(v.source_id)})`).join(" vs. ")}
-              </li>)}
-            </ul>
-          </div>}
-          <label>{t("Merged data (JSON)")}<textarea value={experimentDataDraft} disabled={busy} rows={10}
-            spellCheck={false} onChange={event => setExperimentDataDraft(event.target.value)} /></label>
+        {!experimentSchemas.length && <WorkspaceEmptyState title={t("Start with a schema")}
+          description={t("An experiment schema describes one specimen record: its fields, their types, and the prompt that extracts them. Create one, then upload your files.")}
+          actions={<button type="button" onClick={() => { setCategory("experiment"); setExperimentTab("schemas"); }}>{t("Schemas")}</button>} />}
+        {bundleEditor && <div className="knowledge-form knowledge-bundle-editor">
+          <label>{t("Upload name")}<input value={bundleEditor.name} disabled={busy} autoFocus placeholder={t("e.g. Batch 7 conductivity")}
+            onChange={event => setBundleEditor({ ...bundleEditor, name: event.target.value })} /></label>
+          <label>{t("Description (optional)")}<textarea value={bundleEditor.notes} disabled={busy} rows={2}
+            placeholder={t("What the files show, units, which specimen a photo is of…")}
+            onChange={event => setBundleEditor({ ...bundleEditor, notes: event.target.value })} /></label>
           <div className="knowledge-formbar">
-            <button type="button" disabled={busy} onClick={() => void saveExperimentEdits()}>
-              {t("Save changes")}</button>
-            <button type="button" className="knowledge-primary" disabled={busy || experimentDetail.status === "confirmed"}
-              onClick={() => void confirmExperiment()}>{t("Confirm")}</button>
+            <button type="button" className="knowledge-primary" disabled={busy || !bundleEditor.name.trim()}
+              onClick={() => void createBundle()}>{t("Create upload")}</button>
+            <button type="button" disabled={busy} onClick={() => setBundleEditor(undefined)}>{t("Cancel")}</button>
           </div>
         </div>}
-        </div>
+        {!!currentExperimentSchemaId && <div className="knowledge-bundles">
+          {!schemaBundles.length && !bundleEditor && <WorkspaceEmptyState title={t("No uploads for this schema yet")}
+            description={t("An upload is one experiment's files — a photographed table, a spreadsheet, a note — read together as one document and projected into records.")}
+            actions={<button type="button" disabled={busy} onClick={() => setBundleEditor({ name: "", notes: "" })}>{t("New upload")}</button>} />}
+          {!!schemaBundles.length && <div className="knowledge-bundle-chips" role="tablist" aria-label={t("Uploads")}>
+            <button type="button" role="tab" aria-selected={!selectedBundle} onClick={() => setBundleId("")}>{t("All records")}
+              <span className="knowledge-total">{experiments.filter(item => item.schema_id === currentExperimentSchemaId).length}</span></button>
+            {schemaBundles.map(item => <button key={item.id} type="button" role="tab" aria-selected={selectedBundle?.id === item.id}
+              onClick={() => setBundleId(item.id)}>{item.name}
+              <span className="knowledge-total">{item.records}</span>
+              {(item.status === "extracting" || extracting?.bundle_id === item.id) && <span className="knowledge-running">{t("extracting…")}</span>}
+              {item.status === "failed" && <span className="knowledge-error">{t("failed")}</span>}
+            </button>)}
+          </div>}
+          {selectedBundle && <details className="knowledge-disclosure knowledge-workflow knowledge-bundle" open>
+            <summary>{t("Files in \"{v0}\"", { v0: selectedBundle.name })} <span className="knowledge-total">{selectedBundle.files.length}</span></summary>
+            <label className="knowledge-record-field">{t("Description")}<textarea defaultValue={selectedBundle.notes} disabled={busy} rows={2}
+              key={selectedBundle.id} placeholder={t("What the files show, units, which specimen a photo is of…")}
+              onBlur={event => void saveBundleNotes(selectedBundle, event.target.value)} /></label>
+            {!selectedBundle.files.length
+              ? <p className="knowledge-empty">{t("Add the files that describe this experiment: images, spreadsheets, PDFs, text. Each converts as soon as it is uploaded.")}</p>
+              : <ul className="knowledge-list knowledge-bundle-files">
+                {selectedBundle.files.map(file => <li key={file.source_id} className="knowledge-bundle-file">
+                  <FileText size={14} />
+                  <span className="knowledge-checkrow-label"><span>{file.filename}</span>
+                    <small>{bytes(file.size)} · {file.state === "converted" ? t("converted") : file.state === "converting" ? t("converting…")
+                      : file.state === "failed" ? (file.error || t("conversion failed")) : t("waiting")}</small></span>
+                  {file.job_id && file.state === "failed" && <button type="button" disabled={busy}
+                    onClick={() => void openJob(file.job_id!)}>{t("Why?")}</button>}
+                </li>)}
+              </ul>}
+            <div className="knowledge-formbar">
+              <label className={`knowledge-upload${busy ? " is-disabled" : ""}`}>
+                <Plus size={16} />{t("Add files")}
+                <input className="knowledge-visually-hidden" type="file" multiple disabled={busy}
+                  aria-label={t("Add files to {v0}", { v0: selectedBundle.name })} title={t("Up to 32 MiB per file")}
+                  onChange={event => {
+                    const files = Array.from(event.target.files ?? []);
+                    event.target.value = "";
+                    if (files.length) void uploadToBundle(selectedBundle, files);
+                  }} />
+              </label>
+              <button type="button" className="knowledge-primary"
+                disabled={busy || !canExtract || !!extracting || selectedBundle.status === "extracting"
+                  || !selectedBundle.files.length || selectedBundle.files.some(file => file.state !== "converted")}
+                title={canRunAgents ? t("Runs the connected {v0}", { v0: labAgents[0]?.name ?? "" }) : t("One model call through the selected model")}
+                onClick={() => void extractRecords(selectedBundle, selectedBundle.records > 0)}>
+                {selectedBundle.records > 0 ? t("Re-extract records") : t("Extract records")}</button>
+              {(extracting?.bundle_id === selectedBundle.id || selectedBundle.status === "extracting") && !deployed &&
+                <button type="button" className="knowledge-danger" disabled={stopping}
+                  onClick={() => stopExtraction(selectedBundle)}><Square size={13} /> {stopping ? t("Stopping…") : t("Stop")}</button>}
+              {!deployed && selectedBundle.run_id && <button type="button" onClick={() => setRunLogOpen(true)}>
+                <ScrollText size={13} /> {t("View log")}</button>}
+              <button type="button" disabled={busy || !!extracting} onClick={() => void deleteBundle(selectedBundle)}>{t("Remove upload")}</button>
+            </div>
+            {!canExtract && <p className="knowledge-meta">{deployed
+              ? t("This deployment has no default model configured yet.")
+              : t("Configure a model connection in OAW Settings, or connect an Agent to this card with the Knowledge experiment relationship, to extract records.")}</p>}
+            {canExtract && !canRunAgents && !deployed && <p className="knowledge-meta">
+              {t("Extraction runs as one model call. Connect a Lab assistant (Knowledge experiment relationship) to have an agent read long uploads page by page and fix records in conversation.")}</p>}
+            {canExtract && selectedBundle.files.some(file => file.state !== "converted") && !!selectedBundle.files.length &&
+              <p className="knowledge-meta">{t("Extraction starts once every file is converted.")}</p>}
+            {jobDetail && selectedBundle.files.some(file => file.job_id === jobDetail.job.id) && <div className="knowledge-detail">
+              {jobDetail.job.error && <p role="alert" className="knowledge-error">{jobDetail.job.error}</p>}
+              <ul className="knowledge-events">
+                {jobDetail.events.map((event, index) => <li key={index}><code>{event.step ?? event.event}</code> {event.message}</li>)}
+              </ul>
+            </div>}
+            {!deployed && selectedBundle.status === "failed" && runLog?.run.run_id === selectedBundle.run_id && <div role="alert" className="knowledge-confirm knowledge-runlog">
+              <strong>{t("The last extraction failed")}</strong>
+              {runLog.run.error && <p className="knowledge-error">{runLog.run.error}</p>}
+              {(runLog.run.lifecycle?.model_requests ?? []).some(item => item.error_type) && <p>
+                {t("A model request was interrupted mid-stream ({v0}). This is the model connection, not the upload: check the connection in OAW Settings → Models, or extract without the agent for a single non-streaming call.", {
+                  v0: (runLog.run.lifecycle?.model_requests ?? []).filter(item => item.error_type).map(item => `#${item.model_request} ${item.error_type}`).join(", ") })}</p>}
+              <button type="button" onClick={() => setRunLogOpen(true)}><ScrollText size={13} /> {t("View log")}</button>
+            </div>}
+            {runLogOpen && selectedBundle.run_id && <Modal title={t("Extraction log · {v0}", { v0: selectedBundle.name })}
+              className="knowledge-runlog-modal" onClose={() => setRunLogOpen(false)}
+              actions={<>
+                {(extracting?.bundle_id === selectedBundle.id || selectedBundle.status === "extracting") &&
+                  <button type="button" className="knowledge-danger" disabled={stopping}
+                    onClick={() => stopExtraction(selectedBundle)}><Square size={13} /> {stopping ? t("Stopping…") : t("Stop extraction")}</button>}
+                <button type="button" onClick={() => void loadRunLog(selectedBundle.run_id!)}><RefreshCw size={13} /> {t("Refresh")}</button>
+                {labAgents[0] && <button type="button" onClick={() => { setRunLogOpen(false); host.openWorkspace(labAgents[0].id); }}>{t("Open {v0}", { v0: labAgents[0].name })}</button>}
+              </>}>
+              <p className="knowledge-meta">{t("run {v0}", { v0: shortId(selectedBundle.run_id) })}
+                {runLog?.run.run_id === selectedBundle.run_id && <> · {t("Status: {v0}", { v0: runLog.run.status })}
+                  {runLog.run.finished_at ? ` · ${new Date(runLog.run.finished_at).toLocaleTimeString()}` : (extracting || selectedBundle.status === "extracting") ? ` · ${t("live")}` : ""}</>}</p>
+              {runLogError && <p role="alert" className="knowledge-error">{runLogError}</p>}
+              {!runLog && !runLogError && <p role="status" className="knowledge-meta">{t("Loading run…")}</p>}
+              {runLog && runLog.run.run_id === selectedBundle.run_id && <>
+                {runLog.run.error && <p role="alert" className="knowledge-error">{runLog.run.error}</p>}
+                {!!(runLog.run.lifecycle?.model_requests ?? []).length && <ul className="knowledge-relations">
+                  {(runLog.run.lifecycle?.model_requests ?? []).map(item => <li key={item.model_request}>
+                    <code>{t("model request {v0}", { v0: item.model_request })}</code>{" "}
+                    {item.error_type ? `${t("interrupted")} (${item.error_type})`
+                      : item.finish_reason ? `${item.finish_reason}${item.elapsed_ms ? ` · ${(item.elapsed_ms / 1000).toFixed(1)}s` : ""}`
+                      : t("in progress")}
+                  </li>)}
+                </ul>}
+                <ul className="knowledge-events knowledge-runlog-events">
+                  {runLog.activity.map(item => <li key={item.id}>
+                    <small>{new Date(item.timestamp).toLocaleTimeString()}</small>{" "}
+                    <code>{item.type === "tool_completed" ? (item.name ?? "tool") : item.type}</code>{" "}
+                    {item.type === "tool_completed"
+                      ? (item.interrupted ? t("interrupted") : item.success === false ? t("failed") : t("completed"))
+                      : (item.text ?? "")}
+                  </li>)}
+                  {!runLog.activity.length && <li className="knowledge-meta">{t("No activity recorded yet")}</li>}
+                </ul>
+              </>}
+            </Modal>}
+          </details>}
+          <div className={`knowledge-split${experimentDetail ? " has-detail" : ""}`}>
+          <div className="knowledge-source-pane">
+          {!schemaRecords.length && !!schemaBundles.length && <WorkspaceEmptyState title={t("No records yet")}
+            description={selectedBundle ? t("Add this upload's files, then extract records from them.")
+              : t("Choose an upload above to add files and extract records.")} />}
+          <ul className="knowledge-list knowledge-record-list">
+            {schemaRecords.map(item => <li key={item.id}>
+              <button type="button" aria-pressed={experimentDetail?.id === item.id} disabled={busy}
+                onClick={() => void loadExperiment(item.id)}>
+                <span>{item.name}</span>
+                <small>{item.status === "published" ? t("published") : t("draft")}
+                  {item.validation?.valid === false ? ` · ${t("does not satisfy the schema")}` : ""}
+                  {!selectedBundle && item.bundle_id ? ` · ${bundles.find(b => b.id === item.bundle_id)?.name ?? shortId(item.bundle_id)}` : ""}</small>
+              </button>
+            </li>)}
+          </ul>
+          </div>
+          {experimentDetail && <div className="knowledge-detail knowledge-record-detail">
+            <div className="knowledge-reading-toolbar">
+              <h4>{experimentDetail.name}</h4>
+              <span className={`knowledge-badge knowledge-status-${experimentDetail.status}`}>{experimentDetail.status === "published" ? t("Published") : t("Draft")}</span>
+              <button type="button" aria-pressed={rawRecord} disabled={busy}
+                onClick={() => { if (!rawRecord) setRecordJson(pretty(recordDraft)); else { try { setRecordDraft(JSON.parse(recordJson)); } catch { /* keep the form's last good value */ } } setRawRecord(!rawRecord); }}>{t("JSON")}</button>
+            </div>
+            <p className="knowledge-meta">{t("revision {v0} · from {v1}", { v0: experimentDetail.revision,
+              v1: experimentDetail.sources.map(link => link.filename ?? shortId(link.source_id)).join(", ") || "—" })}</p>
+            {experimentDetail.validation?.valid === false && <p role="alert" className="knowledge-error">
+              {(experimentDetail.validation.errors ?? experimentDetail.validation.missing ?? []).join("; ") || t("Does not satisfy the schema")}</p>}
+            {experimentDetail.status === "published"
+              ? <>
+                <pre>{pretty(experimentDetail.data)}</pre>
+                {experimentDetail.note && <p className="knowledge-meta">{experimentDetail.note}</p>}
+                <div className="knowledge-formbar">
+                  <button type="button" disabled={busy} onClick={() => void unpublishRecord()}>{t("Unpublish")}</button>
+                </div>
+              </>
+              : <>
+                <label className="knowledge-record-field">{t("Name")}<input value={recordName} disabled={busy}
+                  onChange={event => setRecordName(event.target.value)} /></label>
+                {rawRecord
+                  ? <label className="knowledge-record-field">{t("Data (JSON)")}<textarea value={recordJson} disabled={busy} rows={10}
+                      spellCheck={false} onChange={event => setRecordJson(event.target.value)} /></label>
+                  : experimentSchema
+                    ? <RecordForm definition={experimentSchema.definition} value={recordDraft} disabled={busy} onChange={setRecordDraft} />
+                    : <p role="status">{t("Loading schema…")}</p>}
+                <label className="knowledge-record-field">{t("Note")}<input value={recordNote} disabled={busy}
+                  placeholder={t("Where it came from, what was unclear…")} onChange={event => setRecordNote(event.target.value)} /></label>
+                <p className="knowledge-meta">{t("You can also ask the Lab assistant to change this record in the conversation — refer to it as \"{v0}\".", { v0: experimentDetail.name })}</p>
+                {publishPending ? <div role="alert" className="knowledge-confirm">
+                  <strong>{t("Publish this record?")}</strong>
+                  <p>{publishPending.reasons.join(" ")}</p>
+                  <div className="knowledge-formbar">
+                    <button type="button" className="knowledge-primary" disabled={busy}
+                      onClick={() => void publishRecord(publishPending)}>{t("Confirm and publish")}</button>
+                    <button type="button" disabled={busy} onClick={() => setPublishPending(undefined)}>{t("Cancel")}</button>
+                  </div>
+                </div> : <div className="knowledge-formbar">
+                  <button type="button" disabled={busy} onClick={() => void saveRecordEdits()}>{t("Save changes")}</button>
+                  <button type="button" className="knowledge-primary" disabled={busy || experimentDetail.validation?.valid === false}
+                    onClick={() => void publishRecord()}>{t("Publish")}</button>
+                  <button type="button" disabled={busy} onClick={() => void deleteRecord()}>{t("Delete")}</button>
+                </div>}
+              </>}
+          </div>}
+          </div>
+        </div>}
         </div>
       </WorkspaceSection>}
 

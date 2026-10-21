@@ -6,6 +6,7 @@ that has ``mat-know-base`` installed. ``cd plugins/knowledge_base && pytest``.
 """
 import base64
 import json
+import uuid
 
 import pytest
 
@@ -333,7 +334,13 @@ def test_settings_drive_the_collection_and_engine(card):
     summary = run(card, actions.overview)
     assert summary["collection"]["name"] == "Alloys"
     assert summary["settings"]["pdf_engine"] == "text"
+    assert summary["settings"]["vision_model"] == ""
     assert "text" in summary["engines"]
+
+    # The vision model is a stored reference the conversion job resolves later.
+    updated = run(card, actions.update_settings, vision_model="oaw:model:m1")
+    assert updated["settings"]["vision_model"] == "oaw:model:m1"
+    assert updated["settings"]["collection_name"] == "Alloys"
 
 
 def test_uploads_are_bounded_and_validated(card):
@@ -563,82 +570,195 @@ def _experiment_schema(card):
               definition=EXPERIMENT_SCHEMA, system_prompt="x", kind="experiment")["schema"]
 
 
-def _project(card, source_id, schema_id, data):
-    matching = next(item for item in run(card, actions.sources, all_groups=True)["sources"]
-                    if item["id"] == source_id)
-    return run(card, actions.save_projection, schema_id=schema_id, record_id=matching["record_id"],
-              data=data, model="test-model")["projection"]
+def _bundle(card, schema, name="Batch 7", notes=""):
+    return run(card, actions.experiment_bundle_manage, operation="create",
+               schema_id=schema["id"], name=name, notes=notes)["bundle"]
 
 
-def test_assemble_merges_several_projections_into_one_experiment_record(card):
-    schema = _experiment_schema(card)
-    source_a, _ = ingest_document(card, text="# Run A\n\nSample A1, 1.2 S/cm.\n", filename="a.md")
-    source_b, _ = ingest_document(card, text="# Run B\n\nSample A1, 1.4 S/cm.\n", filename="b.md")
-    projection_a = _project(card, source_a, schema["id"],
-                            {"sample_id": "A1", "conductivity": 1.2})
-    projection_b = _project(card, source_b, schema["id"],
-                            {"sample_id": "A1", "conductivity": 1.4})
-
-    prompt = run(card, actions.experiment_assemble_prompt,
-                projection_ids=[projection_a["id"], projection_b["id"]])
-    assert prompt["schema_id"] == schema["id"]
-    assert {item["filename"] for item in prompt["contributions"]} == {"a.md", "b.md"}
-    assert {item["data"]["conductivity"] for item in prompt["contributions"]} == {1.2, 1.4}
-
-    merged = run(card, actions.experiment_save, schema_id=schema["id"], group_id=prompt["group_id"],
-                name="A1", data={"sample_id": "A1", "conductivity": 1.3},
-                conflicts=[{"field": "conductivity", "values": [
-                    {"value": 1.2, "source_id": prompt["contributions"][0]["source_id"]},
-                    {"value": 1.4, "source_id": prompt["contributions"][1]["source_id"]}]}],
-                evidence=[{"projection_id": item["projection_id"], "source_id": item["source_id"],
-                          "artifact_id": item["artifact_id"]} for item in prompt["contributions"]])["record"]
-    assert merged["status"] == "draft"
-    assert merged["revision"] == 1
-    assert merged["data"]["conductivity"] == 1.3
-    assert len(merged["conflicts"]) == 1
-    assert merged["validation"]["valid"] is True
-
-    listed = run(card, actions.experiments)["experiments"]
-    assert [item["name"] for item in listed] == ["A1"]
-
-    fetched = run(card, actions.experiments, operation="get", record_id=merged["id"])["experiment"]
-    assert len(fetched["evidence"]) == 2
-    assert {link["source_id"] for link in fetched["evidence"]} == {source_a, source_b}
-
-    confirmed = run(card, actions.experiment_update, operation="confirm", record_id=merged["id"],
-                    expected_revision=1)["experiment"]
-    assert confirmed["status"] == "confirmed"
-    assert confirmed["revision"] == 2
-
-    with pytest.raises(KnowledgeError):
-        run(card, actions.experiment_update, operation="confirm", record_id=merged["id"],
-            expected_revision=1)
-
-
-def test_assemble_refuses_a_non_experiment_schema(card):
-    schema = run(card, actions.schemas, operation="create", name="Literature schema",
-                definition=SCHEMA, system_prompt="x")["schema"]
-    source_id, _ = ingest_document(card)
-    projection = _project(card, source_id, schema["id"], {"entities": [], "relations": []})
-    with pytest.raises(KnowledgeError):
-        run(card, actions.experiment_assemble_prompt, projection_ids=[projection["id"]])
-
-
-def test_assemble_refuses_projections_from_two_different_groups(card):
-    schema = _experiment_schema(card)
-    source_a, _ = ingest_document(card, filename="a.md")
-    alloys = run(card, actions.groups, operation="create", name="Alloys")["group"]
-    ingested = run(card, actions.ingest, filename="b.md",
-                   content_base64=base64.b64encode(DOCUMENT.encode()).decode(),
-                   media_type="text/markdown", group_id=alloys["id"])
-    processed = run(card, actions.process_sources, source_ids=[ingested["source"]["id"]])
+def _upload(card, bundle, text, filename, media_type="text/markdown"):
+    """Upload one file into a bundle and wait for the conversion it queues itself."""
+    result = run(card, actions.experiment_ingest, bundle_id=bundle["id"], filename=filename,
+                 content_base64=base64.b64encode(text.encode()).decode(), media_type=media_type)
     kb = client.open_client(card.node_id, card.storage_path)
-    kb.jobs.wait(processed["jobs"][0]["job"]["id"], timeout=60)
+    job = kb.jobs.wait(result["job"]["id"], timeout=60)
+    assert job.status == "COMPLETED", job.error
+    return result["source"]["id"]
 
-    projection_a = _project(card, source_a, schema["id"], {"sample_id": "A1", "conductivity": 1.0})
-    projection_b = _project(card, ingested["source"]["id"], schema["id"],
-                            {"sample_id": "A1", "conductivity": 1.0})
+
+def test_an_experiment_upload_is_projected_into_several_reviewed_records(card):
+    schema = _experiment_schema(card)
+    bundle = _bundle(card, schema, notes="Conductivity is in S/cm; the photo shows batch 7.")
+    assert bundle["status"] == "ready" and bundle["files"] == [] and bundle["records"] == 0
+
+    sheet = _upload(card, bundle, "sample,conductivity\nA1,1.2\nA2,0.9\n", "batch7.csv", "text/csv")
+    note = _upload(card, bundle, "# Notes\n\nA2 was cracked after pressing.\n\n"
+                   + "Pressing log line.\n" * 40, "notes.md")
+
+    # The upload's files are the Experiment section's, not Literature's.
+    assert run(card, actions.sources)["sources"] == []
+    tagged = run(card, actions.sources, workflow="experiment")["sources"]
+    assert {item["filename"] for item in tagged} == {"batch7.csv", "notes.md"}
+    assert {item["workflow"] for item in tagged} == {"experiment"}
+    assert len(run(card, actions.sources, workflow="all")["sources"]) == 2
+
+    listed = run(card, actions.experiment_bundles, schema_id=schema["id"])["bundles"]
+    assert [item["id"] for item in listed] == [bundle["id"]]
+    assert [f["state"] for f in listed[0]["files"]] == ["converted", "converted"]
+
+    # One document: both files in upload order, each under a heading that names it.
+    prompt = run(card, actions.experiment_extract_prompt, bundle_id=bundle["id"])
+    assert prompt["schema_id"] == schema["id"] and prompt["definition"] == EXPERIMENT_SCHEMA
+    assert prompt["notes"].startswith("Conductivity is in S/cm")
+    assert [f["source_id"] for f in prompt["files"]] == [sheet, note]
+    assert prompt["markdown"].index(f"## File: batch7.csv (source_id={sheet})") < \
+        prompt["markdown"].index(f"## File: notes.md (source_id={note})")
+    assert "| A1 |" in prompt["markdown"] and "cracked" in prompt["markdown"]
+    assert prompt["has_more"] is False and "records" in prompt["instruction"]
+    page = run(card, actions.experiment_extract_prompt, bundle_id=bundle["id"], limit=500)
+    assert page["has_more"] is True and len(page["markdown"]) == 500
+    assert page["total_characters"] == prompt["total_characters"]
+
+    saved = run(card, actions.experiment_save, bundle_id=bundle["id"], records=[
+        {"name": "A1", "data": {"sample_id": "A1", "conductivity": 1.2}, "source_ids": [sheet]},
+        {"name": "A2", "data": {"sample_id": "A2", "conductivity": 0.9}, "source_ids": [sheet, note],
+         "note": "cracked, see notes.md"},
+        {"name": "A3", "data": {"sample_id": "A3"}},
+    ])
+    assert saved["invalid"] == 1
+    by_name = {item["name"]: item for item in saved["records"]}
+    assert by_name["A1"]["status"] == "draft" and by_name["A1"]["bundle_id"] == bundle["id"]
+    assert [s["filename"] for s in by_name["A1"]["sources"]] == ["batch7.csv"]
+    assert {s["source_id"] for s in by_name["A2"]["sources"]} == {sheet, note}
+    # Uncited records are linked to every file in the upload.
+    assert {s["source_id"] for s in by_name["A3"]["sources"]} == {sheet, note}
+    assert by_name["A3"]["validation"]["valid"] is False
+    assert run(card, actions.experiment_bundles, operation="get", bundle_id=bundle["id"])["bundle"]["status"] == "extracted"
+
     with pytest.raises(KnowledgeError):
-        run(card, actions.experiment_assemble_prompt,
-            projection_ids=[projection_a["id"], projection_b["id"]])
+        run(card, actions.experiment_save, bundle_id=bundle["id"], records=[
+            {"name": "X", "data": {}, "source_ids": [str(uuid.uuid4())]}])
 
+    listed = run(card, actions.experiments, bundle_id=bundle["id"])["experiments"]
+    assert {item["name"] for item in listed} == {"A1", "A2", "A3"}
+    assert run(card, actions.overview)["counts"]["experiment_records"] == 3
+
+    # A person fixes the invalid one; the edit is re-validated.
+    fixed = run(card, actions.experiment_update, record_id=by_name["A3"]["id"],
+                data={"sample_id": "A3", "conductivity": 1.1}, expected_revision=1)["experiment"]
+    assert fixed["revision"] == 2 and fixed["validation"]["valid"] is True
+
+    # Publishing asks first, then marks the record approved and freezes it.
+    asked = run(card, actions.experiment_review, operation="publish", record_id=by_name["A1"]["id"])
+    assert asked["status"] == "confirmation_required"
+    card.confirmed = True
+    published = run(card, actions.experiment_review, operation="publish",
+                    record_id=by_name["A1"]["id"], expected_revision=1)["experiment"]
+    card.confirmed = False
+    assert published["status"] == "published"
+    with pytest.raises(KnowledgeError):
+        run(card, actions.experiment_update, record_id=published["id"], name="A1b")
+    with pytest.raises(KnowledgeError):
+        run(card, actions.experiment_review, operation="delete", record_id=published["id"])
+    assert {item["name"] for item in run(card, actions.experiments, status="published")["experiments"]} == {"A1"}
+
+    # Re-extraction replaces the drafts but keeps what a person already published.
+    again = run(card, actions.experiment_save, bundle_id=bundle["id"], replace_drafts=True, records=[
+        {"name": "A2", "data": {"sample_id": "A2", "conductivity": 0.95}}])
+    assert len(again["records"]) == 1
+    remaining = run(card, actions.experiments, bundle_id=bundle["id"])["experiments"]
+    assert {item["name"] for item in remaining} == {"A1", "A2"}
+
+    reopened = run(card, actions.experiment_review, operation="unpublish",
+                   record_id=published["id"])["experiment"]
+    assert reopened["status"] == "draft"
+    run(card, actions.experiment_review, operation="delete", record_id=reopened["id"])
+    assert {item["name"] for item in run(card, actions.experiments, bundle_id=bundle["id"])["experiments"]} == {"A2"}
+
+
+def test_a_record_that_fails_its_schema_cannot_be_published(card):
+    schema = _experiment_schema(card)
+    bundle = _bundle(card, schema)
+    _upload(card, bundle, "A9\n", "a.md")
+    saved = run(card, actions.experiment_save, bundle_id=bundle["id"],
+                records=[{"name": "A9", "data": {"sample_id": "A9"}}])
+    card.confirmed = True
+    with pytest.raises(KnowledgeError):
+        run(card, actions.experiment_review, operation="publish", record_id=saved["records"][0]["id"])
+
+
+def test_extraction_waits_for_every_file_and_an_upload_needs_an_experiment_schema(card):
+    literature = run(card, actions.schemas, operation="create", name="Literature schema",
+                     definition=SCHEMA, system_prompt="x")["schema"]
+    with pytest.raises(KnowledgeError):
+        _bundle(card, literature)
+
+    schema = _experiment_schema(card)
+    bundle = _bundle(card, schema)
+    with pytest.raises(KnowledgeError):
+        run(card, actions.experiment_extract_prompt, bundle_id=bundle["id"])
+    with pytest.raises(KnowledgeError):
+        run(card, actions.experiment_save, bundle_id=bundle["id"],
+            records=[{"name": "A", "data": {}}])
+
+    # Queue a file but do not wait for it: the prompt refuses until it is converted.
+    result = run(card, actions.experiment_ingest, bundle_id=bundle["id"], filename="a.md",
+                 content_base64=base64.b64encode(b"# A\n").decode(), media_type="text/markdown")
+    kb = client.open_client(card.node_id, card.storage_path)
+    job = kb.jobs.get(result["job"]["id"])
+    if job.status != "COMPLETED":
+        with pytest.raises(KnowledgeError, match="Not every file is converted yet"):
+            run(card, actions.experiment_extract_prompt, bundle_id=bundle["id"])
+    kb.jobs.wait(result["job"]["id"], timeout=60)
+    assert run(card, actions.experiment_extract_prompt, bundle_id=bundle["id"])["has_more"] is False
+
+
+def test_deleting_an_upload_removes_its_records_and_keeps_its_files_out_of_literature(card):
+    schema = _experiment_schema(card)
+    bundle = _bundle(card, schema)
+    _upload(card, bundle, "A1 1.0\n", "a.md")
+    run(card, actions.experiment_save, bundle_id=bundle["id"],
+        records=[{"name": "A1", "data": {"sample_id": "A1", "conductivity": 1.0}}])
+
+    marked = run(card, actions.experiment_bundle_manage, operation="update", bundle_id=bundle["id"],
+                 status="extracting", run_id="run-1")["bundle"]
+    assert (marked["status"], marked["run_id"]) == ("extracting", "run-1")
+    renamed = run(card, actions.experiment_bundle_manage, operation="update", bundle_id=bundle["id"],
+                  name="Batch 7b")["bundle"]
+    assert renamed["run_id"] == "run-1" and renamed["name"] == "Batch 7b"
+
+    removed = run(card, actions.experiment_bundle_manage, operation="delete", bundle_id=bundle["id"])
+    assert removed["records_removed"] == 1
+    assert run(card, actions.experiment_bundles)["bundles"] == []
+    assert run(card, actions.experiments)["experiments"] == []
+    assert run(card, actions.sources)["sources"] == []
+    assert len(run(card, actions.sources, workflow="experiment")["sources"]) == 1
+    with pytest.raises(KnowledgeError):
+        run(card, actions.experiment_ingest, bundle_id=bundle["id"], filename="b.md",
+            content_base64=base64.b64encode(b"x").decode())
+
+
+def test_chart_data_source_reads_published_experiment_records_only(card):
+    # data_source.py is the one module besides plugin.py that imports OAW itself.
+    pytest.importorskip("open_agent_world", reason="Run inside the OAW backend environment")
+    from oaw_knowledge_base import data_source
+
+    schema = _experiment_schema(card)
+    bundle = _bundle(card, schema)
+    _upload(card, bundle, "x\n", "a.md")
+    saved = run(card, actions.experiment_save, bundle_id=bundle["id"], records=[
+        {"name": "A1", "data": {"sample_id": "A1", "conductivity": 1.2}},
+        {"name": "A2", "data": {"sample_id": "A2", "conductivity": 0.9}}])
+    card.confirmed = True
+    run(card, actions.experiment_review, operation="publish", record_id=saved["records"][0]["id"])
+
+    class Query:
+        schema_id = f"experiments:{schema['id']}"
+        aggregate = "none"
+        columns = ["sample_id", "conductivity"]
+        order_by = None
+        descending = False
+        limit = 50
+        entity_type = relation_type = None
+
+    table = data_source.read(card, Query())
+    assert table["rows"] == [["A1", 1.2]]

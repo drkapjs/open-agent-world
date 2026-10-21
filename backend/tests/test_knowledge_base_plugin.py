@@ -5,7 +5,7 @@ no host at all. What is left for the backend to prove is the seam: that the load
 registers the card, that the three human-only operations stay unreachable by agents,
 that a ``KnowledgeError`` out of a handler becomes a ``ResourceValidationError``
 without any adapter in between, that create/delete own the storage directory, and
-that the ``Knowledge research`` formation deploys — and copies — a working card.
+that the ``Lab Manager`` formation deploys — and copies — a working card.
 """
 import base64
 import json
@@ -32,13 +32,14 @@ from backend.services import create_services  # noqa: E402
 from backend.tests.conftest import create_node  # noqa: E402
 from backend.world.models import CardCreate  # noqa: E402
 from oaw_knowledge_base.errors import KnowledgeError  # noqa: E402
-from oaw_knowledge_base.operations import BY_NAME, EXTRACT_ACTIONS, OPERATIONS, READ_ACTIONS  # noqa: E402
+from oaw_knowledge_base.operations import BY_NAME, EXPERIMENT_ACTIONS, EXTRACT_ACTIONS, OPERATIONS, READ_ACTIONS  # noqa: E402
 
 NODE_TYPE = "knowledge.base"
 # Uploading a file, converting it, managing groups, changing settings, approving a
 # draft and choosing which schema builds the graph are acts a person takes on the
 # canvas. They must never gain a capability kind, on any transport.
-DESKTOP_ONLY = {"ingest", "process", "groups", "settings", "review", "graph_schema"}
+DESKTOP_ONLY = {"ingest", "process", "groups", "settings", "review", "graph_schema",
+                "experiment_ingest", "experiment_bundle_manage", "experiment_review"}
 
 
 def test_declared_local_pdf_engine_converts_a_real_document():
@@ -82,10 +83,15 @@ def test_the_loader_registers_the_card_and_its_grants():
 
     read = {grant.kind for grant in registry.relationship(f"{NODE_TYPE}.read").capabilities}
     extract = {grant.kind for grant in registry.relationship(f"{NODE_TYPE}.extract").capabilities}
+    experiment = {grant.kind for grant in registry.relationship(f"{NODE_TYPE}.experiment").capabilities}
     assert read == {f"{NODE_TYPE}.{name}" for name in READ_ACTIONS}
     assert extract == {f"{NODE_TYPE}.{name}" for name in EXTRACT_ACTIONS}
-    assert read < extract  # extract is read plus the write half, never less
-    assert not {kind for kind in extract if kind.rsplit(".", 1)[-1] in DESKTOP_ONLY}
+    assert experiment == {f"{NODE_TYPE}.{name}" for name in EXPERIMENT_ACTIONS}
+    assert read < extract and read < experiment  # each is read plus its own write half
+    # The two write halves are separate pipelines: a literature extractor cannot
+    # save experiment records and a lab assistant cannot propose draft graphs.
+    assert not (extract - read) & (experiment - read)
+    assert not {kind for kind in (extract | experiment) if kind.rsplit(".", 1)[-1] in DESKTOP_ONLY}
 
 
 @pytest.mark.asyncio
@@ -253,19 +259,21 @@ def test_the_research_formation_deploys_wired_independent_bases(client):
     nodes = {node["id"]: node for node in first["nodes"]}
     assert all(nodes[a[key]]["parent_id"] == a["group"] for key in a if key != "group")
     assert nodes[a["knowledge"]]["type"] == NODE_TYPE
-    assert "knowledge_graph" in nodes[a["agent"]]["config"]["system_instruction"]
-    # The person drives the pipeline from the workspace; the Librarian only reads.
+    instruction = nodes[a["agent"]]["config"]["system_instruction"]
+    assert "knowledge_graph" in instruction and "knowledge_experiment_save" in instruction
+    # The person drives the pipeline from the workspace; the Lab assistant reads, and
+    # holds exactly the experiment half — draft records only, never a publication.
     assert {(edge["source"], edge["target"], edge["relationship"]) for edge in first["edges"]} == {
         (a["agent"], a["conversation"], "participate"),
-        (a["agent"], a["knowledge"], f"{NODE_TYPE}.read")}
+        (a["agent"], a["knowledge"], f"{NODE_TYPE}.experiment")}
 
     provider = WorldAgentCapabilityProvider(client.app.state.services)
     tools = {tool.name for tool in client.portal.call(provider.list_tools, a["agent"])}
-    expected_tool_names = {BY_NAME[name].tool_name for name in READ_ACTIONS}
-    assert expected_tool_names <= tools
-    # Extraction is a button, not a tool: nothing the Librarian holds can write.
+    assert {BY_NAME[name].tool_name for name in EXPERIMENT_ACTIONS} <= tools
+    # The literature pipeline and every publication stay buttons, not tools.
     assert not tools & {"knowledge_projection_prompt", "knowledge_save_projection",
-                        "knowledge_draft", "knowledge_ingest", "knowledge_review"}
+                        "knowledge_draft", "knowledge_ingest", "knowledge_review",
+                        "knowledge_experiment_review", "knowledge_experiment_ingest"}
 
     layout = json.dumps(nodes[a["group"]]["config"]["workspace_layout"])
     assert all(a[key] in layout for key in ("conversation", "knowledge"))
