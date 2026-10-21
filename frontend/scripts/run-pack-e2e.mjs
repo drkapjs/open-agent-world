@@ -24,7 +24,7 @@ const port = Number(process.env.OAW_PACK_E2E_PORT ?? 38579);
 const url = `http://127.0.0.1:${port}`;
 const env = { ...process.env, OPEN_AGENT_WORLD_MODE: 'production', OPEN_AGENT_WORLD_DATA_ROOT: dataRoot,
   OPEN_AGENT_WORLD_AGENT_RUNTIME: 'mock', OAW_E2E_BASE_URL: url, OAW_PACK_ARTIFACT: build.artifact,
-  OAW_PACK_E2E_DATA_ROOT: dataRoot, OAW_PACK_SOURCE: source };
+  OAW_PACK_E2E_DATA_ROOT: dataRoot, OAW_PACK_SOURCE: source, OAW_PACK_HOST_ONLY: build.host_only ? '1' : '0' };
 delete env.OPEN_AGENT_WORLD_PLUGIN_DIRS;
 for (const key of Object.keys(env)) if (/^(?:GH_|GITHUB_|MARKETPLACE_)/.test(key)) delete env[key];
 const payload = process.env.OAW_PACK_DESKTOP_PAYLOAD;
@@ -103,7 +103,10 @@ try {
   await writeFile(path.join(dataRoot, 'receipt.json'), JSON.stringify(receipt, null, 2));
   console.log(JSON.stringify(receipt));
 } finally {
-  await stop();
-  if (marketplace) await marketplace.stop();
-  await writeFile(path.join(dataRoot, 'acceptance-host.log'), logs);
+  try {
+    await stop();
+  } finally {
+    if (marketplace) await marketplace.stop();
+    await writeFile(path.join(dataRoot, 'acceptance-host.log'), logs);
+  }
 }

@@ -43,7 +43,9 @@ jobs:
   backend:
     name: Backend tests
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    # The complete suite measured 39m20s and 44m21s on hosted runners.
+    # Leave room for runner variance and result upload; test deadlines stay unchanged.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -110,18 +112,28 @@ jobs:
           backend/.venv/bin/python -c "from pathlib import Path; import subprocess, sys;
           subprocess.run(['uv', 'pip', 'install', '--python', sys.executable,
           *[str(p.parent) for p in sorted(Path('plugins').glob('*/pyproject.toml'))]], check=True)"
-      - name: Run frontend tests
-        working-directory: frontend
-        run: npm test
       - name: Type-check and build frontend
         working-directory: frontend
         run: npm run build
+      - name: Run frontend tests with prepared Pack dependencies
+        working-directory: frontend
+        run: npm test
       - name: Verify Pack build dependency boundaries
         working-directory: frontend
         run: npm run test:pack-sdk
       - name: Install UI acceptance browsers
         working-directory: frontend
         run: npx --no-install playwright install --with-deps chromium webkit
+      - name: Pack the public SDK and build external Greeter
+        run: |
+          mkdir -p .outputs
+          npm pack ./frontend/pack-sdk --pack-destination .outputs
+          backend/.venv/bin/python scripts/build-external-greeter.py --host-only
+      - name: Install external Pack and verify cards and assets after restart
+        working-directory: frontend
+        env:
+          PLAYWRIGHT_CHANNEL: chromium
+        run: npm run test:e2e:packs
       - name: Run deployment acceptance against production frontend
         working-directory: frontend
         run: npm run test:e2e:deployment
@@ -148,8 +160,31 @@ jobs:
             .tmp/hosting-login.png
             .tmp/hosting-canvas.png
             .tmp/ui-playwright/
+            .outputs/pack-acceptance/
           include-hidden-files: true
           retention-days: 7
+
+  required:
+    name: CI required
+    if: always()
+    needs: [source-launchers, backend, frontend, windows-smoke, version]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every check to succeed
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python -c 'import json,os; results=json.loads(os.environ["RESULTS"]); assert all(job["result"] == "success" for job in results.values()), results'
+
+  version:
+    name: Application version consistency
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - run: python scripts/check-release.py
 
   windows-smoke:
     name: Core smoke (Windows)
@@ -162,11 +197,17 @@ jobs:
           python-version: '3.12'
       - uses: astral-sh/setup-uv@v10.2.0
       - name: Install locked backend dependencies
-        run: uv sync --project backend --locked --dev --extra hosting --python 3.12
+        run: uv sync --project backend --locked --all-extras --group dev --python 3.12
+      - name: Install repository plugin test dependencies
+        run: >-
+          backend/.venv/Scripts/python.exe -c "from pathlib import Path; import subprocess, sys;
+          subprocess.run(['uv', 'pip', 'install', '--python', sys.executable,
+          *[str(p.parent) for p in sorted(Path('plugins').glob('*/pyproject.toml'))]], check=True)"
       - name: Check Windows source setup and dev launch contracts
         run: |
           ./scripts/test-dev-environment.ps1
           ./scripts/test-dev-startup.ps1
+          ./scripts/test-desktop-build.ps1
       - name: Check startup, access boundaries, deployment, persistence and migration
         run: >-
           backend/.venv/Scripts/python.exe .github/run-backend-tests.py
