@@ -33,7 +33,7 @@ from backend.plugins.deployment import NodeDeploymentDefinition
 from backend.plugins.containers import NodeContainerDefinition
 from backend.plugins.execution import NodeExecutionDefinition
 
-PLUGIN_API_VERSION = "1.37"
+PLUGIN_API_VERSION = "1.38"
 _IDENTIFIER = re.compile(r"^[a-z][a-z0-9]*(?:[._:/-][a-z0-9]+)*$")
 _API_VERSION = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 
@@ -602,17 +602,15 @@ class PluginRegistry:
             raise TypeError(f"plugin {descriptor.id!r} must define register(registration)")
 
         staged = PluginRegistration(descriptor)
+        if source_spec is not None and source_spec.entrypoints and source_spec.contributions.cards:
+            from backend.plugins.declarative import contribute_cards
+            contribute_cards(staged, source_spec)
         register(staged)
         declaration = distribution if distribution is not None else source_spec
         declared_nodes = getattr(declaration, "node_types", None)
         if declared_nodes is not None and set(staged.nodes) != set(declared_nodes):
             raise ValueError("Plugin must register exactly its declared owned node types")
-        if source_spec is not None and source_spec.packs and set(staged.packs) != set(source_spec.packs):
-            raise ValueError("Plugin must register exactly its declared provided Pack IDs")
         if distribution is not None:
-            if set(staged.packs) != set(distribution.provided_pack_ids):
-                raise ValueError("An external Pack must register exactly one Pack with its distribution ID" if distribution.schema_version != 3
-                    else "An external Pack must register exactly its declared provided Pack IDs")
             if declared_nodes is None and any(not key.startswith(distribution.owner_id + ".") and not (
                     distribution.schema_version == 3 and key == distribution.owner_id) for key in staged.nodes):
                 raise ValueError("External card IDs must belong to the Pack namespace")
@@ -630,6 +628,11 @@ class PluginRegistry:
                 id=f"{descriptor.id}.default", name=descriptor.name or descriptor.id,
                 description=descriptor.description or "", cards=tuple(staged.nodes),
             ))
+        if source_spec is not None and source_spec.packs and set(staged.packs) != set(source_spec.packs):
+            raise ValueError("Plugin must register exactly its declared provided Pack IDs")
+        if distribution is not None and set(staged.packs) != set(distribution.provided_pack_ids):
+            raise ValueError("An external Pack must register exactly one Pack with its distribution ID" if distribution.schema_version != 3
+                else "An external Pack must register exactly its declared provided Pack IDs")
         self._normalize_capabilities(staged)
         self._validate_registration(staged)
 
@@ -999,7 +1002,30 @@ class PluginRegistry:
         return plugin_id in self._plugins
 
     def is_enabled(self, plugin_id: str) -> bool:
-        return self.has_plugin(plugin_id) and plugin_id not in self._disabled
+        return self.has_plugin(plugin_id) and plugin_id not in self._disabled and not self.unavailable_reason(plugin_id)
+
+    def unavailable_reason(self, plugin_id: str):
+        return next((row for row in self.load_failures if row.get('owner') == plugin_id), None)
+
+    def mark_unavailable(self, plugin_id: str, phase: str, error: BaseException, *, source="lifecycle") -> set[str]:
+        """Transient availability, separate from the user's durable enabled intent."""
+        from backend.plugins.failures import raise_if_unsafe
+        raise_if_unsafe(error)
+        if plugin_id == 'open-agent-world.core':
+            raise error
+        affected = {plugin_id}
+        while True:
+            downstream = {p.id for p in self.plugins() if set(p.requires_plugins) & affected}
+            if downstream <= affected:
+                break
+            affected.update(downstream)
+        for owner in sorted(affected):
+            if not self.unavailable_reason(owner):
+                self.load_failures.append(dict(id=owner, owner=owner, source=source, state='unavailable',
+                    phase=phase if owner == plugin_id else 'dependency',
+                    error=str(error) if owner == plugin_id else f'Required plugin {plugin_id} is unavailable',
+                    retry='repair_and_restart'))
+        return affected
 
     def set_enabled(self, plugin_id: str, enabled: bool) -> None:
         if not self.has_plugin(plugin_id):
@@ -1011,11 +1037,13 @@ class PluginRegistry:
 
     def _assert_enabled(self, kind: str, identifier: str) -> None:
         owner = self._owners.get((kind, identifier))
-        if owner in self._disabled:
-            raise PluginUnavailableError(f"Plugin {owner!r} is disabled")
+        if owner is not None and (owner in self._disabled or self.unavailable_reason(owner)):
+            raise PluginUnavailableError(f"Plugin {owner!r} is unavailable or disabled")
 
     def assert_runtime_provider_enabled(self, provider_id: str) -> None:
         self._assert_enabled("runtime_provider", provider_id)
+        if any(row['source'] == 'runtime_provider' and row['id'] == provider_id for row in self.load_failures):
+            raise PluginUnavailableError(f"Runtime provider {provider_id!r} is unavailable")
 
     def has_trait(self, type_id: str, trait: str) -> bool:
         definition = self._nodes.get(type_id)

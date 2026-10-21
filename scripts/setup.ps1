@@ -4,7 +4,8 @@ param(
     [string]$Profile,
     [string[]]$PluginPath = @(),
     [switch]$SkipBuild,
-    [switch]$CoreOnly
+    [switch]$CoreOnly,
+    [switch]$WithPlugins
 )
 $ErrorActionPreference = 'Stop'
 if (-not (Get-Command uv -ErrorAction SilentlyContinue)) { throw 'Missing prerequisite: uv.' }
@@ -13,5 +14,6 @@ if ($Profile) { $setupArguments += @('--profile', $Profile) }
 foreach ($path in $PluginPath) { $setupArguments += @('--plugin-path', $path) }
 if ($SkipBuild) { $setupArguments += '--skip-build' }
 if ($CoreOnly) { $setupArguments += '--core-only' }
+if ($WithPlugins) { $setupArguments += '--with-plugins' }
 & uv @setupArguments
 if ($LASTEXITCODE -ne 0) { throw "Setup failed (exit code $LASTEXITCODE)." }

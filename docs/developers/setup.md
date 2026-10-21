@@ -38,8 +38,12 @@ bash scripts/dev.sh --agent-runtime core.mock --profile plugin-tutorial
 Open the URL printed by the launcher. Ports can change when the usual ones are occupied. Keep the launcher running and stop it with Ctrl+C.
 
 Setup is the installation entrypoint on every platform, backed by `scripts/setup.py`.
-Run it when creating a profile or changing dependencies. `--skip-build` / `-SkipBuild`
-prepares the SDK and Pack dependencies without building the production frontend.
+Run it when creating a profile or changing dependencies. Default setup prepares
+Core and its development tools. Add `--with-plugins` / `-WithPlugins` to prepare
+all official Packs and optional Agent SDKs, or `--plugin-path` / `-PluginPath` for
+specific projects. `--core-only` is a compatibility alias for the default.
+`--skip-build` / `-SkipBuild` prepares the SDK and selected dependencies without
+building the production frontend.
 Ordinary `dev` launches only check the environment and build source assets; they do
 not run uv sync, editable installs, setup hooks, or npm ci. Missing or stale
 dependencies produce an error pointing back to setup. The launchers and `npm run dev`
@@ -77,7 +81,7 @@ inside `.open-agent-world`.
 
 Additional trusted plugins use `-PluginPath @('path/to/plugin')` on PowerShell or
 repeatable `--plugin-path path/to/plugin` on the portable scripts. Pass them to setup
-and dev; setup includes the repository plugins as well. Both use the persistent
+and dev; repository-wide preparation requires `--with-plugins`. Both use the persistent
 `backend/.venv` interpreter. The bare setup command prepares production data for
 `start`; development Pack environments belong to the explicitly selected profile.
 

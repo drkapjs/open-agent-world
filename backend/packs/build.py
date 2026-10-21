@@ -141,6 +141,8 @@ def _rewrite_wheel(data: bytes, spec: PackSpec, source: Path) -> tuple[bytes, tu
             if any(module == "backend" or module.startswith("backend.") for module in imports):
                 raise ValueError(f"{name} imports private host backend code; migrate it to the public Plugin API before publishing")
     files[f"{prefix}/entry_points.txt"] = f"[open_agent_world.plugins]\n{spec.owner} = {entry}\n".encode()
+    if spec.contributions.cards:
+        files[f'{prefix}/oaw.pack.json'] = spec.model_dump_json().encode()
     # RECORD must describe the rewritten wheel, never retain upstream signatures.
     for name in (f"{prefix}/RECORD.jws", f"{prefix}/RECORD.p7s"):
         files.pop(name, None)
@@ -211,6 +213,35 @@ def create_plugin():
     return _zip(files), (module,)
 
 
+def passive_wheel_spec(data: bytes, manifest) -> PackSpec | None:
+    """Recognize only our generated adapter, by all uncompressed file bytes.
+
+    No author-provided Python is executed or treated as passive by declaration.
+    This runs at the installation boundary, not on every application startup.
+    """
+    if manifest.schema_version != 3 or not manifest.module_name.startswith('oaw_declarative_'):
+        return None
+    with ZipFile(io.BytesIO(data)) as wheel:
+        files = zip_files(wheel)
+    raw = files.get(manifest.module_name + '/contributions.json')
+    if raw is None:
+        return None
+    spec = PackSpec.model_validate_json(raw)
+    if (spec.entrypoints or not spec.contributions.cards or spec.dependencies or spec.backend.python
+            or spec.environments or spec.features or spec.prerequisites or spec.legacy_python_requirements):
+        return None
+    if (spec.owner, spec.distribution_id, spec.version, spec.packs, spec.node_types) != (
+            manifest.owner_id, manifest.id, manifest.version, manifest.provided_pack_ids, manifest.node_types):
+        return None
+    if spec.compatibility is None or spec.compatibility.model_dump() != manifest.compatibility.model_dump():
+        return None
+    expected, modules = _declarative_wheel(spec)
+    with ZipFile(io.BytesIO(expected)) as wheel:
+        if files != zip_files(wheel) or modules != manifest.module_names:
+            return None
+    return spec
+
+
 def build_project(source: Path, output: Path, *, backend_wheel: Path | None = None, frontend_dir: Path | None = None, dependency_wheels: Path | None = None,
                   plugin_api: str | None = None, oaw: str | None = None) -> Path:
     """Compile static metadata around an author's already-built wheel and UI."""
@@ -229,7 +260,7 @@ def build_project(source: Path, output: Path, *, backend_wheel: Path | None = No
         raise ValueError("Declare compatibility.plugin_api or pass --plugin-api matching the runtime descriptor")
     compatibility.setdefault("oaw", ">=0.1.0,<1")
     compatibility.setdefault("frontend_api", 1)
-    if spec.contributions.cards:
+    if spec.contributions.cards and not spec.entrypoints:
         if backend_wheel is not None:
             raise ValueError('Declarative cards generate their adapter; omit --backend-wheel')
         # Validate the same registration before producing an artifact. This only

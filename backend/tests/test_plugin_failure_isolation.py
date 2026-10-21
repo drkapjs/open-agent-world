@@ -87,6 +87,9 @@ def test_failed_registration_preserves_cards_edges_config_and_revokes_capabiliti
         assert client.get('/api/packs').json()['failures']
         assert services.world.get_card(card.id).missing_plugin
         assert services.world.get_edge(edge.id).missing_plugin
+        from backend.api.card_library import plugin_usage
+        assert plugin_usage(services, 'test.batch1_recoverable')
+        assert plugin_usage(services, 'test.batch1_independent') == []
         assert not services.capabilities.derive(agent.id).capabilities
         with services.database.locked() as db:
             assert tuple(db.execute('SELECT config_json,x,y,width,height FROM cards WHERE id=?', (card.id,)).fetchone()) == before

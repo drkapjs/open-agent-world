@@ -7589,10 +7589,11 @@
     "Loaded",
     "已加载"
   ],
-  "Adds Legion templates. Restart to use this Pack.": [
-    "Adds Legion templates. Restart to use this Pack.",
-    "添加军团模板，重启后即可使用。"
+  "Adds reusable cards or Legion templates.": [
+    "Adds reusable cards or Legion templates.",
+    "添加可复用的卡牌或军团模板。"
   ],
+  "Available after installation": ["Available after installation", "安装后即可使用"],
   "Runs application code. Install only from a trusted source.": [
     "Runs application code. Install only from a trusted source.",
     "此卡包会运行程序代码，请确认来源可信。"

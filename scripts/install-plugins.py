@@ -130,12 +130,11 @@ def main():
                   + "\n".join(failed), file=sys.stderr)
         return
     command = ["uv", "pip", "install", "--no-deps", "--python", args.python]
-    # Passive declarations have no Python distribution to install. Their
-    # dependencies still use PREPARE_DECLARED and the existing adapter manager.
-    adapter_paths = [path for path in paths if not (
-        (path / 'oaw.pack.toml').is_file()
-        and tomllib.loads((path / 'oaw.pack.toml').read_text(encoding='utf-8')).get('contributions', {}).get('cards')
-        and not tomllib.loads((path / 'pyproject.toml').read_text(encoding='utf-8')).get('project', {}).get('entry-points', {}).get('open_agent_world.plugins'))]
+    # Schema 3 source discovery already adds the source path. Installing an
+    # editable copy repeats that authority and leaves stale entrypoint metadata.
+    # Legacy sources and packaged desktop targets still need distribution code.
+    adapter_paths = [path for path in paths if not (path / 'oaw.pack.toml').is_file() or (args.target
+        and tomllib.loads((path / 'pyproject.toml').read_text(encoding='utf-8')).get('project', {}).get('entry-points', {}).get('open_agent_world.plugins'))]
     if args.dry_run:
         command.append("--dry-run")
     if args.constraint:

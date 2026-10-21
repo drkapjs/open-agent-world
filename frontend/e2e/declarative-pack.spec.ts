@@ -25,13 +25,17 @@ test('install local declarative Pack through the existing Library installer', as
     const status = await (await page.request.get('/api/packs')).json();
     return status.versions.some((v: { id: string; selected: boolean }) => v.id === 'example.notes' && v.selected);
   }).toBe(true);
+  // Existing page, no navigation or reload: exercise the Library update event.
+  await expect(library.locator('[data-pack-id="example.notes.default"]')).toBeVisible();
+  expect((await (await page.request.get('/api/packs')).json()).restart_required).toBe(false);
 });
 
-test('restart activates declarative UI and saves configuration without a host rebuild', async ({ page, request }) => {
+test('install activates declarative UI without restarting the host and saves configuration', async ({ page, request }) => {
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
   await openWorld(page);
   const catalog = await (await request.get('/api/catalog')).json();
+  expect((await (await request.get('/api/packs')).json()).restart_required).toBe(false);
   expect(catalog.node_types.some((n: { id: string }) => n.id === 'example.notes')).toBe(true);
   await page.getByRole('button', { name: 'Open Pack and Card Library' }).click();
   const library = page.getByRole('dialog', { name: 'Pack & Card Library' });

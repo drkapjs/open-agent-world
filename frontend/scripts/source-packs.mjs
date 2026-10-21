@@ -100,7 +100,17 @@ export async function dependencyFingerprint(root) {
 export async function preparePack(pack, { install = true } = {}) {
   const { manifest, lock, required } = await projectDependencies(pack.root);
   const sdkReference = manifest.devDependencies?.['@oaw/plugin-api'];
-  if (!sdkReference?.startsWith('file:')) throw new Error(`Source Pack must declare the checkout SDK: ${pack.owner}`);
+  if (!sdkReference) throw new Error(`Declare the versioned @oaw/plugin-api SDK: ${pack.owner}`);
+  // Registry versions and published tarballs use the project's ordinary npm
+  // lockfile. Checkout junctions are only an optional local cache optimization.
+  const sdkDirectory = sdkReference.startsWith('file:') && await exists(path.join(pack.root, sdkReference.slice(5), 'package.json'));
+  if (!sdkDirectory) {
+    try { await checkProject(pack.root); return; }
+    catch (error) { if (!install) throw error; }
+    await runNpm(['ci', '--include=dev', '--ignore-scripts', '--no-audit', '--no-fund'], pack.root);
+    await checkProject(pack.root);
+    return;
+  }
   const sdk = path.resolve(pack.root, sdkReference.slice(5));
   const modules = path.join(pack.root, 'node_modules');
   const cache = path.join(frontendRoot, 'node_modules');

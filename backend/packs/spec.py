@@ -581,20 +581,21 @@ def read_source_pack(root: Path) -> PackSpec:
     contributions = Contributions(cards=tuple(cards))
     node_types = declaration.plugin.node_types
     if cards:
-        if entrypoints or declaration.dependencies or len(packs) != 1:
-            raise ValueError("Declarative cards use one Pack and no Python entrypoint or plugin dependencies; use the advanced Plugin API for these contracts")
+        if len(packs) != 1 or (declaration.dependencies and not entrypoints):
+            raise ValueError("Declarative cards use one Pack; plugin dependencies require an advanced entrypoint")
         inferred = tuple(card.id for card in cards)
-        if node_types is not None and set(node_types) != set(inferred):
+        if node_types is not None and (not set(inferred) <= set(node_types) or (not entrypoints and set(node_types) != set(inferred))):
             raise ValueError("Declared node_types disagree with contributions.cards")
-        node_types = inferred
+        node_types = node_types if entrypoints else inferred
         from backend.plugins.declarative import config_model
         for card in cards:
             config_model(card.config_schema)().model_dump(mode="json")
     compatibility = declaration.compatibility
     if cards:
-        compatibility = compatibility or CompatibilitySpec(plugin_api="1.37")
-        if Version(compatibility.plugin_api) < Version("1.37"):
-            raise ValueError("Declarative cards require Plugin API 1.37 or newer")
+        required_api = '1.38' if entrypoints else '1.37'
+        compatibility = compatibility or CompatibilitySpec(plugin_api=required_api)
+        if Version(compatibility.plugin_api) < Version(required_api):
+            raise ValueError(f"These declarative contributions require Plugin API {required_api} or newer")
     if declaration.distribution.version is not None and declaration.distribution.version != version:
         raise ValueError("oaw.pack.toml and pyproject.toml versions disagree")
     if declaration.components.backend.project != "pyproject.toml":

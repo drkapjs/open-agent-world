@@ -68,10 +68,12 @@ def test_declared_pack_uses_shared_manager_instead_of_setup_hook(installer, monk
         args += ["--target", str(tmp_path / "payload")]
     monkeypatch.setattr(sys, "argv", args)
     module.main()
-    assert len(calls) == 2
-    assert calls[1][2] == module.PREPARE_DECLARED
-    assert module.SETUP_HOOKS not in calls[1]
-    assert calls[1][-2:] == [str(plugin.resolve()), str(tmp_path / "payload") if target else ""]
+    assert len(calls) == (2 if target else 1)
+    assert calls[-1][2] == module.PREPARE_DECLARED
+    assert module.SETUP_HOOKS not in calls[-1]
+    assert calls[-1][-2:] == [str(plugin.resolve()), str(tmp_path / "payload") if target else ""]
+    if not target:
+        assert not any('--editable' in call for call in calls)
 
 
 def test_declared_pack_dry_run_never_prepares_environments(installer, monkeypatch):
@@ -79,7 +81,7 @@ def test_declared_pack_dry_run_never_prepares_environments(installer, monkeypatc
     (plugin / "oaw.pack.toml").write_text("schema_version = 3\n", encoding="utf-8")
     monkeypatch.setattr(sys, "argv", ["install-plugins.py", str(plugin), "--dry-run"])
     module.main()
-    assert len(calls) == 1
+    assert calls == []
 
 
 def test_generic_preparation_checks_declaration_and_preserves_desktop_bundle(installer, monkeypatch, tmp_path):
@@ -153,7 +155,7 @@ def test_installer_passes_development_profile_to_destination_interpreter(install
     (plugin / 'oaw.pack.toml').write_text('schema_version=3\n', encoding='utf-8')
     monkeypatch.setattr(sys, 'argv', ['install-plugins.py', str(plugin), '--python', 'destination-python', '--profile', 'pack-dev'])
     module.main()
-    assert calls[1][-3:] == [str(plugin.resolve()), '', 'pack-dev']
+    assert calls[0][-3:] == [str(plugin.resolve()), '', 'pack-dev']
 
 
 def test_additional_plugin_keeps_defaults_and_deduplicates_paths(installer, monkeypatch, tmp_path):

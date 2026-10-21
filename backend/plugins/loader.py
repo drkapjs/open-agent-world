@@ -3,7 +3,6 @@ from __future__ import annotations
 import sys
 import logging
 import os
-import sqlite3
 import tomllib
 from importlib.metadata import EntryPoint, entry_points
 from pathlib import Path
@@ -30,7 +29,9 @@ def create_plugin(factory, *, data_root=None, source_root=None):
 def _failure(registry, identifier, origin, phase, exc, *, owner=None):
     # Storage corruption and resource exhaustion are host failures, including
     # when surfaced through plugin code. Never turn them into optional warnings.
-    if phase == 'accounting' or isinstance(exc, (sqlite3.Error, MemoryError)):
+    from backend.plugins.failures import raise_if_unsafe
+    raise_if_unsafe(exc)
+    if phase == 'accounting':
         raise exc
     logging.getLogger(__name__).error("Plugin %s unavailable during %s (%s): %s", identifier, phase, origin, exc)
     registry.load_failures.append(dict(id=identifier, owner=owner, source=str(origin),
@@ -46,7 +47,7 @@ def _check_strict(registry, strict):
 def load_plugin_registry(plugin_directory: Path | None = None, *, plugin_directories: tuple[Path, ...] = (),
                          data_root: Path | None = None, load_installed: bool = True,
                          load_unenrolled_sources: bool = False, strict: bool = False,
-                         core_only: bool = False) -> PluginRegistry:
+                         core_only: bool = False, load_entry_points: bool = True) -> PluginRegistry:
     """Discover metadata first; isolate optional activation failures per owner.
 
     Core registration and host persistence errors remain fatal. Strict mode is
@@ -67,7 +68,7 @@ def load_plugin_registry(plugin_directory: Path | None = None, *, plugin_directo
     for directory in dict.fromkeys((directory, *plugin_directories)):
         if not directory.is_dir():
             continue
-        for package in sorted(directory.iterdir()):
+        for package in ([directory] if (directory / 'pyproject.toml').is_file() else sorted(directory.iterdir())):
             manifest = package / "pyproject.toml"
             if not package.is_dir() or not manifest.is_file() or package.resolve() in seen_roots:
                 continue
@@ -117,8 +118,8 @@ def load_plugin_registry(plugin_directory: Path | None = None, *, plugin_directo
             except (Exception, SystemExit) as exc:
                 source_specs[manifest] = None
                 _failure(registry, package.name, manifest, "discovery", exc)
-    discovered = entry_points()
-    selected = discovered.select(group=ENTRY_POINT_GROUP) if hasattr(discovered, "select") else discovered.get(ENTRY_POINT_GROUP, ())
+    discovered = entry_points() if load_entry_points else ()
+    selected = discovered.select(group=ENTRY_POINT_GROUP) if hasattr(discovered, "select") else discovered.get(ENTRY_POINT_GROUP, ()) if isinstance(discovered, dict) else ()
     local_keys = {(entry.name, entry.value) for entry, _ in local if entry is not None}
     candidates = list(local)
     for entry in sorted(selected, key=lambda item: item.name):
@@ -225,14 +226,33 @@ def load_plugin_registry(plugin_directory: Path | None = None, *, plugin_directo
     return registry
 
 
-def load_installed_packs(registry: PluginRegistry, data_root: Path, *, strict: bool = False) -> None:
+def _record_installed(registry, manager, manifest):
+    from urllib.parse import quote
+    from backend.packs.planning import manifest_spec
+    registry.installed_packs[manifest.id] = manifest
+    registry.runtime_requirements[manifest.owner_id] = manifest.runtime.sandbox.python
+    registry.pack_specs[manifest.owner_id] = manifest_spec(manifest)
+    registry.pack_roots[manifest.owner_id] = manager.version_path(manifest.id, manifest.version)
+    registry.pack_sources[manifest.owner_id] = 'installed'
+    if manifest.entrypoints:
+        registry.frontend_modules[manifest.owner_id] = {
+            'version': manifest.version, 'api_version': manifest.compatibility.frontend_api,
+            'distribution_id': manifest.id,
+            'url': f"/api/packs/{manifest.id}/versions/{quote(manifest.version, safe='!')}/{quote(manifest.entrypoints.frontend)}",
+        }
+
+
+def load_installed_packs(registry: PluginRegistry, data_root: Path, *, strict: bool = False, safe_only: bool = False) -> None:
     """Discover immutable wheels from user data; never install into host Python."""
     import importlib.util
-    from urllib.parse import quote
     from backend.packs.installation import PackInstallationManager
 
     manager = PackInstallationManager(data_root, registry)
     pending = manager.selected()
+    if safe_only:
+        # Never replace a loaded owner, run author Python, or touch live work.
+        pending = {key: manifest for key, manifest in pending.items() if not registry.has_plugin(manifest.owner_id)
+            and (manifest.kind == 'content' or (manager._startup_receipt(manifest) or {}).get('passive_spec'))}
     # Persisted enable/disable state is reconciled by CardLibraryStore next.
     # Environment bootstrap validates that enabled set, before any mutation.
     from backend.packs.planning import manifest_spec
@@ -260,14 +280,21 @@ def load_installed_packs(registry: PluginRegistry, data_root: Path, *, strict: b
                 manager._check_selection({**registry.installed_packs, manifest.id: manifest}, check_requirements=False)
                 phase = "environment"
                 entrypoint = manager.startup_entrypoint(manifest)
-                if manifest.kind == "content":
-                    from backend.packs.content import content_plugin
-                    root = manager.version_path(manifest.id, manifest.version)
-                    plugin = content_plugin(manifest, {name: (root / name).read_bytes() for name in manifest.content.paths}, registry)
+                passive_spec = (manager._startup_receipt(manifest) or {}).get('passive_spec')
+                if manifest.kind == "content" or passive_spec:
+                    if passive_spec:
+                        from backend.plugins.declarative import declarative_plugin
+                        plugin = declarative_plugin(passive_spec)
+                        if (plugin.descriptor.id, plugin.descriptor.version, plugin.descriptor.plugin_api_version) != (
+                                manifest.owner_id, manifest.version, manifest.compatibility.plugin_api):
+                            raise ValueError('Passive declaration differs from installed ownership or compatibility')
+                    else:
+                        from backend.packs.content import content_plugin
+                        root = manager.version_path(manifest.id, manifest.version)
+                        plugin = content_plugin(manifest, {name: (root / name).read_bytes() for name in manifest.content.paths}, registry)
                     phase = "registration"
                     registry.install(plugin, distribution=manifest)
-                    registry.installed_packs[manifest.id] = manifest
-                    registry.runtime_requirements[manifest.id] = ()
+                    _record_installed(registry, manager, manifest)
                     continue
                 origin = manager.version_path(manifest.id, manifest.version) / manifest.entrypoints.backend
                 if manifest.schema_version == 3:
@@ -307,18 +334,12 @@ def load_installed_packs(registry: PluginRegistry, data_root: Path, *, strict: b
                         or (descriptor.python_requirements and descriptor.python_requirements != manifest.runtime.sandbox.python)):
                     raise ValueError("Backend descriptor disagrees with distribution identity, compatibility or dependencies")
                 phase = "registration"
-                registry.install(plugin, distribution=manifest)
-                registry.installed_packs[manifest.id] = manifest
-                registry.runtime_requirements[manifest.owner_id] = manifest.runtime.sandbox.python
-                from backend.packs.planning import manifest_spec
-                registry.pack_specs[manifest.owner_id] = manifest_spec(manifest)
-                registry.pack_roots[manifest.owner_id] = manager.version_path(manifest.id, manifest.version)
-                registry.pack_sources[manifest.owner_id] = "installed"
-                registry.frontend_modules[manifest.owner_id] = {
-                    "version": manifest.version, "api_version": manifest.compatibility.frontend_api,
-                    "distribution_id": manifest.id,
-                    "url": f"/api/packs/{manifest.id}/versions/{quote(manifest.version, safe='!')}/{quote(manifest.entrypoints.frontend)}",
-                }
+                contribution = (manager._startup_receipt(manifest) or {}).get('contribution_spec')
+                if contribution:
+                    from backend.packs.spec import PackSpec
+                    contribution = PackSpec.model_validate(contribution)
+                registry.install(plugin, distribution=manifest, source_spec=contribution)
+                _record_installed(registry, manager, manifest)
             except (Exception, SystemExit) as exc:
                 sys.path[:] = previous_path
                 _failure(registry, manifest.id, manager.version_path(manifest.id, manifest.version), phase, exc, owner=manifest.owner_id)

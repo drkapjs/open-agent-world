@@ -47,7 +47,7 @@ def test_setup_routes_all_platforms_through_persistent_interpreter(scripts, monk
         return SimpleNamespace(returncode=0 if ready or "--check-host" not in command else 1)
 
     monkeypatch.setattr(setup.subprocess, "run", run)
-    args = ["--plugin-path", "external plugin"]
+    args = ["--with-plugins", "--plugin-path", "external plugin"]
     if profile:
         args += ["--profile", profile]
     if skip_build:
@@ -78,6 +78,30 @@ def test_setup_stops_after_host_failure(scripts, monkeypatch):
     with pytest.raises(subprocess.CalledProcessError):
         setup.main([])
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize('explicit', [False, True])
+def test_setup_defaults_to_core_or_only_requested_project(scripts, monkeypatch, tmp_path, explicit):
+    setup, _, _ = scripts
+    python = tmp_path / 'python'
+    python.touch()
+    project = tmp_path / 'external'
+    project.mkdir()
+    (project / 'pyproject.toml').touch()
+    monkeypatch.setattr(setup, 'backend_python', lambda: python)
+    monkeypatch.setattr(setup, 'prerequisites', lambda **kw: {key: key for key in ('uv', 'node', 'npm')})
+    calls = []
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        return SimpleNamespace(returncode=0)
+    monkeypatch.setattr(setup.subprocess, 'run', run)
+    setup.main(['--skip-build', *(['--plugin-path', str(project)] if explicit else [])])
+    assert '--extra' not in calls[0][0]
+    installs = [command for command, _ in calls if any('install-plugins.py' in value for value in command)]
+    assert len(installs) == int(explicit)
+    if explicit:
+        assert installs[0][-1] == str(project) and '--additional-path' not in installs[0]
+    assert all(kw['env']['OPEN_AGENT_WORLD_CORE_ONLY'] == '1' for cmd, kw in calls if cmd[:2] == ['npm', 'run'])
 
 
 @pytest.mark.parametrize("install", [False, True])

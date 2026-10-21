@@ -142,6 +142,12 @@ jobs:
         env:
           PLAYWRIGHT_CHANNEL: chromium
         run: npm run test:e2e:packs
+      - name: Upload the versioned public Pack SDK
+        uses: actions/upload-artifact@v4
+        with:
+          name: oaw-plugin-api-1.0.0-${{ github.sha }}
+          path: .outputs/oaw-plugin-api-1.0.0.tgz
+          if-no-files-found: error
       - name: Build and install an external declarative Pack
         env:
           PLAYWRIGHT_CHANNEL: chromium

@@ -40,6 +40,8 @@ def build(source: Path, output: Path) -> Path:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
+    initializer = commands.add_parser('init', help='Create an independent Schema 3 project from the Notes template')
+    initializer.add_argument('directory', type=Path)
     builder = commands.add_parser('build')
     builder.add_argument('source', type=Path)
     builder.add_argument('output', type=Path)
@@ -64,8 +66,11 @@ def main():
     verifier.add_argument('--data-root', type=Path, required=True)
     verifier.add_argument('--plugin-path', type=Path, action='append', default=[])
     checker = commands.add_parser('check', help='Strictly activate plugins in a disposable process; any optional failure exits nonzero')
+    checker.add_argument('source', type=Path, nargs='?', help='Check only this project, excluding unrelated installed entrypoints')
     checker.add_argument('--plugin-path', type=Path, action='append', default=[])
     checker.add_argument('--data-root', type=Path)
+    checker.add_argument('--lifecycle', action='store_true', help='Restore and shut down cards in an offline test profile')
+    checker.add_argument('--card', action='append', default=[], help='Create a test card before lifecycle checks (repeatable)')
     for name in ('install', 'activate', 'status', 'uninstall-plan', 'gc'):
         command = commands.add_parser(name)
         command.add_argument('--data-root', type=Path, required=True)
@@ -77,7 +82,12 @@ def main():
         elif name == 'uninstall-plan':
             command.add_argument('id')
     args = parser.parse_args()
-    if args.command == 'build':
+    if args.command == 'init':
+        import shutil
+        template = Path(__file__).resolve().parents[1] / 'examples/packs/notes'
+        shutil.copytree(template, args.directory)
+        print(args.directory.resolve())
+    elif args.command == 'build':
         print(build(args.source, args.output))
     elif args.command == 'build-project':
         from backend.packs.build import build_project
@@ -96,8 +106,39 @@ def main():
     elif args.command == 'schema':
         print(json.dumps(PackManifest.model_json_schema(), indent=2))
     elif args.command == 'check':
+        if (args.lifecycle or args.card) and args.data_root is None:
+            # Loaded code pins managed resources for its entire process lifetime.
+            # Let the child exit before deleting the disposable profile (Windows
+            # cannot remove live lease locks, and releasing them early is unsafe).
+            import subprocess
+            import sys
+            from tempfile import TemporaryDirectory
+            with TemporaryDirectory(prefix='oaw-pack-check-') as temporary:
+                subprocess.run([sys.executable, str(Path(__file__).resolve().parents[1] / 'scripts/oaw-pack.py'),
+                                *sys.argv[1:], '--data-root', temporary], check=True)
+            return
         from backend.plugins.loader import load_plugin_registry
-        registry = load_plugin_registry(plugin_directories=tuple(args.plugin_path), data_root=args.data_root, strict=True)
+        registry = load_plugin_registry(plugin_directory=args.source, plugin_directories=tuple(args.plugin_path),
+            data_root=args.data_root, strict=True, load_entry_points=args.source is None)
+        if args.lifecycle or args.card:
+            import asyncio
+            from backend.config import Settings
+            from backend.services import create_services
+            from backend.world.models import CardCreate
+            from backend.plugins.loader import _check_strict
+            services = create_services(Settings.for_data_root(args.data_root), plugins=registry)
+            async def check_lifecycle():
+                try:
+                    for type_id in args.card:
+                        services.world.create_card(CardCreate(type=type_id))
+                    await services.startup()
+                    _check_strict(registry, True)
+                finally:
+                    try:
+                        await services.shutdown()
+                    finally:
+                        services.close()
+            asyncio.run(check_lifecycle())
         print(json.dumps({'plugins': [item.id for item in registry.plugins()], 'failures': registry.load_failures}, indent=2))
     elif args.command == 'verify':
         from backend.packs.verification import verify_profile

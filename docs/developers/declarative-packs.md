@@ -5,7 +5,7 @@ optional independent UI. OAW derives the plugin owner, Pack and card metadata
 and compiles them into the existing `PluginDefinition`, `NodeTypeDefinition`,
 `PackDefinition` and `PluginRegistry`. No additional plugin manager is involved.
 
-For a complete external project, copy
+For a complete external project, run `pack init /path/to/my-notes` or copy
 [`examples/packs/notes`](https://github.com/theAfish/open-agent-world/tree/dev/examples/packs/notes).
 For lifecycle callbacks, relationships, capabilities, documents, execution,
 providers or custom configuration validators, keep using the
@@ -66,9 +66,38 @@ Objects reject undeclared properties unless `additionalProperties=true`.
 Unknown keywords fail explicitly rather than weakening validation.
 
 Declarative cards require Plugin API 1.37, inferred when `[compatibility]` is
-omitted. Advanced plugins keep their existing compatible API versions. This
-initial contribution form owns one Pack and has no Python entrypoint or
-cross-plugin dependency. Use the existing advanced API for those contracts.
+omitted. Pure declarations own one Pack and have no Python entrypoint or
+cross-plugin dependency. Advanced plugins keep their existing compatible API
+versions; mixing contributions and Python requires API 1.38.
+
+## Mixed contributions (API 1.38)
+
+Declare multiple cards with repeated `[[contributions.cards]]` tables and distinct
+stable `id` values. Owner, version and the default Pack still come from the project
+and distribution. Do not repeat `plugin.node_types`; if specified, it must describe
+the entire declared and advanced contribution set.
+
+For custom lifecycle, state, capabilities or relationships, keep the existing
+`pyproject.toml` plugin entrypoint. Manifest cards populate the same registration
+collector before its Python `register` hook runs. Extend a declared definition
+without repeating its presentation or configuration metadata:
+
+```python
+from dataclasses import replace
+
+def register(self, registration):
+    card_id = "acme.notes"
+    registration.nodes[card_id] = replace(
+        registration.nodes[card_id], lifecycle=self.lifecycle,
+    )
+    # Existing register_relationship / register_capability / provider APIs work here.
+```
+
+The descriptor must declare API 1.38. Both halves commit atomically; a failed hook
+publishes neither. If no Pack is explicitly registered, the Registry supplies its
+existing default Pack. Structure Viewer demonstrates mixed presentation metadata
+and advanced state, file preview, deployment and tutorial contracts. These Packs
+contain Python code and require restart after installation.
 
 ## Build, install and diagnose
 
@@ -78,13 +107,16 @@ Use the backend interpreter that belongs to OAW. From an external project,
 
 ```bash
 "$OAW_PYTHON" "$OAW_PACK" doctor .
+"$OAW_PYTHON" "$OAW_PACK" check . --lifecycle --card example.note
 "$OAW_PYTHON" "$OAW_PACK" build-project . dist/note-0.1.0.oawpack
 "$OAW_PYTHON" "$OAW_PACK" inspect dist/note-0.1.0.oawpack
 "$OAW_PYTHON" "$OAW_PACK" install dist/note-0.1.0.oawpack --data-root /path/to/test-profile
 ```
 
-Restart OAW to activate the installed release. In a running application, use
-**Pack & Card Library > Install Pack from File**. Each build needs a new output
+Use CLI installation with an offline test profile, then start OAW on that profile.
+In a running application use **Pack & Card Library > Install Pack from File**:
+a new pure declarative Pack activates immediately, including its independently
+built frontend. Updates to already loaded owners require restart. Each build needs a new output
 path; increment `project.version` before distributing an update. `build-project`
 generates a standard adapter wheel and uses the same archive validator and
 installer as advanced plugins.
@@ -93,18 +125,26 @@ For a custom UI, declare `[components.frontend]` and map a card's named surfaces
 for example `frontend = { body = "note" }`. Build using the distributed
 `@oaw/plugin-api` package, then pass `--frontend-dir dist/frontend`. The Notes
 example demonstrates independent React compilation, host configuration updates
-and UI loading without rebuilding OAW.
+and UI loading without rebuilding OAW. CI publishes the versioned SDK tarball as
+an artifact named `oaw-plugin-api-1.0.0-<commit>`. Pin the chosen tarball in your
+project lockfile; the repository's `file:` dependency is not required. A public npm
+release and a standalone installable Python CLI distribution are still deferred.
 
 Python dependencies belong in `project.dependencies`; runtime environments stay
 in existing `[environments.<name>]` declarations. Use `resolve-adapter` and
 `--dependency-wheels` for adapter dependencies. Build commands never implicitly
 install into OAW. Source backend discovery uses `OPEN_AGENT_WORLD_PLUGIN_DIRS`
-(parent directories containing projects); source changes require a host restart.
-External frontend iteration currently uses build/install/restart in a dedicated
-profile. External source frontend hot reload is deferred.
+(project roots or parent directories containing projects); source Python changes
+require a host restart. External frontend iteration uses build/install in a
+dedicated profile, with restart for subsequent versions. External source frontend
+hot reload is deferred.
 
 `doctor` inspects declarations without importing plugin code. `check` performs
 strict activation in its own CLI process and fails if any optional plugin fails.
+`check .` restricts discovery to your project; `--lifecycle --card <type>` adds
+saved-card recovery and shutdown in a temporary profile. Repeat `--card` for
+multiple types. Pass `--data-root` only for an offline test profile; these checks
+execute trusted code and can change that profile's test data.
 `verify` performs explicit integrity verification. Runtime activation failures
 remain visible in the Library with their phase and repair/restart instruction;
 saved cards and connections remain recoverable and cannot grant permissions.
@@ -113,7 +153,8 @@ saved cards and connections remain recoverable and cannot grant permissions.
 
 The Notes acceptance harness copies the project outside OAW, installs a packed
 SDK, builds its UI, packages and inspects the archive, installs through the real
-Library, restarts the host, edits a note, then restarts again to check identity,
+Library, observes the new Pack in the same open page without reload, edits a note
+without restarting the host, then restarts to check identity,
 configuration and geometry. CI runs this alongside the existing advanced
 Greeter acceptance and strict official plugin activation/build checks.
 

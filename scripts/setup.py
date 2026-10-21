@@ -47,10 +47,11 @@ def main(argv=None) -> None:
     parser.add_argument("--profile", type=profile_name, help="Prepare this development profile instead of production data")
     parser.add_argument("--plugin-path", action="append", type=Path, default=[], help="Additional trusted source plugin (repeatable)")
     parser.add_argument("--skip-build", action="store_true", help="Prepare for dev without building the production frontend")
-    parser.add_argument("--core-only", action="store_true", help="Install only Core; omit optional Python runtimes and Packs")
+    parser.add_argument("--core-only", action="store_true", help="Compatibility alias for the default Core-only preparation")
+    parser.add_argument("--with-plugins", action="store_true", help="Explicitly prepare all official Packs and optional Agent SDKs")
     args = parser.parse_args(argv)
-    if args.core_only and args.plugin_path:
-        parser.error("--core-only cannot be combined with --plugin-path")
+    if args.core_only and (args.plugin_path or args.with_plugins):
+        parser.error("--core-only cannot be combined with --plugin-path or --with-plugins")
     paths = []
     for path in args.plugin_path:
         path = (ROOT / path).resolve()
@@ -59,7 +60,7 @@ def main(argv=None) -> None:
         paths.append(path)
     commands = prerequisites(install=True)
     # Keep trusted editable plugins; a host sync must not uninstall them.
-    extras = [] if args.core_only else ["--extra", "adk", "--extra", "litellm"]
+    extras = ["--extra", "adk", "--extra", "litellm"] if args.with_plugins else []
     subprocess.run([commands["uv"], "sync", "--project", str(ROOT / "backend"), "--locked",
                     "--dev", *extras, "--inexact"], cwd=ROOT, check=True)
     python = backend_python()
@@ -69,10 +70,10 @@ def main(argv=None) -> None:
     if args.profile:
         install += ["--profile", args.profile]
     for path in paths:
-        install += ["--additional-path", str(path)]
-    if not args.core_only:
+        install += ["--additional-path", str(path)] if args.with_plugins else [str(path)]
+    if args.with_plugins or paths:
         subprocess.run(install, cwd=ROOT, check=True)
-    build_env = {**os.environ, "OPEN_AGENT_WORLD_CORE_ONLY": "1"} if args.core_only else os.environ.copy()
+    build_env = os.environ.copy() if args.with_plugins else {**os.environ, "OPEN_AGENT_WORLD_CORE_ONLY": "1"}
     build_env["OAW_ALLOW_PACK_FAILURES"] = "1"
     frontend = ROOT / "frontend"
     # This checker uses only Node built-ins, so it also works before npm ci.

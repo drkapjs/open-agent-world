@@ -68,10 +68,24 @@ def config_model(schema: dict):
     return result
 
 
+def contribute_cards(registration, spec):
+    """Populate the same staging collector before an advanced register hook."""
+    from backend.plugins.registry import NodeTypeDefinition
+    for card in spec.contributions.cards:
+        name = card.name or spec.name
+        registration.register_node_type(NodeTypeDefinition(
+            id=card.id, label=name, description=card.description, icon=card.icon, color=card.color,
+            deck_id=card.deck_id or spec.owner + '.cards', deck_label=card.deck_name or spec.name, deck_icon=card.icon,
+            default_name=card.default_name or name, default_size=card.size,
+            default_status=card.default_status or card.statuses[0],
+            statuses=frozenset(card.statuses), config_model=config_model(card.config_schema), frontend=card.frontend,
+            surfaces={'preview': True, 'inspector': True, 'workspace': 'workspace' in card.frontend}))
+
+
 def declarative_plugin(spec):
     """Accept the same normalized Schema 3 declaration in source and wheel form."""
     from backend.packs.spec import PackSpec
-    from backend.plugins.registry import NodeTypeDefinition, PackDefinition, PluginDefinition, PluginDescriptor
+    from backend.plugins.registry import PackDefinition, PluginDefinition, PluginDescriptor
     spec = spec if isinstance(spec, PackSpec) else PackSpec.model_validate(spec)
     if not spec.contributions.cards or spec.entrypoints or spec.dependencies or len(spec.packs) != 1:
         raise ValueError('Expected passive declarative cards in one Pack')
@@ -80,17 +94,7 @@ def declarative_plugin(spec):
                                   python_requirements=spec.legacy_python_requirements)
 
     def register(registration):
-        for card in spec.contributions.cards:
-            name = card.name or spec.name
-            if set(card.frontend) - {'preview', 'body', 'settings', 'workspace'}:
-                raise ValueError('Unknown card frontend surface')
-            registration.register_node_type(NodeTypeDefinition(
-                id=card.id, label=name, description=card.description, icon=card.icon, color=card.color,
-                deck_id=card.deck_id or spec.owner + '.cards', deck_label=card.deck_name or spec.name, deck_icon=card.icon,
-                default_name=card.default_name or name, default_size=card.size,
-                default_status=card.default_status or (card.statuses[0] if card.statuses else ''),
-                statuses=frozenset(card.statuses), config_model=config_model(card.config_schema), frontend=card.frontend,
-                surfaces={'preview': True, 'inspector': True, 'workspace': 'workspace' in card.frontend}))
+        contribute_cards(registration, spec)
         registration.register_pack(PackDefinition(id=spec.packs[0], name=spec.name,
                                                  cards=tuple(card.id for card in spec.contributions.cards)))
     return PluginDefinition(descriptor, register)
