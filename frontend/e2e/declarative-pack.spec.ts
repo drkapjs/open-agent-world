@@ -17,9 +17,13 @@ test('install local declarative Pack through the existing Library installer', as
   await page.getByRole('button', { name: 'Open Pack and Card Library' }).click();
   const library = page.getByRole('dialog', { name: 'Pack & Card Library' });
   await library.getByLabel('Pack file', { exact: true }).setInputFiles(process.env.OAW_PACK_ARTIFACT!);
-  const installed = page.waitForResponse(response => response.url().endsWith('/api/packs/install') && response.request().method() === 'POST');
-  await library.getByRole('button', { name: 'Install Pack', exact: true }).click();
-  const response = await installed;
+  await expect(library.getByRole('region', { name: 'Install Pack', exact: true })).toBeVisible();
+  // The response deadline includes Playwright waiting for the rendered installer
+  // button. CI's full official catalog can still be warming up at that point.
+  const [response] = await Promise.all([
+    page.waitForResponse(response => response.url().endsWith('/api/packs/install') && response.request().method() === 'POST', { timeout: 120000 }),
+    library.getByRole('button', { name: 'Install Pack', exact: true }).click(),
+  ]);
   expect(response.status()).toBe(201);
   await expect.poll(async () => {
     const status = await (await page.request.get('/api/packs')).json();

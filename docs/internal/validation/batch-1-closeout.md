@@ -148,6 +148,14 @@ production UI acceptance. It now uploads the public SDK tarball and tests Notes
 without a restart between installation and use. Consult the workflow run for the
 tested commit; local checks alone do not establish a remote CI pass.
 
+The first complete CI attempt on `dd55852f` exposed a Notes browser-test deadline:
+the response wait started before the full official catalog had finished rendering
+the clickable installer. The server returned 201 after about 3.6 seconds, but the
+15-second browser deadline had already elapsed. The test now waits for the panel
+and uses the existing installation-acceptance 120-second response budget, while
+still asserting the real response, same-page catalog and persistence. Core runtime
+failure and provider cleanup timeout checks also passed in a separate 21-test run.
+
 ## Remaining independent work
 
 - Publish a supported standalone Python CLI and public SDK release channel.
