@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import shutil
 import sys
+import tomllib
 
 from fastapi.testclient import TestClient
 import pytest
@@ -222,8 +223,32 @@ def test_external_cli_init_and_exact_project_lifecycle(tmp_path, monkeypatch, ca
     root = tmp_path / 'independent notes'
     monkeypatch.setattr(sys, 'argv', ['pack', 'init', str(root)])
     main()
-    assert read_source_pack(root).owner == 'example.notes'
+    spec = read_source_pack(root)
+    assert spec.owner.startswith('local.independent-notes-')
+    assert spec.owner == spec.distribution_id == spec.node_types[0]
+    assert spec.packs == (spec.owner + '.default',)
+    assert tomllib.loads((root / 'pyproject.toml').read_text())['project']['name'] == (
+        json.loads((root / 'package.json').read_text())['name']) == spec.owner.replace('.', '-')
+    assert '--card ' + spec.owner in (root / 'README.md').read_text()
     monkeypatch.setattr(loader, 'entry_points', lambda: pytest.fail('Exact project check imported unrelated installed entrypoints'))
-    monkeypatch.setattr(sys, 'argv', ['pack', 'check', str(root), '--lifecycle', '--card', 'example.notes'])
+    monkeypatch.setattr(sys, 'argv', ['pack', 'check', str(root), '--lifecycle', '--card', spec.owner])
     main()
-    assert 'example.notes' in capfd.readouterr().out
+    assert spec.owner in capfd.readouterr().out
+
+
+@pytest.mark.parametrize('name', ['My_Notes', '123 notes', '笔记', 'a' * 150])
+def test_initialized_projects_have_distinct_buildable_identities(tmp_path, name):
+    from open_agent_world.pack import init_project
+    roots = [init_project(tmp_path / parent / name) for parent in ('first', 'second')]
+    specs = [read_source_pack(root) for root in roots]
+    assert specs[0].owner != specs[1].owner
+    frontend = tmp_path / 'compiled'
+    frontend.mkdir()
+    (frontend / 'index.js').write_text('export default {apiVersion:1,views:{}};')
+    for root, spec in zip(roots, specs):
+        archive = inspect_archive(build_project(root, root / 'note.oawpack', frontend_dir=frontend).read_bytes())
+        assert archive.manifest.id == spec.owner
+    original = (roots[0] / 'oaw.pack.toml').read_bytes()
+    with pytest.raises(FileExistsError):
+        init_project(roots[0])
+    assert (roots[0] / 'oaw.pack.toml').read_bytes() == original

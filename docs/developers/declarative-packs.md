@@ -5,8 +5,14 @@ optional independent UI. OAW derives the plugin owner, Pack and card metadata
 and compiles them into the existing `PluginDefinition`, `NodeTypeDefinition`,
 `PackDefinition` and `PluginRegistry`. No additional plugin manager is involved.
 
-For a complete external project, run `pack init /path/to/my-notes` or copy
-[`examples/packs/notes`](https://github.com/theAfish/open-agent-world/tree/dev/examples/packs/notes).
+For a complete external project, run `pack init /path/to/my-notes`. It uses
+[`examples/packs/notes`](https://github.com/theAfish/open-agent-world/tree/dev/examples/packs/notes)
+and assigns a directory-based ID such as `local.my-notes-<random suffix>`, with
+matching Python and npm project names. The suffix distinguishes separate projects
+even when their directories have the same name. The generated README uses the new
+identity. If copying the example manually, change `example.notes` and both project
+names before installing it alongside another project. Keep the chosen identity
+stable across releases.
 For lifecycle callbacks, relationships, capabilities, documents, execution,
 providers or custom configuration validators, keep using the
 [advanced Python API](../plugins.md).

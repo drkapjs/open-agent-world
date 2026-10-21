@@ -12,8 +12,14 @@ async function openWorld(page: Page) {
   if (first) await page.getByRole('button', { name: 'Start blank', exact: true }).click();
 }
 
-test('install local declarative Pack through the existing Library installer', async ({ page }) => {
+test('install local declarative Pack, place and edit it on the same page', async ({ page, request }) => {
+  const errors: string[] = [];
+  page.on('pageerror', error => errors.push(error.message));
   await openWorld(page);
+  const navigations: string[] = [];
+  page.on('framenavigated', frame => {
+    if (frame === page.mainFrame()) navigations.push(frame.url());
+  });
   await page.getByRole('button', { name: 'Open Pack and Card Library' }).click();
   const library = page.getByRole('dialog', { name: 'Pack & Card Library' });
   await library.getByLabel('Pack file', { exact: true }).setInputFiles(process.env.OAW_PACK_ARTIFACT!);
@@ -32,17 +38,8 @@ test('install local declarative Pack through the existing Library installer', as
   // Existing page, no navigation or reload: exercise the Library update event.
   await expect(library.locator('[data-pack-id="example.notes.default"]')).toBeVisible();
   expect((await (await page.request.get('/api/packs')).json()).restart_required).toBe(false);
-});
-
-test('install activates declarative UI without restarting the host and saves configuration', async ({ page, request }) => {
-  const errors: string[] = [];
-  page.on('pageerror', error => errors.push(error.message));
-  await openWorld(page);
   const catalog = await (await request.get('/api/catalog')).json();
-  expect((await (await request.get('/api/packs')).json()).restart_required).toBe(false);
   expect(catalog.node_types.some((n: { id: string }) => n.id === 'example.notes')).toBe(true);
-  await page.getByRole('button', { name: 'Open Pack and Card Library' }).click();
-  const library = page.getByRole('dialog', { name: 'Pack & Card Library' });
   const pack = library.locator('[data-pack-id="example.notes.default"]');
   await pack.getByRole('button', { name: 'Tear open Notes', exact: true }).click();
   await pack.getByRole('button', { name: 'View pack Notes', exact: true }).click();
@@ -56,6 +53,7 @@ test('install activates declarative UI without restarting the host and saves con
   await page.getByLabel('Note message', { exact: true }).fill('Persisted declarative note');
   await page.getByRole('button', { name: 'Save note', exact: true }).click();
   await expect(page.locator('[data-note-output]')).toHaveText('Persisted declarative note');
+  expect(navigations).toEqual([]);
   const cards = await (await request.get('/api/nodes')).json();
   const card = cards.find((n: { type: string }) => n.type === 'example.notes');
   await writeFile(`${process.env.OAW_PACK_E2E_DATA_ROOT}/note-state.json`, JSON.stringify(card));

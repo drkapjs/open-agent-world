@@ -5,11 +5,33 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import re
+import shutil
+from uuid import uuid4
 from zipfile import ZIP_DEFLATED, ZipFile
 import io
 
 from backend.packs.archive import inspect_archive
 from backend.packs.manifest import PackManifest
+
+
+def init_project(directory: Path) -> Path:
+    """Copy the declarative template with a new, project-local identity."""
+    directory = directory.resolve()
+    slug = re.sub(r'[^a-z0-9]+', '-', directory.name.lower()).strip('-') or 'pack'
+    if not slug[0].isalpha():
+        slug = 'pack-' + slug
+    pack_id = f'local.{slug[:80].rstrip("-")}-{uuid4().hex[:12]}'
+    project_name = pack_id.replace('.', '-')
+    template = Path(__file__).resolve().parents[1] / 'examples/packs/notes'
+    shutil.copytree(template, directory, ignore=shutil.ignore_patterns('node_modules', 'dist', 'package-lock.json'))
+    for name in ('oaw.pack.toml', 'pyproject.toml', 'package.json', 'README.md'):
+        path = directory / name
+        content = path.read_text(encoding='utf-8').replace('example.notes', pack_id).replace('example-notes', project_name)
+        if name == 'oaw.pack.toml':
+            content = content.replace('name = "Notes"', 'name = ' + json.dumps(directory.name[:120], ensure_ascii=False))
+        path.write_text(content, encoding='utf-8')
+    return directory
 
 
 def build(source: Path, output: Path) -> Path:
@@ -83,10 +105,7 @@ def main():
             command.add_argument('id')
     args = parser.parse_args()
     if args.command == 'init':
-        import shutil
-        template = Path(__file__).resolve().parents[1] / 'examples/packs/notes'
-        shutil.copytree(template, args.directory)
-        print(args.directory.resolve())
+        print(init_project(args.directory))
     elif args.command == 'build':
         print(build(args.source, args.output))
     elif args.command == 'build-project':

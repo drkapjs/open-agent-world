@@ -8,8 +8,11 @@ also its default plugin owner and single card ID; its Pack ID defaults to
 Use an OAW checkout/interpreter that supports Plugin API 1.37. Define `OAW_PYTHON`
 as that interpreter and `OAW_PACK` as the absolute path to `scripts/oaw-pack.py`.
 The wrapper invokes the same `python -m open_agent_world.pack` CLI and keeps your
-working directory. `pack init /path/to/my-notes` copies this template into a new
-independent project. Download the versioned SDK artifact from a successful OAW CI
+working directory. `pack init /path/to/my-notes` creates a new project with a
+directory-based local ID plus a random suffix, matching Python/npm project names,
+and updated commands in its README. A manual copy keeps the example identity;
+change it and both project names before creating independent releases. Keep the
+chosen identity stable across versions. Download the versioned SDK artifact from a successful OAW CI
 run and pin its tarball in your lockfile. SDK tarballs can also be built with
 `npm --prefix <OAW>/frontend run build:pack-sdk` followed by
 `npm pack <OAW>/frontend/pack-sdk --pack-destination <output>`.

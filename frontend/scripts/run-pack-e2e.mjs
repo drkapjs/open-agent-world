@@ -97,8 +97,7 @@ async function run(phase) {
 try {
   await start();
   await run(source === 'local' ? 'install local' : 'install remote');
-  if (!declarative) { await stop(); await start(); }
-  await run(declarative ? 'install activates' : 'restart activates');
+  if (!declarative) { await stop(); await start(); await run('restart activates'); }
   if (declarative) { await stop(); await start(); await run('saved note'); }
   if (marketplace) { await marketplace.stop(); marketplace = undefined; await run('Store offline'); }
   const receipt = { status: 'passed', source, productionEndpoint, marketplaceOverride: official ? false : Boolean(env.OPEN_AGENT_WORLD_MARKETPLACE_URL), desktopPayload: payload ?? null, ...build, dataRoot, url, sha256: expectedSha };
