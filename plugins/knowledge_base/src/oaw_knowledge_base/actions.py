@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .client import DEFAULT_COLLECTION, collection, open_client
 from .errors import KnowledgeError
+from .graph_store import LAYERS
 from .markdown import available_engines
 from .pipelines import PIPELINE_NAME, submit_markdown_job
 
@@ -150,6 +151,12 @@ def overview(context, arguments):
                 group_id=str(scope) if scope else None, limit=500)),
             "experiment_records": len(kb.oaw_experiments.list(
                 group_id=str(scope) if scope else None, limit=500)),
+            "insights": len(kb.oaw_insights.list(
+                group_id=str(scope) if scope else None, limit=500)),
+            "published_insights": len(kb.oaw_insights.list(
+                group_id=str(scope) if scope else None, status="published", limit=500)),
+            "layers": {layer: kb.oaw_graph_store.counts(group_id=scope, layer=layer)
+                       for layer in LAYERS},
         },
         "active_jobs": len([job for job in jobs if job.status in ACTIVE_JOBS]),
     })
@@ -1290,38 +1297,42 @@ class GraphQuery(Request):
     direction: Literal["both", "out", "in"] = "both"
     limit: int = Field(default=200, ge=1, le=1000)
     group_id: str | None = None
+    # "literature": facts an approved draft published. "experiment": insights
+    # published from experiment records and the record/field nodes they cite.
+    # Omitted: the whole graph, both layers.
+    layer: Literal["literature", "experiment"] | None = None
 
 
 def graph(context, arguments):
     request = GraphQuery.model_validate(arguments)
     kb = _client(context)
     scope = _any_group(request.group_id)
+    store = kb.oaw_graph_store
+    narrowed = scope is not None or request.layer is not None
     if request.operation == "traverse":
         if not request.entity_id:
             raise KnowledgeError("entity_id is required to traverse")
         result = kb.graph.traverse(_uuid(request.entity_id, "entity_id"),
                                    max_depth=request.max_depth, direction=request.direction)
         all_entities, all_relations = list(result.entities), list(result.relations)
-        if scope is not None:
-            # kb.graph.traverse walks the whole store; group is a soft tag on
+        if narrowed:
+            # kb.graph.traverse walks the whole store; group and layer are tags on
             # published elements (see graph_store.py), so narrow after the walk
-            # rather than teaching mkb's traversal about it.
-            in_scope = {item.id for item in kb.oaw_graph_store.list_relations(group_id=scope)}
+            # rather than teaching mkb's traversal about them.
+            in_scope = {item.id for item in store.list_relations(group_id=scope, layer=request.layer)}
             all_relations = [item for item in all_relations if item.id in in_scope]
             kept_ids = {item.source_id for item in all_relations} | \
                 {item.target_id for item in all_relations} | {_uuid(request.entity_id, "entity_id")}
             all_entities = [item for item in all_entities if item.id in kept_ids]
-    elif scope is not None:
-        # mkb's Graph.query has no group concept to pass a collection_id through,
-        # so this replicates its own entity/relation filtering against the store
-        # directly, narrowed to one group's tagged elements.
-        all_entities = kb.oaw_graph_store.list_entities(type=request.entity_type, group_id=scope)
+    elif narrowed:
+        # mkb's Graph.query has no group or layer concept to pass through, so this
+        # replicates its own entity/relation filtering against the store directly.
+        all_entities = store.list_entities(type=request.entity_type, group_id=scope, layer=request.layer)
         if request.name_contains:
             needle = request.name_contains.casefold()
             all_entities = [item for item in all_entities if needle in item.name.casefold()]
         entity_ids = {item.id for item in all_entities}
-        all_relations = kb.oaw_graph_store.list_relations(
-            type=request.relation_type, group_id=scope)
+        all_relations = store.list_relations(type=request.relation_type, group_id=scope, layer=request.layer)
         if request.entity_type or request.name_contains:
             all_relations = [item for item in all_relations
                              if item.source_id in entity_ids or item.target_id in entity_ids]

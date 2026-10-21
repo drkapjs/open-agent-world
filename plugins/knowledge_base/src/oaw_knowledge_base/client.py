@@ -72,6 +72,7 @@ def _build(path, resolve_secret=None, resolve_model=None):
 
     from .experiment_store import ExperimentRecordStore
     from .graph_store import SqlGraphStore
+    from .insight_store import InsightStore
     from .pipelines import register_pipelines
     from .search_store import ensure_schema as ensure_search_schema
 
@@ -95,6 +96,7 @@ def _build(path, resolve_secret=None, resolve_model=None):
     kb.oaw_resolve_model = resolve_model
     ensure_search_schema(engine)
     kb.oaw_experiments = ExperimentRecordStore(engine)
+    kb.oaw_insights = InsightStore(engine)
     register_pipelines(kb)
     kb.jobs.recover_interrupted()
     _backfill_search_index(kb, engine)

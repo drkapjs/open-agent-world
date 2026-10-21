@@ -457,6 +457,68 @@ it("keeps the graph empty until the person confirms the approval", async () => {
   expect(await screen.findByRole("button", { name: /Si3N4/ })).toBeTruthy();
 });
 
+it("drafts insights over published records and publishes one into the experiment layer on confirmation", async () => {
+  const record = { id: "record-1", group_id: "collection-1", schema_id: "schema-2", bundle_id: "bundle-1", name: "B7",
+    data: { sample_id: "B7", moisture: 9 }, validation: { valid: true }, note: null, status: "published",
+    revision: 2, created_by: "user:desktop", created_at: "2026-10-21T00:00:00Z", updated_at: "2026-10-21T00:00:00Z" };
+  const insight = { id: "insight-1", group_id: null, schema_id: "schema-2", schema_ids: ["schema-2"], kind: "anomaly", title: "B7 is wet",
+    statement: "B7 moisture is 3.2σ above the batch mean.", fields: ["moisture"], confidence: 0.9, properties: { z: 3.2 },
+    status: "draft", revision: 1, note: null, run_id: null, created_by: "user:desktop",
+    created_at: "2026-10-21T00:00:00Z", updated_at: "2026-10-21T00:00:00Z",
+    evidence: [{ record_id: "record-1", role: "observed_in", name: "B7", stale: false }] };
+  let published = false;
+  const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({ insights: [insight], warnings: [], truncated: false }) }));
+  vi.stubGlobal("fetch", fetchMock);
+  const action = open(async (name, args, confirm) => {
+    if (name === "schemas" && args.operation === "list") return { schemas: [SCHEMA, EXPERIMENT_SCHEMA] };
+    if (name === "schemas" && args.operation === "get") return { schema: { ...EXPERIMENT_SCHEMA, definition: { type: "object", properties: {} }, system_prompt: "x", field_descriptions: null } };
+    if (name === "experiments") return { experiments: [record] };
+    if (name === "insights" && args.operation === "stats") return { schema_ids: ["schema-2"], cross_schema: null,
+      statistics_by_schema: [{ schema_id: "schema-2", schema_name: "Conductivity run", record_count: 1, statistics: { records: 1, truncated: false, correlations: [],
+        fields: [{ field: "moisture", kind: "numeric", count: 1, mean: 9, std: 0, min: 9, max: 9, median: 9, outliers: [] }] } }] };
+    if (name === "insights") return { insights: [{ ...insight, status: published ? "published" : "draft" }] };
+    if (name === "insight_review" && args.operation === "publish") {
+      if (!confirm) return { status: "confirmation_required", reasons: ["Publishing writes this insight into the knowledge graph."] };
+      published = true;
+      return { insights: [{ ...insight, status: "published" }], graph: { entities: 3, relations: 2 } };
+    }
+    if (name === "graph" && args.layer === "experiment" && published) return { truncated: false, relations: [],
+      entities: [{ id: "node-1", type: "anomaly", name: "B7 is wet", properties: { insight_id: "insight-1" } }] };
+    return undefined;
+  }, { host: { deployment: undefined } });
+
+  fireEvent.click(await screen.findByRole("button", { name: "Experiment" }));
+  fireEvent.click(await screen.findByRole("tab", { name: "Insights" }));
+  // The Literature map asks for approved facts only; this tab for the experiment layer.
+  await waitFor(() => expect(action).toHaveBeenCalledWith("graph", expect.objectContaining({ layer: "literature" }), undefined));
+  await waitFor(() => expect(action).toHaveBeenCalledWith("graph", expect.objectContaining({ layer: "experiment" }), undefined));
+  const insightsSection = within(await screen.findByRole("region", { name: "Insights" }));
+  expect(await insightsSection.findByText("B7 moisture is 3.2σ above the batch mean.")).toBeTruthy();
+  expect(insightsSection.getByText("Nothing published yet")).toBeTruthy();
+
+  // The open scope reads every schema; statistics are asked for it as well.
+  await waitFor(() => expect(action).toHaveBeenCalledWith("insights", expect.objectContaining({ operation: "stats" }), undefined));
+  expect(await insightsSection.findByText(/1 published record\(s\) across every experiment schema/)).toBeTruthy();
+  expect(insightsSection.getByText("Mean")).toBeTruthy();
+  // Narrowing to one schema narrows the statistics and the extraction scope; the
+  // extraction goes through the host bridge when no agent is connected.
+  fireEvent.change(insightsSection.getByLabelText("Experiment schema"), { target: { value: "schema-2" } });
+  await waitFor(() => expect(action).toHaveBeenCalledWith("insights", expect.objectContaining({ operation: "stats", schema_id: "schema-2" }), undefined));
+  expect(await insightsSection.findByText(/1 published record\(s\) of "Conductivity run"/)).toBeTruthy();
+  fireEvent.click(insightsSection.getByRole("button", { name: "Extract insights" }));
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/knowledge/card-1/insights", expect.objectContaining({ method: "POST" })));
+  expect(JSON.parse(String((fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1].body))).toEqual(
+    expect.objectContaining({ schema_ids: ["schema-2"], replace_drafts: false, all_groups: true }));
+
+  fireEvent.click(insightsSection.getByRole("button", { name: "Publish" }));
+  expect(await insightsSection.findByText(/Publishing writes this insight/)).toBeTruthy();
+  fireEvent.click(insightsSection.getByRole("button", { name: "Confirm and publish" }));
+  await waitFor(() => expect(action).toHaveBeenCalledWith("insight_review",
+    expect.objectContaining({ operation: "publish", insight_ids: ["insight-1"] }), true));
+  expect(await insightsSection.findByRole("button", { name: /B7 is wet/ })).toBeTruthy();
+  expect(insightsSection.queryByRole("button", { name: "Publish" })).toBeNull();
+});
+
 it("surfaces a failed conversion with the step that failed", async () => {
   const JOB = { id: "job-1", kind: "pipeline", status: "FAILED", progress: null, message: null,
     error: "No markdown engine handles scan.bin", source_id: "source-1",

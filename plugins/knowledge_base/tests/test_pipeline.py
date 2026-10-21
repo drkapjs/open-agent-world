@@ -312,6 +312,71 @@ def test_graph_survives_a_client_restart(card):
     assert str(reopened.collections.list()[0].id) == str(group.id)
 
 
+def test_graph_elements_default_to_the_literature_layer_and_can_be_retagged(card):
+    kb = client.open_client(card.node_id, card.storage_path)
+    store = kb.oaw_graph_store
+    facts = kb.graph.extract({"entities": [{"type": "material", "name": "Cu"}]},
+                             extractor=lambda payload: payload)
+    insight = kb.graph.extract({
+        "entities": [{"type": "anomaly", "name": "B7 high", "id": "insight:1"},
+                     {"type": "experiment_record", "name": "B7", "id": "record:b7"},
+                     {"type": "field", "name": "moisture", "id": "field:moisture"}],
+        "relations": [{"source": "insight:1", "target": "record:b7", "type": "observed_in"},
+                      {"source": "insight:1", "target": "field:moisture", "type": "involves"}],
+    }, extractor=lambda payload: payload)
+    store.tag([e.id for e in insight.entities], [r.id for r in insight.relations], layer="experiment")
+
+    assert store.counts(layer="literature") == {"entities": 1, "relations": 0}
+    assert store.counts(layer="experiment") == {"entities": 3, "relations": 2}
+    assert store.counts() == {"entities": 4, "relations": 2}
+    assert [e.name for e in store.list_entities(layer="literature")] == ["Cu"]
+    with pytest.raises(ValueError):
+        store.list_entities(layer="rumour")
+
+    literature = run(card, actions.graph, layer="literature")
+    assert [e["name"] for e in literature["entities"]] == ["Cu"]
+    experiment = run(card, actions.graph, layer="experiment", entity_type="anomaly")
+    assert [e["name"] for e in experiment["entities"]] == ["B7 high"]
+    assert {r["type"] for r in experiment["relations"]} == set()  # endpoints filtered by type
+    everything = run(card, actions.graph)
+    assert len(everything["entities"]) == 4
+
+    # Unpublishing: the insight goes, its relations go, and the reference nodes it
+    # alone cited are orphans to prune — while the literature fact is untouched.
+    anomaly = next(e for e in insight.entities if e.type == "anomaly")
+    store.remove([anomaly.id])
+    orphans = store.orphans(layer="experiment", types=("experiment_record", "field"))
+    assert len(orphans) == 2
+    store.remove(orphans)
+    assert store.counts() == {"entities": 1, "relations": 0}
+    assert facts.entities[0].name == "Cu" and store.get_entity(facts.entities[0].id) is not None
+
+
+def test_a_graph_from_before_layers_existed_is_migrated_on_open(tmp_path):
+    from sqlalchemy import create_engine, text
+
+    from oaw_knowledge_base.graph_store import SqlGraphStore
+
+    path = tmp_path / "old.db"
+    engine = create_engine(f"sqlite:///{path}")
+    with engine.begin() as connection:
+        connection.execute(text(
+            "CREATE TABLE oaw_kg_entity (id VARCHAR(36) PRIMARY KEY, type VARCHAR(255) NOT NULL, "
+            "name VARCHAR(1024) NOT NULL, properties TEXT NOT NULL, created_at DATETIME NOT NULL, "
+            "updated_at DATETIME NOT NULL)"))
+        connection.execute(text(
+            "CREATE TABLE oaw_kg_relation (id VARCHAR(36) PRIMARY KEY, source_id VARCHAR(36) NOT NULL, "
+            "target_id VARCHAR(36) NOT NULL, type VARCHAR(255) NOT NULL, properties TEXT NOT NULL, "
+            "created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)"))
+        connection.execute(text(
+            "INSERT INTO oaw_kg_entity VALUES ('e1', 'material', 'Cu', '{}', "
+            "'2026-01-01 00:00:00', '2026-01-01 00:00:00')"))
+    store = SqlGraphStore(engine)
+    assert store.counts(layer="literature") == {"entities": 1, "relations": 0}
+    assert store.list_entities(group_id="nope") == []
+    engine.dispose()
+
+
 def test_relations_need_both_endpoints(card):
     import uuid
 
@@ -778,3 +843,255 @@ def test_chart_data_source_reads_published_experiment_records_only(card):
 
     table = data_source.read(card, Query())
     assert table["rows"] == [["A1", 1.2]]
+
+
+INSIGHT_SCHEMA = {
+    "type": "object", "required": ["sample_id"],
+    "properties": {"sample_id": {"type": "string"}, "temperature": {"type": "number"},
+                   "conductivity": {"type": "number"}, "moisture": {"type": "number"}},
+}
+
+
+def _published_batch(card, count=8):
+    """One experiment schema with ``count`` published records (one moisture outlier)
+    and one draft record that must stay invisible to insights."""
+    from oaw_knowledge_base import insights
+
+    schema = run(card, actions.schemas, operation="create", name="Electrolyte batch",
+                 definition=INSIGHT_SCHEMA, system_prompt="x", kind="experiment")["schema"]
+    bundle = _bundle(card, schema, name="July")
+    _upload(card, bundle, "log\n", "log.md")
+    records = [{"name": f"B{i}", "data": {"sample_id": f"B{i}", "temperature": 500 + 10 * i,
+                                        "conductivity": 1.0 + 0.1 * i,
+                                        "moisture": 9.0 if i == count - 1 else 0.5 + 0.01 * i}}
+               for i in range(count)]
+    records.append({"name": "DRAFT", "data": {"sample_id": "DRAFT", "moisture": 99}})
+    saved = run(card, actions.experiment_save, bundle_id=bundle["id"], records=records)["records"]
+    card.confirmed = True
+    for record in saved:
+        if record["name"] != "DRAFT":
+            run(card, actions.experiment_review, operation="publish", record_id=record["id"])
+    card.confirmed = False
+    by_name = {item["name"]: item for item in saved}
+    return insights, schema, by_name
+
+
+def test_insights_are_drafted_from_published_records_and_published_into_the_graph_layer(card):
+    insights, schema, records = _published_batch(card)
+    outlier, draft = records["B7"], records["DRAFT"]
+
+    # The prompt: statistics the plugin computed, the records as a table, and the
+    # draft record nowhere in it.
+    prompt = run(card, insights.insight_prompt, schema_id=schema["id"])
+    assert prompt["record_count"] == 8 and prompt["existing"] == []
+    assert set(prompt["kinds"]) == {"anomaly", "rule", "trend", "correlation", "threshold", "note"}
+    stats = {item["field"]: item for item in prompt["statistics"]["fields"]}
+    assert [o["record_id"] for o in stats["moisture"]["outliers"]] == [outlier["id"]]
+    assert prompt["statistics"]["correlations"][0]["a"] == "temperature"
+    assert f"| {outlier['id']} | B7 |" in prompt["markdown"]
+    assert draft["id"] not in prompt["markdown"] and "| DRAFT |" not in prompt["markdown"]
+    assert prompt["has_more"] is False and "insights" in prompt["instruction"]
+    page = run(card, insights.insight_prompt, schema_id=schema["id"], limit=500)
+    assert page["has_more"] is True and page["total_characters"] == prompt["total_characters"]
+
+    # Evidence must be published records of this schema; fields are advisory.
+    with pytest.raises(KnowledgeError):
+        run(card, insights.insight_save, schema_id=schema["id"], insights=[
+            {"kind": "note", "title": "x", "statement": "y", "evidence": [{"record_id": draft["id"]}]}])
+    with pytest.raises(KnowledgeError):
+        run(card, insights.insight_prompt, schema_id=run(
+            card, actions.schemas, operation="create", name="Lit", definition=SCHEMA,
+            system_prompt="x")["schema"]["id"])
+    saved = run(card, insights.insight_save, schema_id=schema["id"], run_id="run-1", insights=[
+        {"kind": "anomaly", "title": "B7 moisture high",
+         "statement": "B7 moisture is far above the batch mean.", "fields": ["moisture", "humidity"],
+         "confidence": 0.9, "properties": {"z": 2.6, "type": "ignored"},
+         "evidence": [{"record_id": outlier["id"], "role": "observed_in"}]},
+        {"kind": "correlation", "title": "Conductivity rises with temperature",
+         "statement": "r = 1.0 over 8 records.", "fields": ["temperature", "conductivity"],
+         "evidence": [{"record_id": records[f"B{i}"]["id"]} for i in range(8)]},
+    ])
+    assert saved["warnings"] == ['"B7 moisture high": unknown fields dropped: humidity']
+    anomaly, correlation = saved["insights"]
+    assert anomaly["status"] == "draft" and anomaly["fields"] == ["moisture"]
+    assert anomaly["evidence"] == [{"record_id": outlier["id"], "role": "observed_in",
+                                    "name": "B7", "schema_id": schema["id"], "stale": False}]
+    assert anomaly["schema_id"] == schema["id"] and anomaly["schema_ids"] == [schema["id"]]
+    assert anomaly["run_id"] == "run-1" and anomaly["created_by"] == "user:desktop"
+    counts = run(card, actions.overview)["counts"]
+    assert counts["insights"] == 2 and counts["published_insights"] == 0
+
+    # Reading: list, get, stats — the agent's side of the tab.
+    listed = run(card, insights.insights, schema_id=schema["id"], kind="anomaly")["insights"]
+    assert [item["id"] for item in listed] == [anomaly["id"]]
+    assert run(card, insights.insights, operation="get", insight_id=anomaly["id"])["insight"]["title"] == "B7 moisture high"
+    computed = run(card, insights.insights, operation="stats", schema_id=schema["id"])["statistics"]
+    assert computed == prompt["statistics"]
+
+    # A person edits a draft; the published graph is still empty.
+    edited = run(card, insights.insight_update, insight_id=anomaly["id"], title="B7 is wet",
+                 confidence=0.95, expected_revision=1)["insight"]
+    assert edited["revision"] == 2 and edited["confidence"] == 0.95
+    assert run(card, actions.graph, layer="experiment")["entities"] == []
+
+    # Publishing asks first, then writes the insight and what it cites into the
+    # experiment layer — and only there.
+    asked = run(card, insights.insight_review, operation="publish", insight_ids=[anomaly["id"], correlation["id"]])
+    assert asked["status"] == "confirmation_required" and "B7 is wet" in asked["message"]
+    card.confirmed = True
+    published = run(card, insights.insight_review, operation="publish",
+                    insight_ids=[anomaly["id"], correlation["id"]])
+    card.confirmed = False
+    assert {item["status"] for item in published["insights"]} == {"published"}
+    # 2 insights + 3 fields + 8 records; B7 is cited by both, so 11 relations.
+    assert published["graph"] == {"entities": 2 + 3 + 8 + 1, "relations": 1 + 1 + 2 + 8}
+    layer = run(card, actions.graph, layer="experiment", limit=100)
+    assert {e["type"] for e in layer["entities"]} == {"anomaly", "correlation", "field", "experiment_record"}
+    assert len([e for e in layer["entities"] if e["type"] == "experiment_record"]) == 8
+    node = next(e for e in layer["entities"] if e["type"] == "anomaly")
+    assert node["name"] == "B7 is wet" and node["properties"]["insight_id"] == anomaly["id"]
+    assert node["properties"]["z"] == 2.6 and "type" not in node["properties"]
+    assert {r["type"] for r in layer["relations"]} == {"involves", "observed_in", "supported_by"}
+    assert run(card, actions.graph, layer="literature")["entities"] == []
+    assert run(card, actions.overview)["counts"]["layers"]["experiment"]["entities"] == 13
+    with pytest.raises(KnowledgeError):
+        run(card, insights.insight_update, insight_id=anomaly["id"], title="late")
+    with pytest.raises(KnowledgeError):
+        run(card, insights.insight_review, operation="delete", insight_id=anomaly["id"])
+    assert [item["title"] for item in run(card, insights.insight_prompt, schema_id=schema["id"])["existing"]] \
+        == ["Conductivity rises with temperature", "B7 is wet"]
+
+    # Re-extraction replaces drafts and never a published insight.
+    run(card, insights.insight_save, schema_id=schema["id"], insights=[
+        {"kind": "note", "title": "old draft", "statement": "s", "evidence": [{"record_id": outlier["id"]}]}])
+    again = run(card, insights.insight_save, schema_id=schema["id"], replace_drafts=True, insights=[
+        {"kind": "note", "title": "new draft", "statement": "s", "evidence": [{"record_id": outlier["id"]}]}])
+    titles = {item["title"] for item in run(card, insights.insights, schema_id=schema["id"])["insights"]}
+    assert titles == {"B7 is wet", "Conductivity rises with temperature", "new draft"}
+
+    # Unpublishing the anomaly removes its node and edges; B7's record node stays
+    # because the correlation still cites it, and the moisture field node goes.
+    reopened = run(card, insights.insight_review, operation="unpublish", insight_id=anomaly["id"])
+    assert reopened["insights"][0]["status"] == "draft" and reopened["graph"] == {"removed": 1, "pruned": 1}
+    layer = run(card, actions.graph, layer="experiment", limit=100)
+    assert {e["type"] for e in layer["entities"]} == {"correlation", "field", "experiment_record"}
+    assert len(layer["entities"]) == 1 + 2 + 8
+    run(card, insights.insight_review, operation="unpublish", insight_id=correlation["id"])
+    assert run(card, actions.graph, layer="experiment")["entities"] == []
+    run(card, insights.insight_review, operation="delete", insight_ids=[anomaly["id"], again["insights"][0]["id"]])
+    assert [item["title"] for item in run(card, insights.insights, schema_id=schema["id"])["insights"]] \
+        == ["Conductivity rises with temperature"]
+
+
+def test_an_insight_whose_record_was_unpublished_is_stale_and_cannot_be_published(card):
+    insights, schema, records = _published_batch(card, count=4)
+    saved = run(card, insights.insight_save, schema_id=schema["id"], insights=[
+        {"kind": "note", "title": "about B1", "statement": "s", "evidence": [{"record_id": records["B1"]["id"]}]}])
+    run(card, actions.experiment_review, operation="unpublish", record_id=records["B1"]["id"])
+    insight = run(card, insights.insights, operation="get", insight_id=saved["insights"][0]["id"])["insight"]
+    assert insight["evidence"][0]["stale"] is True
+    card.confirmed = True
+    with pytest.raises(KnowledgeError):
+        run(card, insights.insight_review, operation="publish", insight_id=insight["id"])
+
+
+def test_insights_scoped_to_a_group_see_only_that_groups_records(card):
+    insights, schema, records = _published_batch(card, count=4)
+    other = run(card, actions.groups, operation="create", name="Other")["group"]
+    with pytest.raises(KnowledgeError):
+        run(card, insights.insight_prompt, schema_id=schema["id"], group_id=other["id"])
+    everywhere = run(card, insights.insight_prompt, schema_id=schema["id"], all_groups=True)
+    assert everywhere["group_id"] is None and everywhere["record_count"] == 4
+    saved = run(card, insights.insight_save, schema_id=schema["id"], all_groups=True, insights=[
+        {"kind": "note", "title": "global", "statement": "s", "evidence": [{"record_id": records["B0"]["id"]}]}])
+    assert saved["insights"][0]["group_id"] is None
+    # An all-groups insight shows up inside any one group's view too.
+    default = run(card, actions.overview)["collection"]["id"]
+    assert [i["title"] for i in run(card, insights.insights, group_id=default)["insights"]] == ["global"]
+    assert [i["title"] for i in run(card, insights.insights, group_id=other["id"])["insights"]] == ["global"]
+
+
+XRD_SCHEMA = {"type": "object", "required": ["sample_id"],
+              "properties": {"sample_id": {"type": "string"}, "crystallinity": {"type": "number"},
+                             "phase": {"type": "string"}}}
+
+
+def test_insights_can_span_several_schemas_matched_by_specimen_name(card):
+    insights, synthesis, records = _published_batch(card, count=6)
+    # A second schema describing the same specimens B0..B5, published too.
+    xrd = run(card, actions.schemas, operation="create", name="XRD", definition=XRD_SCHEMA,
+              system_prompt="x", kind="experiment")["schema"]
+    bundle = _bundle(card, xrd, name="XRD July")
+    _upload(card, bundle, "xrd\n", "xrd.md")
+    saved = run(card, actions.experiment_save, bundle_id=bundle["id"], records=[
+        {"name": f"B{i}", "data": {"sample_id": f"B{i}", "crystallinity": 0.5 + 0.05 * i, "phase": "argyrodite"}}
+        for i in range(6)])["records"]
+    card.confirmed = True
+    for record in saved:
+        run(card, actions.experiment_review, operation="publish", record_id=record["id"])
+    card.confirmed = False
+    # An experiment schema with no published records is left out of an open scope.
+    run(card, actions.schemas, operation="create", name="Empty", definition=XRD_SCHEMA,
+        system_prompt="x", kind="experiment")
+
+    # No schema named: every schema with published records, each with its own table
+    # and statistics, plus what the specimens shared by name show across them.
+    prompt = run(card, insights.insight_prompt)
+    assert [item["schema_name"] for item in prompt["schemas"]] == ["Electrolyte batch", "XRD"]
+    # Presentation follows the schema names; the scope key is the sorted id set.
+    assert prompt["schema_ids"] == sorted([synthesis["id"], xrd["id"]])
+    assert "schema_id" not in prompt and prompt["record_count"] == 12
+    assert prompt["markdown"].index("# Schema: Electrolyte batch") < prompt["markdown"].index("# Schema: XRD")
+    assert prompt["cross_schema"]["matched"] == 6
+    assert {(c["a"], c["b"]) for c in prompt["cross_schema"]["correlations"]} >= {
+        ("Electrolyte batch.temperature", "XRD.crystallinity")}
+    assert len(prompt["statistics_by_schema"]) == 2
+    # Naming two schemas explicitly is the same scope; naming one narrows it.
+    explicit = run(card, insights.insight_prompt, schema_ids=[xrd["id"], synthesis["id"]])
+    assert explicit["schema_ids"] == prompt["schema_ids"]
+    assert run(card, insights.insight_prompt, schema_id=xrd["id"])["record_count"] == 6
+
+    xrd_b3 = next(item for item in saved if item["name"] == "B3")
+    result = run(card, insights.insight_save, insights=[
+        {"kind": "correlation", "title": "Hotter batches are more crystalline",
+         "statement": "Crystallinity rises with sintering temperature across the six specimens.",
+         "fields": ["Electrolyte batch.temperature", "XRD.crystallinity", "phase", "temperature"],
+         "evidence": [{"record_id": records["B3"]["id"]}, {"record_id": xrd_b3["id"]}]}])
+    cross = result["insights"][0]
+    assert result["schema_ids"] == prompt["schema_ids"] and cross["schema_id"] is None
+    assert cross["schema_ids"] == prompt["schema_ids"]
+    # A bare field name resolves when exactly one schema declares it; "temperature"
+    # also exists only in the batch schema, so both bare names are kept.
+    assert cross["fields"] == ["Electrolyte batch.temperature", "XRD.crystallinity", "phase", "temperature"]
+    assert {link["schema_id"] for link in cross["evidence"]} == {synthesis["id"], xrd["id"]}
+
+    # It is listed under either schema, found by text, and not under an unrelated one.
+    assert [i["id"] for i in run(card, insights.insights, schema_id=xrd["id"])["insights"]] == [cross["id"]]
+    assert [i["id"] for i in run(card, insights.insights, schema_id=synthesis["id"])["insights"]] == [cross["id"]]
+    assert [i["id"] for i in run(card, insights.insights, query="crystalline")["insights"]] == [cross["id"]]
+    assert run(card, insights.insights, query="nothing like this")["insights"] == []
+    stats = run(card, insights.insights, operation="stats")
+    assert stats["cross_schema"]["matched"] == 6 and "statistics" not in stats
+
+    card.confirmed = True
+    published = run(card, insights.insight_review, operation="publish", insight_id=cross["id"])
+    card.confirmed = False
+    # 1 insight + 3 resolved field nodes (temperature named twice is one node, one
+    # edge) + 2 records.
+    assert published["graph"] == {"entities": 1 + 3 + 2, "relations": 3 + 2}
+    layer = run(card, actions.graph, layer="experiment", limit=100)
+    fields = {e["name"] for e in layer["entities"] if e["type"] == "field"}
+    assert fields == {"Electrolyte batch · temperature", "XRD · crystallinity", "XRD · phase"}
+    node = next(e for e in layer["entities"] if e["type"] == "correlation")
+    assert node["properties"]["schema_ids"] == prompt["schema_ids"]
+
+    # Re-extracting the cross-schema scope replaces only its own drafts.
+    single = run(card, insights.insight_save, schema_id=xrd["id"], insights=[
+        {"kind": "note", "title": "xrd only", "statement": "s", "evidence": [{"record_id": xrd_b3["id"]}]}])
+    run(card, insights.insight_save, replace_drafts=True, insights=[
+        {"kind": "note", "title": "cross draft", "statement": "s", "evidence": [{"record_id": xrd_b3["id"]}]}])
+    run(card, insights.insight_save, replace_drafts=True, insights=[
+        {"kind": "note", "title": "cross draft 2", "statement": "s", "evidence": [{"record_id": xrd_b3["id"]}]}])
+    titles = {i["title"] for i in run(card, insights.insights)["insights"]}
+    assert titles == {"Hotter batches are more crystalline", "xrd only", "cross draft 2"}
+    assert run(card, insights.insights, operation="get", insight_id=single["insights"][0]["id"])["insight"]["schema_id"] == xrd["id"]

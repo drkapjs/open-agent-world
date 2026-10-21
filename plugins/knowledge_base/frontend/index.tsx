@@ -9,6 +9,8 @@ import { DocumentMarkdown } from "@oaw/plugin-api";
 import { BookOpen, FlaskConical, Settings2, Plus, RefreshCw, MoreHorizontal, FileText, Network, X, Square, ScrollText, Upload, Search, ChevronRight, ChevronDown, List, Table2, Pencil } from "lucide-react";
 import { MineruCredentials } from "./MineruCredentials";
 import { GraphMap } from "./GraphMap";
+import { InsightsSection } from "./Insights";
+import type { InsightKind } from "./Insights";
 import { ExtractDialog } from "./ExtractDialog";
 import type { ExtractDetails } from "./ExtractDialog";
 import { RecordGrid, RecordTable, flattenValues } from "./RecordView";
@@ -68,19 +70,26 @@ type RunActivity = { id: string; type: string; timestamp: string; text?: string;
 type Pending = { args: Record<string, unknown>; reasons: string[] };
 
 /** Literature stays the deep, general-purpose workflow; Experiment turns one upload
- * of several files into reviewed records against a schema it shares with Literature.
- * Settings only ever appears for the engineering view. */
+ * of several files into reviewed records against a schema it shares with Literature,
+ * then Insights extracts what a schema's published records show as a whole and
+ * publishes that into the graph's experiment layer. Settings only ever appears for
+ * the engineering view. */
 type Category = "literature" | "experiment" | "settings";
 type LiteratureTab = "sources" | "schemas" | "projections" | "graph";
-type ExperimentTab = "experiments" | "schemas";
+type ExperimentTab = "experiments" | "insights" | "schemas";
 const LITERATURE_TABS: { id: LiteratureTab; label: () => string }[] = [
   { id: "sources", label: () => t("Sources") },
   { id: "schemas", label: () => t("Schemas") }, { id: "projections", label: () => t("Projections") },
   { id: "graph", label: () => t("Graph") },
 ];
 const EXPERIMENT_TABS: { id: ExperimentTab; label: () => string }[] = [
-  { id: "experiments", label: () => t("Experiments") }, { id: "schemas", label: () => t("Schemas") },
+  { id: "experiments", label: () => t("Experiments") }, { id: "insights", label: () => t("Insights") },
+  { id: "schemas", label: () => t("Schemas") },
 ];
+const KIND_LABELS: Record<InsightKind, () => string> = {
+  anomaly: () => t("anomaly"), rule: () => t("rule"), trend: () => t("trend"),
+  correlation: () => t("correlation"), threshold: () => t("threshold"), note: () => t("note"),
+};
 
 const ACTIVE = new Set(["QUEUED", "RUNNING", "PENDING", "RETRYING"]);
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
@@ -311,6 +320,11 @@ export function Workspace({ host, card }: PluginViewProps) {
   const [recordView, setRecordView] = useState<"list" | "grid">("list");
   // Experiment: "" shows every schema's uploads and records; a chosen id narrows to it.
   const [experimentSchemaId, setExperimentSchemaId] = useState("");
+  // Insights: the schema whose published records are read; "" lists every schema's
+  // insights but extracts nothing. Bumping refreshVersion makes the section reload
+  // alongside every other list.
+  const [insightSchemaId, setInsightSchemaId] = useState("");
+  const [refreshVersion, setRefreshVersion] = useState(0);
   // Full definitions by schema id — the record tables and forms need the properties,
   // which the schema list does not carry.
   const [schemaDetails, setSchemaDetails] = useState<Record<string, SchemaDetail>>({});
@@ -405,6 +419,7 @@ export function Workspace({ host, card }: PluginViewProps) {
     if (jobList) setJobs((jobList.jobs as Job[]) ?? []);
     setExperiments((experimentList?.experiments as ExperimentItem[]) ?? []);
     setBundles((bundleList?.bundles as Bundle[]) ?? []);
+    setRefreshVersion(value => value + 1);
     // A core section failing is still worth surfacing; "experiments" not being
     // published on an older release is not a real error, so it never blocks this.
     const coreFailure = results.slice(0, 6).find(result => result.status === "rejected");
@@ -413,7 +428,7 @@ export function Workspace({ host, card }: PluginViewProps) {
 
   const loadGraph = useCallback(async (args: Record<string, unknown> = {}) => {
     const current = generation.current;
-    const result = await call("graph", { ...groupFilter(), ...args }) as Graph;
+    const result = await call("graph", { layer: "literature", ...groupFilter(), ...args }) as Graph;
     if (generation.current === current) setGraph(result);
   }, [call, groupFilter]);
 
@@ -640,6 +655,16 @@ export function Workspace({ host, card }: PluginViewProps) {
   const openRecord = (id: string) => {
     setRecordView("list");
     if (!expanded.has(id)) toggleRecord(id);
+  };
+
+  // From an insight's evidence to the record it cites: widen the Experiments filters
+  // so the row is in view, then unfold it.
+  const jumpToRecord = (id: string) => {
+    setCategory("experiment"); setExperimentTab("experiments");
+    setBundleId(""); setRecordStatus(""); setRecordQuery("");
+    const record = experiments.find(item => item.id === id);
+    if (record && currentExperimentSchemaId && record.schema_id !== currentExperimentSchemaId) setExperimentSchemaId("");
+    openRecord(id);
   };
 
   const beginEdit = (record: ExperimentItem) => {
@@ -988,6 +1013,10 @@ export function Workspace({ host, card }: PluginViewProps) {
   const graphProjectedRecordIds = new Set(graphProjections.map(item => item.record_id));
   const graphPendingSources = convertedSources.filter(item => !graphProjectedRecordIds.has(item.record_id!));
   const activeSection = category === "settings" ? "settings" : category === "literature" ? literatureTab : experimentTab;
+  const publishedCounts = experiments.reduce<Record<string, number>>((counts, item) => {
+    if (item.status === "published") counts[item.schema_id] = (counts[item.schema_id] ?? 0) + 1;
+    return counts;
+  }, {});
 
   const groupSelect = <label className="knowledge-groupselect">
     <span className="knowledge-visually-hidden">{t("Group")}</span>
@@ -1678,6 +1707,25 @@ export function Workspace({ host, card }: PluginViewProps) {
             schemas={experimentSchemas} busy={busy} canExtract={canExtract} runHint={runHint} blocker={extractBlocker}
             onClose={() => setDialog(undefined)} onConfirm={details => void confirmDialog(selectedBundle, dialog.mode, details)} />}
         </div>}
+        </div>
+      </WorkspaceSection>}
+
+      {((category === "experiment" && experimentTab === "insights") || isDetached("insights")) && <WorkspaceSection id="insights" title={t("Insights")} layout={{ min_width: 320, min_height: 320, ideal_width: 960, ideal_height: 640 }} className="knowledge-section knowledge-wide">
+        <div className="knowledge-section knowledge-wide" data-detached={isDetached("insights") || undefined}>
+          <InsightsSection host={host} cardId={card.id} deployed={deployed} busy={busy} version={refreshVersion}
+            schemas={experimentSchemas} schemaId={experimentSchemas.some(item => item.id === insightSchemaId) ? insightSchemaId : ""}
+            onSchemaChange={setInsightSchemaId} publishedCounts={publishedCounts}
+            groupArgs={groupArgs} groupFilter={groupFilter} call={call} perform={perform} request={request}
+            labAgent={labAgents[0]} canRunAgent={canRunAgents} selectedModel={selectedModel}
+            modelSelect={<label>{t("Model")}
+              <select value={selectedModel} disabled={busy || !models.length} onChange={event => setModel(event.target.value)}>
+                {!models.length && <option value="">{t("No model configured")}</option>}
+                {models.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}
+              </select>
+            </label>}
+            groupSelect={groupSelect} refreshControls={refreshControls} banner={<Banner error={error} notice={notice} />}
+            setNotice={setNotice} setError={setError} onOpenRecord={jumpToRecord}
+            kindLabel={kind => KIND_LABELS[kind]()} />
         </div>
       </WorkspaceSection>}
 

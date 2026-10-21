@@ -36,10 +36,12 @@ from oaw_knowledge_base.operations import BY_NAME, EXPERIMENT_ACTIONS, EXTRACT_A
 
 NODE_TYPE = "knowledge.base"
 # Uploading a file, converting it, managing groups, changing settings, approving a
-# draft and choosing which schema builds the graph are acts a person takes on the
-# canvas. They must never gain a capability kind, on any transport.
+# draft, choosing which schema builds the graph and publishing a record or an insight
+# are acts a person takes on the canvas. They must never gain a capability kind, on
+# any transport.
 DESKTOP_ONLY = {"ingest", "process", "groups", "settings", "review", "graph_schema",
-                "experiment_ingest", "experiment_bundle_manage", "experiment_review"}
+                "experiment_ingest", "experiment_bundle_manage", "experiment_review",
+                "insight_review"}
 
 
 def test_declared_local_pdf_engine_converts_a_real_document():
@@ -261,8 +263,9 @@ def test_the_research_formation_deploys_wired_independent_bases(client):
     assert nodes[a["knowledge"]]["type"] == NODE_TYPE
     instruction = nodes[a["agent"]]["config"]["system_instruction"]
     assert "knowledge_graph" in instruction and "knowledge_experiment_save" in instruction
+    assert "knowledge_insight_save" in instruction and "INSIGHT EXTRACTION REQUEST" in instruction
     # The person drives the pipeline from the workspace; the Lab assistant reads, and
-    # holds exactly the experiment half — draft records only, never a publication.
+    # holds exactly the experiment half — draft records and insights only, never a publication.
     assert {(edge["source"], edge["target"], edge["relationship"]) for edge in first["edges"]} == {
         (a["agent"], a["conversation"], "participate"),
         (a["agent"], a["knowledge"], f"{NODE_TYPE}.experiment")}
@@ -273,7 +276,8 @@ def test_the_research_formation_deploys_wired_independent_bases(client):
     # The literature pipeline and every publication stay buttons, not tools.
     assert not tools & {"knowledge_projection_prompt", "knowledge_save_projection",
                         "knowledge_draft", "knowledge_ingest", "knowledge_review",
-                        "knowledge_experiment_review", "knowledge_experiment_ingest"}
+                        "knowledge_experiment_review", "knowledge_experiment_ingest",
+                        "knowledge_insight_review"}
 
     layout = json.dumps(nodes[a["group"]]["config"]["workspace_layout"])
     assert all(a[key] in layout for key in ("conversation", "knowledge"))
@@ -344,9 +348,10 @@ def test_the_research_formation_publishes_and_serves_as_a_deployment(data_root):
     # Section names match the card's own WorkspaceSection ids: Sources absorbs
     # search, markdown and the single-document projection convenience; Graph
     # absorbs the graph-schema pipeline (project, draft, review, publish) that used
-    # to be split across three separate tabs.
+    # to be split across three separate tabs; Insights holds the meta-knowledge
+    # extracted from published experiment records.
     assert set(manifest["permissions"][keys["knowledge"]]) == {
-        "settings", "sources", "schemas", "projections", "experiments", "graph"}
+        "settings", "sources", "schemas", "projections", "experiments", "insights", "graph"}
     access = manifest["plugin_access"][keys["knowledge"]]
     # Settings never appears among the granted resource actions, so a business
     # release can never rewrite the collection name, PDF engine or MinerU URL,

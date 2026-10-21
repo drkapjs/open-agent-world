@@ -92,6 +92,16 @@ class ExperimentExtractRequest(BaseModel):
     replace_drafts: bool = False
 
 
+class InsightExtractRequest(BaseModel):
+    # One schema, several, or neither: every experiment schema with published records.
+    schema_id: str | None = Field(default=None, max_length=64)
+    schema_ids: list[str] = Field(default_factory=list, max_length=50)
+    model: str = Field(min_length=1, max_length=200)
+    group_id: str | None = Field(default=None, max_length=64)
+    all_groups: bool = False
+    replace_drafts: bool = False
+
+
 def _credentials(services, reference):
     if reference.startswith(MODEL_REF_PREFIX):
         try:
@@ -201,6 +211,59 @@ async def run_experiment_extract(node_id: str, request: ExperimentExtractRequest
             "truncated": truncated}
 
 
+def _insight_prompt_builders():
+    try:
+        from oaw_knowledge_base.insight_prompt import build_messages, parse_insights
+    except ImportError:  # pragma: no cover - the route is dead without the plugin
+        raise HTTPException(503, "The knowledge base plugin is not available") from None
+    return build_messages, parse_insights
+
+
+async def run_insight_extract(node_id: str, request: InsightExtractRequest, services) -> dict:
+    """The agent-free **Extract insights**: page through the schema's record table,
+    make one JSON-mode model call, and hand the insights to the plugin's own
+    ``insight_save`` — the same two actions a connected Lab assistant drives through
+    its tools, so an insight is evidence-checked identically whichever path produced it."""
+    async with services._node_mutation(read_only=True):
+        if services.world.get_card(node_id).type != NODE_TYPE:
+            raise HTTPException(422, "Expected a Knowledge base node")
+
+    scope = {"schema_ids": request.schema_ids, "all_groups": request.all_groups,
+             **({"schema_id": request.schema_id} if request.schema_id else {}),
+             **({"group_id": request.group_id} if request.group_id else {})}
+    prompt = await invoke_resource_action(services, node_id, "insight_prompt",
+        ResourceActionRequest(arguments={**scope, "limit": 200_000}))
+    table, truncated = prompt["markdown"], False
+    while prompt["has_more"] and len(table) < EXTRACT_MAX_CHARS:
+        prompt = await invoke_resource_action(services, node_id, "insight_prompt",
+            ResourceActionRequest(arguments={**scope, "limit": 200_000, "offset": len(table)}))
+        table += prompt["markdown"]
+    if prompt["has_more"]:
+        truncated = True
+    base_url, api_key, model = _credentials(services, request.model)
+    build_messages, parse_insights = _insight_prompt_builders()
+
+    try:
+        async with httpx.AsyncClient(timeout=300, follow_redirects=False) as client:
+            response = await client.post(base_url.rstrip("/") + "/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}"} if api_key and api_key != "oaw-no-auth" else {},
+                json={"model": model, "response_format": {"type": "json_object"},
+                      "messages": build_messages(prompt, table=table)})
+        if response.status_code != 200:
+            raise HTTPException(502, f"The model returned HTTP {response.status_code}; check the model, quota and connection settings")
+        insights = parse_insights(response.json()["choices"][0]["message"]["content"])
+    except HTTPException:
+        raise
+    except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError):
+        raise HTTPException(502, "The extraction request failed or returned malformed JSON; check the connection and retry") from None
+
+    saved = await invoke_resource_action(services, node_id, "insight_save",
+        ResourceActionRequest(arguments={**scope, "insights": insights,
+                                         "replace_drafts": request.replace_drafts}))
+    return {"insights": saved["insights"], "warnings": saved["warnings"],
+            "schema_ids": saved["schema_ids"], "truncated": truncated}
+
+
 @router.post("/knowledge/{node_id}/project")
 async def project(node_id: str, request: ProjectionRequest, services=Depends(get_services)):
     return await run_projection(node_id, request, services)
@@ -209,3 +272,8 @@ async def project(node_id: str, request: ProjectionRequest, services=Depends(get
 @router.post("/knowledge/{node_id}/extract")
 async def extract(node_id: str, request: ExperimentExtractRequest, services=Depends(get_services)):
     return await run_experiment_extract(node_id, request, services)
+
+
+@router.post("/knowledge/{node_id}/insights")
+async def extract_insights(node_id: str, request: InsightExtractRequest, services=Depends(get_services)):
+    return await run_insight_extract(node_id, request, services)

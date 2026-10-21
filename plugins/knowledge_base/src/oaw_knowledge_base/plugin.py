@@ -56,6 +56,16 @@ DEPLOYMENT_FIELDS = {
     "experiments": frozenset({"experiments", "experiment"}),
     "experiment_update": frozenset({"experiment"}),
     "experiment_review": frozenset({"experiment", "deleted", "status", "reasons", "message"}),
+    "insights": frozenset({"insights", "insight", "schema_id", "schema_ids", "schema_name", "group_id",
+                           "statistics", "statistics_by_schema", "cross_schema"}),
+    "insight_prompt": frozenset({"schema_id", "schema_ids", "schemas", "schema_name", "schema_version",
+                                 "definition", "field_descriptions", "group_id", "kinds", "roles",
+                                 "instruction", "statistics", "statistics_by_schema", "cross_schema",
+                                 "existing", "record_count", "total_characters", "offset", "markdown",
+                                 "has_more"}),
+    "insight_save": frozenset({"insights", "schema_ids", "warnings"}),
+    "insight_update": frozenset({"insight"}),
+    "insight_review": frozenset({"insights", "deleted", "status", "reasons", "message", "graph"}),
     "review": frozenset({"decision", "draft_id", "status", "reasons", "message", "fact", "event",
                          "graph"}),
     "graph_schema": frozenset({"schema_id"}),
@@ -76,16 +86,18 @@ def _deployment():
     stay engineering-only, matching "it does not mount ... model settings". Every
     other business action a person uses to drive the pipeline — upload, convert,
     search, project, choose the graph schema, build a draft, review, publish, upload
-    an experiment and publish its records — is exactly what a deployed release is
-    for, so it is granted. Experiment extraction in a release goes through the
-    model bridge with the pre-chosen default model, since a release carries no
-    agent edges for the connected-agent path. The layout can place
+    an experiment, publish its records and publish insights over them — is exactly
+    what a deployed release is for, so it is granted. Experiment and insight
+    extraction in a release go through the model bridge with the pre-chosen default
+    model, since a release carries no agent edges for the connected-agent path. The
+    layout can place
     this card as one whole pane (``surface``) or extract each section into its own
     tab (``sections``); both are covered so either shape of a saved workspace can
     publish. Section names match the card's own frontend's WorkspaceSection ids —
     Sources holds search and the single-document projection convenience, Graph holds
     the graph-schema pipeline end to end (project, draft, review, publish) that used
-    to be split across three separate tabs.
+    to be split across three separate tabs, Insights holds the meta-knowledge
+    extracted from published experiment records.
     """
     all_actions = tuple(DEPLOYMENT_FIELDS)
     return NodeDeploymentDefinition(
@@ -109,6 +121,9 @@ def _deployment():
                                     "experiment_extract_prompt", "experiment_save", "experiments",
                                     "experiment_update", "experiment_review",
                                     config_fields={"default_model"}),
+            "insights": _surface("overview", "schemas", "experiments", "insights", "insight_prompt",
+                                 "insight_save", "insight_update", "insight_review", "graph",
+                                 config_fields={"default_model"}),
         },
     )
 
