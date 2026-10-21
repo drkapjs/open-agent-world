@@ -142,6 +142,12 @@ jobs:
         env:
           PLAYWRIGHT_CHANNEL: chromium
         run: npm run test:e2e:packs
+      - name: Build and install an external declarative Pack
+        env:
+          PLAYWRIGHT_CHANNEL: chromium
+        run: |
+          backend/.venv/bin/python scripts/build-external-notes.py
+          node frontend/scripts/run-pack-e2e.mjs --declarative
       - name: Run deployment acceptance against production frontend
         working-directory: frontend
         run: npm run test:e2e:deployment

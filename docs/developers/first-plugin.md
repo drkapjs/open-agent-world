@@ -1,5 +1,9 @@
 # Your first plugin
 
+For a passive card, start with [declarative cards](declarative-packs.md): a
+Schema 3 manifest and configuration schema replace the Python registration
+boilerplate. This tutorial demonstrates the compatible advanced Python path.
+
 **Goal:** create a Hello card with a saved `message` field. You will make three files; the host supplies the card interface and persistence. Finish [development setup](setup.md) first and stop the development server before adding a package.
 
 The complete [Hello World example](../../examples/plugins/hello_world/README.md) is included in the repository. You can copy it or create the files below yourself. Choose one approach so you only load one copy.

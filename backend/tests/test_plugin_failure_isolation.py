@@ -130,6 +130,22 @@ def test_source_metadata_is_discovered_before_any_import_or_path_mutation(tmp_pa
     assert loader.load_plugin_registry(tmp_path).has_plugin('test.batch1_static')
 
 
+def test_broken_editable_source_cannot_bypass_discovery_through_stale_metadata(tmp_path, monkeypatch):
+    import json
+    from types import SimpleNamespace
+    entry = write_plugin(tmp_path, 'batch1_stale')
+    source = tmp_path / entry.name
+    (source / 'pyproject.toml').write_text('broken toml [')
+    metadata = SimpleNamespace(name=entry.name, value=entry.value,
+        dist=SimpleNamespace(read_text=lambda name: json.dumps({'url': source.as_uri(), 'dir_info': {'editable': True}})),
+        load=lambda: pytest.fail('Stale editable entrypoint must not load'))
+    monkeypatch.setattr(loader, 'entry_points', lambda: {loader.ENTRY_POINT_GROUP: [metadata]})
+    registry = loader.load_plugin_registry(tmp_path)
+    assert not registry.has_plugin('test.batch1_stale')
+    assert len(registry.load_failures) == 1
+    assert registry.load_failures[0]['phase'] == 'discovery'
+
+
 @pytest.mark.parametrize('error', [sqlite3.DatabaseError('damaged database'), MemoryError('out of memory')])
 def test_storage_and_resource_failures_are_fatal(tmp_path, monkeypatch, error):
     write_plugin(tmp_path, 'batch1_fatal')
@@ -155,3 +171,26 @@ def test_core_only_never_discovers_optional_code(tmp_path, monkeypatch):
         assert {p['id'] for p in client.get('/api/catalog').json()['plugins']} == {'open-agent-world.core'}
         assert client.get('/api/packs').status_code == 200
     services.close()
+
+
+def test_core_only_reconciliation_retains_existing_source_resources(tmp_path):
+    from backend.packs.installation import PackInstallationManager
+    from backend.packs.lifecycle import ManagedResourceLedger
+    ledger = ManagedResourceLedger(tmp_path)
+    resource = 'environment:' + 'a' * 64
+    ledger.claim('source:retained.pack', resource)
+    registry = loader.load_plugin_registry(core_only=True)
+    manager = PackInstallationManager(tmp_path, registry)
+    assert manager.reconcile_resources(collect=True) == []
+    with ledger.connect() as db:
+        assert db.execute('SELECT resource FROM claims WHERE consumer=?', ('source:retained.pack',)).fetchone()['resource'] == resource
+
+
+def test_host_resource_accounting_failure_is_fatal(tmp_path, monkeypatch):
+    from backend.packs.lifecycle import ManagedResourceLedger
+    write_plugin(tmp_path / 'plugins', 'batch1_accounting')
+    def invalid(*args, **kwargs):
+        raise ValueError('Invalid resource accounting')
+    monkeypatch.setattr(ManagedResourceLedger, 'pin_process', invalid)
+    with pytest.raises(ValueError, match='Invalid resource accounting'):
+        loader.load_plugin_registry(tmp_path / 'plugins', data_root=tmp_path / 'profile')

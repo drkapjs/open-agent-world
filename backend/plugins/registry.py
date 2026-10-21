@@ -33,7 +33,7 @@ from backend.plugins.deployment import NodeDeploymentDefinition
 from backend.plugins.containers import NodeContainerDefinition
 from backend.plugins.execution import NodeExecutionDefinition
 
-PLUGIN_API_VERSION = "1.36"
+PLUGIN_API_VERSION = "1.37"
 _IDENTIFIER = re.compile(r"^[a-z][a-z0-9]*(?:[._:/-][a-z0-9]+)*$")
 _API_VERSION = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 
@@ -1015,8 +1015,6 @@ class PluginRegistry:
             raise PluginUnavailableError(f"Plugin {owner!r} is disabled")
 
     def assert_runtime_provider_enabled(self, provider_id: str) -> None:
-        if provider_id not in self._runtime_provider_factories:
-            raise PluginUnavailableError(f"Runtime provider {provider_id!r} is unavailable")
         self._assert_enabled("runtime_provider", provider_id)
 
     def has_trait(self, type_id: str, trait: str) -> bool:

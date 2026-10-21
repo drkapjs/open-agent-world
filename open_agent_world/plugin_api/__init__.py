@@ -1,4 +1,5 @@
 """Stable contracts for trusted Open Agent World Python plugins."""
+from backend.plugins.declarative import declarative_plugin
 from backend.agents.media import ToolImage, VisualToolResult, codex_tool_content
 from backend.packs.environments import PackEnvironmentManager, PythonEnvironmentSpec, EnvironmentHandle
 from backend.packs.executables import ExecutableEnvironmentManager, ExecutableEnvironmentSpec, ExecutableHandle
@@ -96,6 +97,7 @@ from backend.runs import InvocationContext, RuntimeInput
 from backend.world.models import Card, CardCreate, CardPatch, Edge
 
 __all__ = [
+    "declarative_plugin",
     "PackEnvironmentManager",
     "PluginContext",
     "ExecutableEnvironmentManager",

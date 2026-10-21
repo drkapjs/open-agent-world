@@ -112,7 +112,8 @@ class PackInstallationManager:
             selected = {'selected:' + key: self.resource_ids(manifest) for key, manifest in manifests.items()}
             # A partial discovery has no authority to release retained source
             # resources. A healthy restart reconciles this snapshot normally.
-            discovery_complete = not (self.registry and self.registry.load_failures)
+            discovery_complete = not (self.registry and (self.registry.load_failures
+                or not getattr(self.registry, 'source_discovery_complete', True)))
             sources = ({'source:' + key: self.source_resource_ids(spec) for key, spec in self.source_specs().items()
                        if self.source_enrolled(key)} if discovery_complete else {})
             ledger.replace_claims('selected:', selected)

@@ -49,6 +49,8 @@ def main(argv=None) -> None:
     parser.add_argument("--skip-build", action="store_true", help="Prepare for dev without building the production frontend")
     parser.add_argument("--core-only", action="store_true", help="Install only Core; omit optional Python runtimes and Packs")
     args = parser.parse_args(argv)
+    if args.core_only and args.plugin_path:
+        parser.error("--core-only cannot be combined with --plugin-path")
     paths = []
     for path in args.plugin_path:
         path = (ROOT / path).resolve()
@@ -70,8 +72,6 @@ def main(argv=None) -> None:
         install += ["--additional-path", str(path)]
     if not args.core_only:
         subprocess.run(install, cwd=ROOT, check=True)
-    elif paths:
-        parser.error("--core-only cannot be combined with --plugin-path")
     build_env = {**os.environ, "OPEN_AGENT_WORLD_CORE_ONLY": "1"} if args.core_only else os.environ.copy()
     build_env["OAW_ALLOW_PACK_FAILURES"] = "1"
     frontend = ROOT / "frontend"

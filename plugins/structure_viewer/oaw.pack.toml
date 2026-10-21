@@ -10,13 +10,7 @@ id = "science.structure-viewer"
 name = "Structure Viewer"
 
 [plugin]
-owner = "science.structure-viewer"
-packs = ["science.structure-viewer.default"]
 node_types = ["science.structure-viewer"]
-
-[components.backend]
-project = "pyproject.toml"
-mode = "host-adapter"
 
 [components.frontend]
 entry = "frontend/index.tsx"

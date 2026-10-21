@@ -46,7 +46,7 @@ def main():
     project_builder = commands.add_parser('build-project', help='Package a declared source project using prebuilt artifacts')
     project_builder.add_argument('source', type=Path)
     project_builder.add_argument('output', type=Path)
-    project_builder.add_argument('--backend-wheel', type=Path, required=True)
+    project_builder.add_argument('--backend-wheel', type=Path, help='Required for advanced Python plugins; omitted for declarative cards')
     project_builder.add_argument('--frontend-dir', type=Path)
     project_builder.add_argument('--dependency-wheels', type=Path)
     project_builder.add_argument('--plugin-api')
@@ -63,6 +63,9 @@ def main():
     verifier = commands.add_parser('verify', help='Fully verify selected Packs and prepared source dependencies without importing plugin code')
     verifier.add_argument('--data-root', type=Path, required=True)
     verifier.add_argument('--plugin-path', type=Path, action='append', default=[])
+    checker = commands.add_parser('check', help='Strictly activate plugins in a disposable process; any optional failure exits nonzero')
+    checker.add_argument('--plugin-path', type=Path, action='append', default=[])
+    checker.add_argument('--data-root', type=Path)
     for name in ('install', 'activate', 'status', 'uninstall-plan', 'gc'):
         command = commands.add_parser(name)
         command.add_argument('--data-root', type=Path, required=True)
@@ -92,6 +95,10 @@ def main():
         print(inspect_archive(args.artifact.read_bytes()).manifest.model_dump_json(indent=2))
     elif args.command == 'schema':
         print(json.dumps(PackManifest.model_json_schema(), indent=2))
+    elif args.command == 'check':
+        from backend.plugins.loader import load_plugin_registry
+        registry = load_plugin_registry(plugin_directories=tuple(args.plugin_path), data_root=args.data_root, strict=True)
+        print(json.dumps({'plugins': [item.id for item in registry.plugins()], 'failures': registry.load_failures}, indent=2))
     elif args.command == 'verify':
         from backend.packs.verification import verify_profile
         print(json.dumps(verify_profile(args.data_root, plugin_directories=tuple(args.plugin_path)), indent=2))

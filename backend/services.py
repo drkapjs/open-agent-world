@@ -4125,6 +4125,8 @@ def create_services(
     if (
         (saved_llm.base_url or saved_llm.api_key)
         and services.run_manager.default_runtime_provider_id is not None
+        and (plugin_registry.has_runtime_provider(services.run_manager.default_runtime_provider_id)
+             or services.run_manager.default_runtime_provider_id in (runtime_providers or {}))
     ):
         with startup_stage("initialize default Agent provider"):
             from backend.agents import AgentDependencyError

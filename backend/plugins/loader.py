@@ -30,7 +30,7 @@ def create_plugin(factory, *, data_root=None, source_root=None):
 def _failure(registry, identifier, origin, phase, exc, *, owner=None):
     # Storage corruption and resource exhaustion are host failures, including
     # when surfaced through plugin code. Never turn them into optional warnings.
-    if isinstance(exc, (sqlite3.Error, MemoryError)):
+    if phase == 'accounting' or isinstance(exc, (sqlite3.Error, MemoryError)):
         raise exc
     logging.getLogger(__name__).error("Plugin %s unavailable during %s (%s): %s", identifier, phase, origin, exc)
     registry.load_failures.append(dict(id=identifier, owner=owner, source=str(origin),
@@ -55,13 +55,14 @@ def load_plugin_registry(plugin_directory: Path | None = None, *, plugin_directo
     """
     registry = create_builtin_registry()
     if core_only or os.environ.get("OPEN_AGENT_WORLD_CORE_ONLY") == "1":
+        registry.source_discovery_complete = False
         return registry
     from backend.packs.spec import read_source_pack, _requirements
     from backend.packs.installation import PackInstallationManager
     directory = plugin_directory if plugin_directory is not None else Path(__file__).resolve().parents[2] / "plugins"
     enrollment = PackInstallationManager(data_root) if data_root is not None else None
     bundled_directory = directory.resolve()
-    local, source_specs = [], {}
+    local, source_specs, source_identities = [], {}, {}
     seen_roots = set()
     for directory in dict.fromkeys((directory, *plugin_directories)):
         if not directory.is_dir():
@@ -77,20 +78,33 @@ def load_plugin_registry(plugin_directory: Path | None = None, *, plugin_directo
                 declarations = project.get("entry-points", {}).get(ENTRY_POINT_GROUP, {})
                 if not isinstance(declarations, dict):
                     raise TypeError(f"{ENTRY_POINT_GROUP} must be a table")
-                if not declarations:
+                if not declarations and not (package / 'oaw.pack.toml').is_file():
                     continue
                 # Reserve discovered entrypoints even when static validation fails:
                 # an editable distribution must not bypass a broken declaration.
                 entries = [EntryPoint(name=name, value=value, group=ENTRY_POINT_GROUP)
                            for name, value in sorted(declarations.items()) if isinstance(value, str)]
                 local.extend((entry, manifest) for entry in entries)
+                if not entries:
+                    local.append((None, manifest))
                 spec = read_source_pack(package)
+                if spec.compatibility:
+                    from backend import __version__
+                    from backend.plugins.registry import _supports_plugin_api
+                    from packaging.specifiers import SpecifierSet
+                    from packaging.version import Version
+                    if not _supports_plugin_api(spec.compatibility.plugin_api) or Version(__version__) not in SpecifierSet(spec.compatibility.oaw):
+                        raise ValueError('Source Pack requires an incompatible OAW or Plugin API version')
                 identities = {value for value in (spec.owner, spec.distribution_id, *spec.packs) if value}
-                conflicts = [path for path, previous in source_specs.items() if previous is not None and
-                             identities & {previous.owner, previous.distribution_id, *previous.packs}]
+                conflicts = [path for path, previous in source_identities.items() if identities & previous]
+                # Keep conflicting identities reserved so a third declaration
+                # cannot become authoritative just because the first two failed.
+                source_identities[manifest] = identities
                 if conflicts:
                     for path in conflicts:
                         previous = source_specs[path]
+                        if previous is None:
+                            continue
                         source_specs[path] = None
                         _failure(registry, previous.distribution_id, path, "discovery",
                                  ValueError("Ambiguous source Pack identity"), owner=previous.owner)
@@ -105,9 +119,26 @@ def load_plugin_registry(plugin_directory: Path | None = None, *, plugin_directo
                 _failure(registry, package.name, manifest, "discovery", exc)
     discovered = entry_points()
     selected = discovered.select(group=ENTRY_POINT_GROUP) if hasattr(discovered, "select") else discovered.get(ENTRY_POINT_GROUP, ())
-    local_keys = {(entry.name, entry.value) for entry, _ in local}
-    candidates = local + [(entry, "installed distribution") for entry in sorted(selected, key=lambda item: item.name)
-                          if (entry.name, entry.value) not in local_keys]
+    local_keys = {(entry.name, entry.value) for entry, _ in local if entry is not None}
+    candidates = list(local)
+    for entry in sorted(selected, key=lambda item: item.name):
+        if (entry.name, entry.value) in local_keys:
+            continue
+        try:
+            # Editable distribution metadata can outlive a broken/changed source
+            # manifest. Its recorded source is authoritative; never activate its
+            # stale entrypoint as an independent installed distribution.
+            import json
+            from urllib.parse import urlsplit
+            from urllib.request import url2pathname
+            direct = entry.dist.read_text('direct_url.json') if entry.dist else None
+            if direct:
+                location = urlsplit(json.loads(direct)['url'])
+                if location.scheme == 'file' and Path(url2pathname(location.path)).resolve() in seen_roots:
+                    continue
+            candidates.append((entry, "installed distribution"))
+        except (Exception, SystemExit) as exc:
+            _failure(registry, entry.name, 'installed distribution metadata', 'discovery', exc)
     pending = []
     for entry, origin in candidates:
         spec = source_specs.get(origin)
@@ -120,8 +151,10 @@ def load_plugin_registry(plugin_directory: Path | None = None, *, plugin_directo
             if spec is not None and data_root is not None:
                 from backend.packs.lifecycle import ManagedResourceLedger, environment_resources
                 from backend.packs.adapters import activate_source_adapter, source_adapter_resource_ids
-                ManagedResourceLedger(data_root).pin_process(
-                    environment_resources(spec, origin.parent) | source_adapter_resource_ids(spec, data_root), label=spec.owner)
+                resources = environment_resources(spec, origin.parent) | source_adapter_resource_ids(spec, data_root)
+                phase = 'accounting'
+                ManagedResourceLedger(data_root).pin_process(resources, label=spec.owner)
+                phase = 'environment'
                 with startup_stage(f"check Pack installation ({spec.owner})"):
                     activate_source_adapter(spec, data_root)
             if isinstance(origin, Path):
@@ -130,10 +163,14 @@ def load_plugin_registry(plugin_directory: Path | None = None, *, plugin_directo
                 if source not in sys.path:
                     sys.path.insert(0, source)
             phase = "import"
-            factory = entry.load()
-            if not callable(factory):
-                raise TypeError("entry point must expose a plugin factory")
-            plugin = create_plugin(factory, data_root=data_root, source_root=origin.parent if isinstance(origin, Path) else None)
+            if entry is None:
+                from backend.plugins.declarative import declarative_plugin
+                plugin = declarative_plugin(spec)
+            else:
+                factory = entry.load()
+                if not callable(factory):
+                    raise TypeError("entry point must expose a plugin factory")
+                plugin = create_plugin(factory, data_root=data_root, source_root=origin.parent if isinstance(origin, Path) else None)
             if not isinstance(getattr(plugin, "descriptor", None), PluginDescriptor):
                 raise TypeError("plugin descriptor must be a PluginDescriptor")
             descriptor = plugin.descriptor
@@ -239,7 +276,9 @@ def load_installed_packs(registry: PluginRegistry, data_root: Path, *, strict: b
                     from backend.packs.modules import prepared_modules
                     origin = prepared_modules(manifest, manager.root / "cache" / "modules",
                         expected_digest=manager._checksums(manifest.id, manifest.version)[manifest.entrypoints.backend])
+                    phase = 'accounting'
                     ledger.register('modules:' + origin.name, origin, 'modules')
+                    phase = 'environment'
                 for module_name in manifest.module_names:
                     existing = importlib.util.find_spec(module_name)
                     if existing is None:

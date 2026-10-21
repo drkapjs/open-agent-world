@@ -78,10 +78,18 @@ with ledger.lease_many(resources, label='source-setup') as consumer:
 """
 
 
-def plugin_paths(directory: Path) -> list[Path]:
-    return [manifest.parent for manifest in sorted(directory.glob("*/pyproject.toml"))
-            if tomllib.loads(manifest.read_text(encoding="utf-8"))
-            .get("project", {}).get("entry-points", {}).get("open_agent_world.plugins")]
+def plugin_paths(directory: Path, *, strict=True) -> list[Path]:
+    paths = []
+    for manifest in sorted(directory.glob("*/pyproject.toml")):
+        try:
+            project = tomllib.loads(manifest.read_text(encoding="utf-8"))
+            if project.get("project", {}).get("entry-points", {}).get("open_agent_world.plugins") or (manifest.parent / "oaw.pack.toml").is_file():
+                paths.append(manifest.parent)
+        except (OSError, ValueError) as exc:
+            if strict:
+                raise
+            print(f"Optional Pack discovery failed ({manifest}): {exc}", file=sys.stderr)
+    return paths
 
 
 def main():
@@ -98,8 +106,8 @@ def main():
     args = parser.parse_args()
     if args.target and args.profile:
         parser.error("--target and --profile select different preparation destinations")
-    paths = list(dict.fromkeys(path.resolve() for path in
-                              [*(args.paths or plugin_paths(ROOT / "plugins")), *args.additional_path]))
+    defaults = args.paths or (plugin_paths(ROOT / "plugins", strict=False) if args.continue_on_error else plugin_paths(ROOT / "plugins"))
+    paths = list(dict.fromkeys(path.resolve() for path in [*defaults, *args.additional_path]))
     # Validate the whole request before invoking a package manager.
     for path in paths:
         if not (path / "pyproject.toml").is_file():
@@ -122,16 +130,23 @@ def main():
                   + "\n".join(failed), file=sys.stderr)
         return
     command = ["uv", "pip", "install", "--no-deps", "--python", args.python]
+    # Passive declarations have no Python distribution to install. Their
+    # dependencies still use PREPARE_DECLARED and the existing adapter manager.
+    adapter_paths = [path for path in paths if not (
+        (path / 'oaw.pack.toml').is_file()
+        and tomllib.loads((path / 'oaw.pack.toml').read_text(encoding='utf-8')).get('contributions', {}).get('cards')
+        and not tomllib.loads((path / 'pyproject.toml').read_text(encoding='utf-8')).get('project', {}).get('entry-points', {}).get('open_agent_world.plugins'))]
     if args.dry_run:
         command.append("--dry-run")
     if args.constraint:
         command += ["--constraint", str(args.constraint)]
     if args.target:
-        command += ["--target", str(args.target), *(str(path.resolve()) for path in paths)]
+        command += ["--target", str(args.target), *(str(path.resolve()) for path in adapter_paths)]
     else:
-        for path in paths:
+        for path in adapter_paths:
             command += ["--editable", str(path.resolve())]
-    subprocess.run(command, cwd=ROOT, check=True)
+    if adapter_paths:
+        subprocess.run(command, cwd=ROOT, check=True)
     if not args.dry_run:
         for path in paths:
             project = tomllib.loads((path / "pyproject.toml").read_text(encoding="utf-8"))["project"]

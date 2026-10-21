@@ -16,13 +16,17 @@ be preserved.
 
 ## Source declaration and schema 3
 
+Passive cards can use [declarative contributions](developers/declarative-packs.md)
+without Python registration code. `build-project` generates their adapter wheel;
+advanced plugins continue to pass `--backend-wheel`. Both use the same installer.
+
 New source projects declare installation intent in `oaw.pack.toml`. The source
 reader does not import the Pack or run setup hooks. Python dependencies remain
 in native `pyproject.toml`/requirements files and frontend dependencies remain
 in the Pack's own `frontend/package.json` and lockfile.
 
-The development launch scripts prepare source dependencies in the same `--profile`
-that the backend will use, before starting the server. For manual preparation,
+The setup scripts prepare source dependencies in the same `--profile`
+that the backend will use. Development startup never installs dependencies. For manual preparation,
 run `scripts/install-plugins.py --profile my-dev plugins/my_pack` with the backend
 interpreter. Without `--profile`, preparation uses `OPEN_AGENT_WORLD_DATA_ROOT` or
 the standard application data root. Uninstalled source Packs stay uninstalled

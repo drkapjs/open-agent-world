@@ -60,6 +60,11 @@ Plugin-specific documentation can remain in its own package or repository. These
 
 ## Developing a plugin
 
+Plugin API 1.37 adds [declarative cards](developers/declarative-packs.md) using
+Schema 3 contributions compiled into the existing registry. Passive cards can
+omit Python factories and repeated owner/Pack/card identities. Advanced plugins
+keep their existing lifecycle, capability and runtime contracts.
+
 Plugin API 1.36 adds `NodeDeploymentDefinition.from_document()`, shared Workspace
 sections and connected file-preview publication. Existing views and business
 handlers work in the published Workspace without a second API implementation;
