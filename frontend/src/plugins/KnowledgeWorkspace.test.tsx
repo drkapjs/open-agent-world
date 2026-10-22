@@ -371,8 +371,9 @@ it("extracts records from an upload through a connected Lab assistant run, then 
   const runAgent = vi.fn(async () => { extracted = true; });
   const getAgentInfo = vi.fn(async () => ({ session_id: "s", status: extracted ? "idle" : "running", active_run_id: null }));
   const action = open(async (name, args, confirm) => {
-    if (name === "schemas" && args.operation === "get") return { schema: { ...EXPERIMENT_SCHEMA, definition: EXPERIMENT_DEFINITION, system_prompt: "x", field_descriptions: null } };
-    if (name === "schemas") return { schemas: [EXPERIMENT_SCHEMA] };
+    if (name === "schemas") return args.operation === "get"
+      ? { schema: { ...EXPERIMENT_SCHEMA, definition: EXPERIMENT_DEFINITION, system_prompt: "x", field_descriptions: null } }
+      : { schemas: [EXPERIMENT_SCHEMA] };
     if (name === "experiment_bundles" && args.operation === "get") return { bundle: { ...BUNDLE, status: extracted ? "extracted" : "ready", records: extracted ? 1 : 0 } };
     if (name === "experiment_bundles") return { bundles: [{ ...BUNDLE, status: extracted ? "extracted" : "ready", records: extracted ? 1 : 0 }] };
     if (name === "experiments" && args.operation === "get") return { experiment: { ...RECORD, status: published ? "published" : "draft", sources: [{ source_id: "source-9", filename: "batch7.csv" }] } };
@@ -390,6 +391,8 @@ it("extracts records from an upload through a connected Lab assistant run, then 
   const region = within(await screen.findByRole("region", { name: "Experiments" }));
   fireEvent.click(await region.findByRole("tab", { name: /Batch 7/ }));
   fireEvent.click(await region.findByRole("button", { name: "Extract records" }));
+  fireEvent.click(within(await screen.findByRole("dialog", { name: "Extract records from this upload" }))
+    .getByRole("button", { name: "Extract records" }));
 
   await waitFor(() => expect(runAgent).toHaveBeenCalledTimes(1));
   const [agentId, prompt] = runAgent.mock.calls[0] as unknown as [string, string];
@@ -401,11 +404,13 @@ it("extracts records from an upload through a connected Lab assistant run, then 
   // The card never saves records itself: that is the agent's tool call.
   expect(action.mock.calls.some(([name]) => name === "experiment_save")).toBe(false);
 
-  // The agent goes idle; the record it saved appears and opens in the form.
+  // The agent goes idle; open its record, then enter the edit form explicitly.
   const record = await region.findByRole("button", { name: /A1/ }, { timeout: 8000 });
   fireEvent.click(record);
+  fireEvent.click(await region.findByRole("button", { name: "Edit" }));
   const field = await region.findByLabelText(/conductivity/) as HTMLInputElement;
   expect(field.value).toBe("1.2");
+  fireEvent.click(region.getByRole("button", { name: "Cancel" }));
 
   fireEvent.click(region.getByRole("button", { name: "Publish" }));
   expect(await region.findByText("Publish this record?")).toBeTruthy();
@@ -586,7 +591,9 @@ it("extracts records through the host bridge when no Lab assistant is connected"
   vi.stubGlobal("fetch", fetchMock);
   const runAgent = vi.fn();
   const action = open(async (name, args) => {
-    if (name === "schemas") return { schemas: [EXPERIMENT_SCHEMA] };
+    if (name === "schemas") return args.operation === "get"
+      ? { schema: { ...EXPERIMENT_SCHEMA, definition: EXPERIMENT_DEFINITION, system_prompt: "x", field_descriptions: null } }
+      : { schemas: [EXPERIMENT_SCHEMA] };
     if (name === "experiment_bundles") return { bundles: [BUNDLE] };
     if (name === "experiments") return { experiments: [] };
     return undefined;
@@ -596,6 +603,8 @@ it("extracts records through the host bridge when no Lab assistant is connected"
   const region = within(await screen.findByRole("region", { name: "Experiments" }));
   fireEvent.click(await region.findByRole("tab", { name: /Batch 7/ }));
   fireEvent.click(await region.findByRole("button", { name: "Extract records" }));
+  fireEvent.click(within(await screen.findByRole("dialog", { name: "Extract records from this upload" }))
+    .getByRole("button", { name: "Extract records" }));
 
   await waitFor(() => expect(fetchMock).toHaveBeenCalled());
   const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
@@ -617,8 +626,10 @@ it("summarises a failed extraction under the upload and opens its full run log i
     { id: "a3", type: "agent_progress", timestamp: "2026-10-21T06:13:11Z", text: "agent · model request 2, attempt 1 interrupted (JSONDecodeError)" }] };
   vi.stubGlobal("fetch", vi.fn(async (url: string) => ({ ok: true, json: async () =>
     url.endsWith("/runs/run-77") ? run : url.includes("/runs/run-77/activity") ? activity : { configured: false, source: null } })));
-  open(async name => {
-    if (name === "schemas") return { schemas: [EXPERIMENT_SCHEMA] };
+  open(async (name, args) => {
+    if (name === "schemas") return args.operation === "get"
+      ? { schema: { ...EXPERIMENT_SCHEMA, definition: EXPERIMENT_DEFINITION, system_prompt: "x", field_descriptions: null } }
+      : { schemas: [EXPERIMENT_SCHEMA] };
     if (name === "experiment_bundles") return { bundles: [{ ...BUNDLE, status: "failed", run_id: "run-77" }] };
     if (name === "experiments") return { experiments: [] };
     return undefined;
@@ -664,7 +675,9 @@ it("lets the person stop a running extraction and watch its log live", async () 
   const getAgentInfo = vi.fn(async () => ({ session_id: "s", status: "running", active_run_id: "run-88" }));
   let bundleStatus = "ready", bundleRun: string | null = null;
   open(async (name, args) => {
-    if (name === "schemas") return { schemas: [EXPERIMENT_SCHEMA] };
+    if (name === "schemas") return args.operation === "get"
+      ? { schema: { ...EXPERIMENT_SCHEMA, definition: EXPERIMENT_DEFINITION, system_prompt: "x", field_descriptions: null } }
+      : { schemas: [EXPERIMENT_SCHEMA] };
     if (name === "experiment_bundles") return { bundles: [{ ...BUNDLE, status: bundleStatus, run_id: bundleRun }] };
     if (name === "experiments") return { experiments: [] };
     if (name === "experiment_bundle_manage") { bundleStatus = String(args.status ?? bundleStatus); if (args.run_id) bundleRun = String(args.run_id); return { bundle: BUNDLE }; }
@@ -675,6 +688,8 @@ it("lets the person stop a running extraction and watch its log live", async () 
   const region = within(await screen.findByRole("region", { name: "Experiments" }));
   fireEvent.click(await region.findByRole("tab", { name: /Batch 7/ }));
   fireEvent.click(await region.findByRole("button", { name: "Extract records" }));
+  fireEvent.click(within(await screen.findByRole("dialog", { name: "Extract records from this upload" }))
+    .getByRole("button", { name: "Extract records" }));
   await waitFor(() => expect(runAgent).toHaveBeenCalled());
 
   // Stop and View log appear while the run is underway; the window is live.
