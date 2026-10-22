@@ -41,11 +41,14 @@ jobs:
         run: node --test frontend/scripts/source-startup.test.mjs
 
   backend:
-    name: Backend tests
+    name: Backend tests (${{ matrix.shard }}/4)
     runs-on: ubuntu-24.04
-    # The complete suite measured 39m20s and 44m21s on hosted runners.
-    # Leave room for runner variance and result upload; test deadlines stay unchanged.
-    timeout-minutes: 60
+    # Separate runners isolate tests that prepare plugins, files and subprocesses.
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -61,6 +64,7 @@ jobs:
         working-directory: backend
         run: uv sync --locked --all-extras --group dev
       - name: Verify startup with only locked Core dependencies
+        if: matrix.shard == 1
         run: |
           uv venv .tmp/core-only
           uv export --project backend --locked --no-dev --no-emit-project --no-hashes --output-file .tmp/core-requirements.txt
@@ -85,13 +89,16 @@ jobs:
       - name: Strict optional plugin activation
         run: backend/.venv/bin/python -c "from backend.plugins.loader import load_plugin_registry; load_plugin_registry(strict=True)"
       - name: Run backend and public SDK test suites
-        run: backend/.venv/bin/python .github/run-backend-tests.py tests backend/tests --junitxml=.tmp/backend-linux.xml
+        run: >-
+          backend/.venv/bin/python .github/run-backend-tests.py tests backend/tests
+          --shard ${{ matrix.shard }}/4 --durations=20
+          --junitxml=.tmp/backend-linux-${{ matrix.shard }}.xml
       - name: Upload backend results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: backend-linux-results
-          path: .tmp/backend-linux.xml
+          name: backend-linux-results-${{ matrix.shard }}
+          path: .tmp/backend-linux-${{ matrix.shard }}.xml
           include-hidden-files: true
           retention-days: 7
 

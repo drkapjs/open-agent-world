@@ -334,6 +334,14 @@ the executing job; never put values in card state, durable job parameters,
 responses, or logs. Credential writes use host-only settings endpoints, not
 Agent capabilities. Standalone callers may omit this callback.
 
+Alongside it, `resolve_model(reference)` resolves an OAW model reference
+(`oaw:default` or `oaw:model:…`) to a `RuntimeModelConnection` for a plugin that
+must call a model itself from its own job — the knowledge base's image
+transcription, for example. The same rules apply: resolve at execution time, use
+the key for that one request, and never persist it. Prefer the host bridge
+(`backend/api/knowledge_bridge.py` is the pattern) whenever the call can be
+made from the backend instead.
+
 For native resources without a canvas snapshot, set `deletion_warning` on the
 node definition. The UI confirms permanent deletion, clears undo history after
 success, and rejects copy or undo operations that would silently lose the native

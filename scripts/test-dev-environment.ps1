@@ -80,6 +80,9 @@ function uv {
 & (Join-Path $PSScriptRoot 'setup.ps1') -Profile 'fixture-profile' -PluginPath @('external plugin with spaces') -SkipBuild
 $expected = @('run', '--no-project', '--python', '>=3.11', (Join-Path $PSScriptRoot 'setup.py'), '--profile', 'fixture-profile', '--plugin-path', 'external plugin with spaces', '--skip-build')
 if (($global:OawTestSetupArguments | ConvertTo-Json -Compress) -ne ($expected | ConvertTo-Json -Compress)) { throw 'Setup wrapper changed arguments.' }
+& (Join-Path $PSScriptRoot 'setup.ps1') -Verbose --runtime adk --skip-build
+$expected = @('run', '--no-project', '--python', '>=3.11', (Join-Path $PSScriptRoot 'setup.py'), '--verbose', '--runtime', 'adk', '--skip-build')
+if (($global:OawTestSetupArguments | ConvertTo-Json -Compress) -ne ($expected | ConvertTo-Json -Compress)) { throw 'Setup wrapper did not forward portable Python flags.' }
 $global:OawTestSetupExitCode = 7
 try {
     & (Join-Path $PSScriptRoot 'setup.ps1')
