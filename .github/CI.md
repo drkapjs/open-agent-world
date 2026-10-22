@@ -28,8 +28,13 @@ to those branches, and manual dispatch. Check names already used by branch
 rules remain stable; there are no path filters, blanket skips, or
 `continue-on-error` bypasses.
 
-- `Backend tests`: all tests in `tests` and `backend/tests`, including public
-  SDK contracts, migrations, recovery, authorization, and run lifecycle tests.
+- `Backend tests (1/4)` through `(4/4)`: all tests in `tests` and `backend/tests`,
+  including public SDK contracts, migrations, recovery, authorization, and run
+  lifecycle tests. Pytest collects the complete suite on each runner, then assigns
+  sorted test files round-robin. Every file runs once, with its fixtures and test
+  order intact. Separate runners isolate plugin preparation and subprocesses.
+  `CI required` waits for all four shards; a failure does not cancel the others.
+  The Core-only installation smoke runs once, on shard 1.
 - `Frontend tests and build`: Vitest, TypeScript, Vite production build, and
   the deployment Playwright scenario plus shared-control, theme and popup
   acceptance in Chromium and WebKit against that build.
@@ -50,6 +55,11 @@ locked backend environment and the repository plugins:
 ```sh
 backend/.venv/bin/python .github/run-backend-tests.py tests backend/tests
 ```
+
+To reproduce a CI shard, append `--shard 1/4` (or `2/4`, `3/4`, `4/4`). Omitting
+the option runs the complete suite. Each shard uploads its own JUnit report and
+prints its 20 slowest tests. Sharding reduces elapsed time, not test coverage;
+total runner minutes can increase slightly because collection and setup repeat.
 
 On Windows use `backend/.venv/Scripts/python.exe`. The frontend commands are
 `npm --prefix frontend test`, `npm --prefix frontend run build`, and
