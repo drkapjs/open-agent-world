@@ -103,8 +103,9 @@ The installed artifact digest in the real run is:
 The original artifact is 4,191 bytes. Marketplace HTTP logs for the source-host
 run are under `.outputs/store-private/1790054003037759200/`; the Desktop payload
 run uses `.outputs/store-private/1790054980013217800/`. The service is stopped
-after acceptance. The official endpoint is still undeployed, so normal builds
-remain Store-unavailable until an endpoint is configured by the host.
+after acceptance. At the time of this historical run the official endpoint was
+undeployed. It is now bound to `https://open-agent-world.space`; current Schema 3
+results are recorded in [official Marketplace acceptance](official-marketplace.md).
 
 Transient validation issues were resolved: restricted test networking initially
 prevented PyPI provisioning, and the final pytest pass needed a workspace-local
