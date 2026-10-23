@@ -116,9 +116,8 @@ node frontend/scripts/run-pack-e2e.mjs --store-fake    # fake HTTP + offline
 ```
 
 The fake HTTP server implements catalog/search/pagination/detail/version and
-streams the fixture bytes. It is stopped before the offline UI scenario. Real
-Shared Python provisioning may download the fixture's declared `colorama`
-requirement from PyPI; the fake Marketplace itself never accesses GitHub.
+streams the Schema 3 fixture bytes. It is stopped before the offline UI scenario.
+Greeter has no Sandbox requirements; the fake Marketplace never accesses GitHub.
 
 The explicitly gated real acceptance can use an already running Marketplace:
 
@@ -141,11 +140,12 @@ CLI credential, sends it only to the Marketplace subprocess, and removes GitHub
 and Marketplace credential variables from the OAW/browser environment. It does
 not publish, upload, modify the Marketplace source or persist credentials.
 
-The real gate requires the original `example.greeter@0.1.0` artifact, 4,191 bytes:
-
-```text
-34ee377564f6fd7776a041cc8db82d6e9f8e5bd107c4b9287f416122259cffb5
-```
+The real gate requires the same Schema 3 Greeter version and bytes recorded by
+`scripts/build-external-greeter.py` in `.outputs/pack-acceptance/build.json` to be
+published separately. Historical Schema 1 releases are unsupported. Publishing
+or deleting Releases is an explicit operator action, never performed by this test.
+For `--store-official`, also set `OAW_PACK_VERSION` and `OAW_PACK_EXPECTED_SHA` to
+the published Schema 3 artifact's version and verified SHA-256.
 
 It checks the install database's actual digest after Get and runs the complete
 restart/Library/Deck/World/persisted-interaction scenario. Each fresh profile

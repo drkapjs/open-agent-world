@@ -1,3 +1,9 @@
+> Historical record. The subsequent pre-release cleanup removes Pack Schema 1
+> support and its acceptance fixture. Current contracts support Schema 2 content
+> and Schema 3 code-capable Packs only; historical hashes, compatibility claims
+> and `--host-only` build instructions below are not current requirements.
+> See [the current distribution guide](../../pack-distribution.md).
+
 # Pack Store Client V0 implementation and acceptance
 
 Implementation based on `dev` at `e91569b`, verified against `origin/dev` on
