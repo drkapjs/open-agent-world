@@ -127,9 +127,11 @@ test('Store offline leaves Packs Cards Deck and World usable', async ({ page, re
   await page.getByRole('button', { name: 'Open Pack and Card Library' }).click();
   const library = page.getByRole('dialog', { name: 'Pack & Card Library' });
   await library.getByRole('button', { name: 'Store', exact: true }).click();
-  await expect(library.getByText('Store unavailable', { exact: true })).toBeVisible();
+  // Real failed connections include OS connect time and the shared GET retries.
+  await expect(library.getByText('Store unavailable', { exact: true })).toBeVisible({ timeout: 45000 });
   await library.getByRole('button', { name: 'Retry', exact: true }).click();
-  await expect(library.getByText('Store unavailable', { exact: true })).toBeVisible();
+  await expect(library.getByText('Loading…', { exact: true })).toBeVisible();
+  await expect(library.getByText('Store unavailable', { exact: true })).toBeVisible({ timeout: 45000 });
   await page.screenshot({ path: `${process.env.OAW_PACK_E2E_DATA_ROOT}/store-offline.png` });
   await library.getByRole('button', { name: /^Packs/ }).click();
   await expect(library.locator('[data-pack-id="example.greeter"]')).toBeVisible();
@@ -137,6 +139,16 @@ test('Store offline leaves Packs Cards Deck and World usable', async ({ page, re
   await library.getByRole('button', { name: /^Cards/ }).click();
   await expect(library.getByRole('heading', { name: 'Card Library', exact: true })).toBeVisible();
   await library.getByRole('button', { name: 'Close Library', exact: true }).click();
-  await expect(page.getByRole('complementary', { name: 'Active card deck' })).toBeVisible();
+  const tray = page.getByRole('complementary', { name: 'Active card deck' });
+  await tray.hover();
+  await expect(tray.getByRole('button', { name: 'Place Greeter', exact: true })).toBeVisible();
+  await page.getByLabel('Greeter name', { exact: true }).fill('Offline World');
+  await page.getByRole('button', { name: 'Greet', exact: true }).click();
+  await expect(page.locator('[data-greeter-output]')).toHaveText('Hello, Offline World!');
+  await page.reload();
+  await expect(page.locator('[data-greeter-output]')).toHaveText('Hello, Offline World!');
+  await expect(page.locator('[data-greeter-output]')).toBeVisible();
+  await expect(page.locator('.node-inspector-content').filter({ has: page.locator('[data-greeter-output]') })).toHaveCSS('opacity', '1');
+  await page.screenshot({ path: `${process.env.OAW_PACK_E2E_DATA_ROOT}/greeter-offline.png`, animations: 'disabled' });
   expect((await request.get('/api/health')).ok()).toBe(true);
 });

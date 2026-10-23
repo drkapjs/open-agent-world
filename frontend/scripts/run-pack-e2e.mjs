@@ -100,8 +100,19 @@ try {
   await run(source === 'local' ? 'install local' : 'install remote');
   if (!declarative) { await stop(); await start(); await run('restart activates'); }
   if (declarative) { await stop(); await start(); await run('saved note'); }
-  if (marketplace) { await marketplace.stop(); marketplace = undefined; await run('Store offline'); }
-  const receipt = { status: 'passed', source, productionEndpoint, marketplaceOverride: official ? false : Boolean(env.OPEN_AGENT_WORLD_MARKETPLACE_URL), desktopPayload: payload ?? null, ...build, dataRoot, url, sha256: expectedSha };
+  if (marketplace || official) {
+    await stop();
+    if (marketplace) { await marketplace.stop(); marketplace = undefined; }
+    if (official) {
+      // Block upstream HTTP only in this host process. Keep the embedded default
+      // and no Marketplace override, including across an offline cold start.
+      env.HTTP_PROXY = env.HTTPS_PROXY = env.ALL_PROXY = 'http://127.0.0.1:9';
+      env.NO_PROXY = 'localhost,127.0.0.1,::1';
+    }
+    await start();
+    await run('Store offline');
+  }
+  const receipt = { status: 'passed', source, productionEndpoint, marketplaceOverride: official ? false : Boolean(env.OPEN_AGENT_WORLD_MARKETPLACE_URL), desktopPayload: payload ?? null, ...build, version: env.OAW_PACK_VERSION, dataRoot, url, sha256: expectedSha, offlineRestart: official || source === 'store-fake' };
   await writeFile(path.join(dataRoot, 'receipt.json'), JSON.stringify(receipt, null, 2));
   console.log(JSON.stringify(receipt));
 } finally {
