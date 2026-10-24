@@ -1,4 +1,4 @@
-"""End-to-end pipeline: upload, convert, project, review, graph — with no host at all.
+"""End-to-end pipeline: upload, convert, extract, review, graph — with no host at all.
 
 The suite drives the same handlers the OAW card and the service call, through the
 plain :class:`~oaw_knowledge_base.context.KnowledgeContext`, so it runs in any venv
@@ -13,9 +13,10 @@ import pytest
 pytest.importorskip("mkb", reason="Install mat-know-base into this environment")
 pytest.importorskip("sqlalchemy")
 
-from oaw_knowledge_base import actions, client  # noqa: E402
+from oaw_knowledge_base import actions, client, insights, knowledge  # noqa: E402
 from oaw_knowledge_base.context import KnowledgeContext, MemorySettings  # noqa: E402
-from oaw_knowledge_base.errors import KnowledgeError  # noqa: E402
+from oaw_knowledge_base.errors import KnowledgeError
+from oaw_knowledge_base.experiment_store import ConflictingRevision  # noqa: E402
 
 SCHEMA = {
     "type": "object",
@@ -207,96 +208,396 @@ def test_schemas_default_to_literature_and_can_be_tagged_and_filtered(card):
     assert retagged["kind"] == "literature"
 
 
-def test_graph_schema_is_one_stored_pointer_restricted_to_literature_schemas(card):
-    # Unset until someone chooses one; "get" alone never fails.
-    assert run(card, actions.graph_schema)["schema_id"] == ""
-    assert run(card, actions.overview)["graph_schema_id"] is None
+def _knowledge(card, source_id, entities, relations=(), **extra):
+    draft = run(card, knowledge.knowledge_draft_manage, operation="create", source_ids=[source_id],
+                **extra)["draft"]
+    return run(card, knowledge.knowledge_save, draft_id=draft["id"], source_id=source_id,
+               entities=entities, relations=list(relations))["draft"]
 
-    literature = run(card, actions.schemas, operation="create", name="Process graph",
-                     definition=SCHEMA, system_prompt="x")["schema"]
-    experiment = run(card, actions.schemas, operation="create", name="Synthesis run",
-                     definition=SCHEMA, system_prompt="x", kind="experiment")["schema"]
 
+def test_a_knowledge_draft_over_two_sources_merges_and_publishes_into_the_literature_layer(card):
+    first, _ = ingest_document(card, filename="sintering.md")
+    second, _ = ingest_document(card, "# Hot pressing\n\nSi3N4 densified by hot pressing.", "hot.md")
+
+    # A draft is opened by a person over converted sources only; its title defaults
+    # to the first file's name, counting the rest.
     with pytest.raises(KnowledgeError):
-        run(card, actions.graph_schema, operation="set", schema_id=experiment["id"])
+        run(card, knowledge.knowledge_draft_manage, operation="create", source_ids=[str(uuid.uuid4())])
+    draft = run(card, knowledge.knowledge_draft_manage, operation="create",
+                source_ids=[first, second])["draft"]
+    assert draft["title"] == "sintering.md +1" and draft["status"] == "draft"
+    assert [item["source_id"] for item in draft["sources"]] == [first, second]
+    assert all(item["extracted_at"] is None for item in draft["sources"])
 
-    set_result = run(card, actions.graph_schema, operation="set", schema_id=literature["id"])
-    assert set_result["schema_id"] == literature["id"]
-    assert run(card, actions.graph_schema)["schema_id"] == literature["id"]
-    assert run(card, actions.overview)["graph_schema_id"] == literature["id"]
+    prompt = run(card, knowledge.knowledge_extract_prompt, source_id=first, draft_id=draft["id"])
+    assert "related_to" in prompt["suggested_predicates"] and prompt["existing_predicates"] == []
+    assert "Si3N4" in prompt["markdown"] and prompt["existing"] == [] and prompt["filename"] == "sintering.md"
+    with pytest.raises(KnowledgeError):
+        run(card, knowledge.knowledge_extract_prompt, source_id=str(uuid.uuid4()), draft_id=draft["id"])
 
-    # Setting it again to a blank id clears it.
-    cleared = run(card, actions.graph_schema, operation="set", schema_id="")
-    assert cleared["schema_id"] == ""
-    assert run(card, actions.overview)["graph_schema_id"] is None
+    # Predicates are normalised and concepts keyed by name; each source adds itself as evidence.
+    saved = run(card, knowledge.knowledge_save, draft_id=draft["id"], source_id=first,
+                entities=[{"name": "Si3N4", "description": "a ceramic"},
+                          {"name": "Sintering"}, {"name": "Density"}],
+                relations=[{"source": "Si3N4", "target": "Sintering", "predicate": "is processed by",
+                            "evidence_level": 2, "snippet": "Si3N4 was sintered"},
+                           {"source": "Density", "target": "Si3N4", "type": "measured_by"}])
+    assert saved["added"] == {"entities": 3, "relations": 2}
+    saved = run(card, knowledge.knowledge_save, draft_id=draft["id"], source_id=second,
+                entities=[{"name": "silicon nitride", "aliases": ["Si3N4"]}, {"name": "Hot pressing"}],
+                relations=[{"source": "Si3N4", "target": "Hot pressing", "predicate": "densified by"}])["draft"]
+    by_name = {item["name"]: item for item in saved["entities"]}
+    assert set(by_name) == {"Si3N4", "Sintering", "Density", "silicon nitride", "Hot pressing"}
+    assert by_name["Sintering"]["source_ids"] == [first] and by_name["silicon nitride"]["aliases"] == ["Si3N4"]
+    assert len(saved["relations"]) == 3 and all(item["extracted_at"] for item in saved["sources"])
+    processed = next(item for item in saved["relations"] if item["predicate"] == "processed_by")
+    assert processed["evidence_level"] == 2 and processed["snippet"] == "Si3N4 was sintered"
+    prompt = run(card, knowledge.knowledge_extract_prompt, source_id=second, draft_id=draft["id"])
+    assert prompt["existing"][0] == {"name": "Si3N4", "aliases": []}
+    assert {"predicate": "measured_by", "count": 1} in prompt["existing_predicates"]
 
+    # A person merges the duplicate by renaming it onto the other: relations follow the old id.
+    edited = run(card, knowledge.knowledge_update, draft_id=draft["id"], expected_revision=saved["revision"],
+                 entities=[{**item, "name": "Si3N4"} if item["name"] == "silicon nitride" else item
+                           for item in saved["entities"]], relations=saved["relations"])["draft"]
+    assert sorted(item["name"] for item in edited["entities"]) == ["Density", "Hot pressing", "Si3N4", "Sintering"]
+    si3n4 = next(item for item in edited["entities"] if item["name"] == "Si3N4")
+    assert sorted(si3n4["source_ids"]) == sorted([first, second]) and si3n4["aliases"] == []
+    assert {(r["source"], r["predicate"], r["target"]) for r in edited["relations"]} == {
+        ("concept:si3n4", "processed_by", "concept:sintering"),
+        ("concept:density", "measured_by", "concept:si3n4"),
+        ("concept:si3n4", "densified_by", "concept:hot_pressing")}
 
-def test_full_loop_publishes_only_approved_facts(card):
-    source_id, _ = ingest_document(card)
-    record_id = run(card, actions.sources)["sources"][0]["record_id"]
-
-    schema = run(card, actions.schemas, operation="create", name="Process graph",
-                 definition=SCHEMA, system_prompt="Extract entities and relations.",
-                 description="Samples and the processes applied to them")["schema"]
-
-    prompt = run(card, actions.projection_prompt, schema_id=schema["id"], source_id=source_id)
-    assert prompt["system_prompt"] == "Extract entities and relations."
-    assert "Si3N4" in prompt["markdown"]
-    assert prompt["record_id"] == record_id
-    assert prompt["artifact_id"]
-
-    extracted = {
-        "entities": [
-            {"type": "material", "name": "Si3N4", "form": "powder"},
-            {"type": "process", "name": "Sintering", "temperature_c": 1750},
-        ],
-        "relations": [{"source": "Si3N4", "target": "Sintering", "type": "processed_by"}],
-    }
-    saved = run(card, actions.save_projection, schema_id=schema["id"], record_id=record_id,
-                data=extracted, model="test-model")["projection"]
-    assert saved["validation"]["valid"] is True
-
-    stored = run(card, actions.projections, projection_id=saved["id"])["projection"]
-    assert stored["data"] == extracted
-    assert stored["evidence"] and stored["evidence"][0]["source_id"] == source_id
-
-    # Saving a projection copies the record's evidence, so the source listing must still
-    # resolve the record itself rather than the projection that cites the same artifact.
-    assert run(card, actions.sources)["sources"][0]["record_id"] == record_id
-
-    built = run(card, actions.draft, operation="create", projection_ids=[saved["id"]])["draft"]
-    assert built["entities"] == 2 and built["relations"] == 1
-
-    # An unapproved draft must not reach the graph.
+    # Nothing reaches the graph until a person confirms publishing.
     assert run(card, actions.graph)["entities"] == []
-
-    run(card, actions.review, operation="submit", draft_id=built["id"], expected_revision=1)
-    pending = run(card, actions.review, operation="approve", draft_id=built["id"],
-                  expected_revision=1)
+    pending = run(card, knowledge.knowledge_review, operation="publish", draft_id=draft["id"])
     assert pending["status"] == "confirmation_required"
     assert run(card, actions.graph)["entities"] == []
+    confirmed = KnowledgeContext(card.node_id, card.storage_path, state=card.state, confirmed=True)
+    published = run(confirmed, knowledge.knowledge_review, operation="publish", draft_id=draft["id"])
+    assert published["graph"] == {"entities": 4, "relations": 3} and published["draft"]["status"] == "published"
 
-    confirmed = KnowledgeContext(card.node_id, card.storage_path, state=card.state,
-                                 confirmed=True)
-    published = run(confirmed, actions.review, operation="approve", draft_id=built["id"],
-                    expected_revision=1)
-    assert published["decision"] == "APPROVED"
-    assert published["event"]["type"] == "fact.revision.published"
-    assert published["graph"] == {"entities": 2, "relations": 1}
+    result = run(card, actions.graph, layer="literature")
+    assert sorted(item["name"] for item in result["entities"]) == ["Density", "Hot pressing", "Si3N4", "Sintering"]
+    node = next(item for item in result["entities"] if item["name"] == "Si3N4")
+    assert node["type"] == "concept" and sorted(node["properties"]["source_ids"]) == sorted([first, second])
+    assert node["properties"]["description"] == "a ceramic"
+    edge = next(item for item in result["relations"] if item["type"] == "processed_by")
+    assert edge["properties"]["evidence_level"] == 2 and edge["properties"]["snippet"] == "Si3N4 was sintered"
+    neighbours = run(card, actions.graph, operation="traverse", entity_id=node["id"])
+    assert {item["name"] for item in neighbours["entities"]} == {"Si3N4", "Sintering", "Density", "Hot pressing"}
+    summary = run(card, actions.overview)["counts"]
+    assert summary["knowledge_drafts"] == 1 and summary["published_knowledge"] == 1
+    assert summary["entities"] == 4 and summary["layers"]["literature"]["relations"] == 3
 
-    result = run(card, actions.graph)
-    assert sorted(item["name"] for item in result["entities"]) == ["Si3N4", "Sintering"]
-    assert result["relations"][0]["type"] == "processed_by"
+    # A published draft is read-only until unpublished; republishing upserts.
+    for handler, arguments in ((knowledge.knowledge_update, {"title": "x"}),
+                               (knowledge.knowledge_save, {"source_id": first, "entities": [{"name": "A"}]}),
+                               (knowledge.knowledge_draft_manage, {"operation": "delete"})):
+        with pytest.raises(KnowledgeError):
+            run(card, handler, draft_id=draft["id"], **arguments)
+    run(card, knowledge.knowledge_review, operation="unpublish", draft_id=draft["id"])
+    assert run(card, actions.graph)["entities"] == []
+    assert run(card, knowledge.knowledge_drafts, operation="get", draft_id=draft["id"])["draft"]["status"] == "draft"
+    run(confirmed, knowledge.knowledge_review, operation="publish", draft_id=draft["id"])
+    run(confirmed, knowledge.knowledge_review, operation="unpublish", draft_id=draft["id"])
+    run(confirmed, knowledge.knowledge_review, operation="publish", draft_id=draft["id"])
+    assert run(card, actions.overview)["counts"]["entities"] == 4
 
-    material = next(item for item in result["entities"] if item["name"] == "Si3N4")
-    assert material["properties"]["form"] == "powder"
-    neighbours = run(card, actions.graph, operation="traverse", entity_id=material["id"])
-    assert {item["name"] for item in neighbours["entities"]} == {"Si3N4", "Sintering"}
 
-    summary = run(card, actions.overview)
-    assert summary["counts"]["facts"] == 1
-    assert summary["counts"]["entities"] == 2
-    assert summary["counts"]["pending_review"] == 0
+def test_outline_section_prompts_and_lookup_consult_the_draft_and_the_published_graph(card):
+    text = ("Preamble before any heading.\n\n# Title\n\n## 1 Introduction\n\nLLZO is a garnet electrolyte.\n\n"
+            "## 2 Methods\n\nSintering at 1200 C improves the ionic conductivity of LLZO.\n\n"
+            "### 2.1 XRD\n\nPhase purity was checked by XRD.\n")
+    first, _ = ingest_document(card, text, "llzo.md")
+    second, _ = ingest_document(card, "# Other\n\nLi7La3Zr2O12 pellets were hot pressed.\n", "other.md")
+
+    sections = run(card, knowledge.knowledge_source_outline, source_id=first)
+    assert sections["filename"] == "llzo.md" and sections["total_characters"] == len(text)
+    paths = [item["heading_path"] for item in sections["sections"]]
+    assert paths == ["", "Title", "Title > 1 Introduction", "Title > 2 Methods", "Title > 2 Methods > 2.1 XRD"]
+    methods = sections["sections"][3]
+    assert text[methods["offset"]:methods["offset"] + methods["length"]].startswith("## 2 Methods")
+
+    # A section-scoped prompt returns exactly that section; by index or by heading.
+    prompt = run(card, knowledge.knowledge_extract_prompt, source_id=first, section=3)
+    assert prompt["heading_path"] == "Title > 2 Methods" and prompt["section"] == 3
+    assert prompt["markdown"].startswith("## 2 Methods") and "XRD" not in prompt["markdown"]
+    assert prompt["total_characters"] == methods["length"] and prompt["has_more"] is False
+    assert run(card, knowledge.knowledge_extract_prompt, source_id=first, heading="2.1 XRD")["section"] == 4
+    with pytest.raises(KnowledgeError):
+        run(card, knowledge.knowledge_extract_prompt, source_id=first, section=99)
+
+    # A published draft over the first source, then a second draft over the other.
+    one = _knowledge(card, first, [{"name": "LLZO", "aliases": ["Li7La3Zr2O12"]}, {"name": "ionic conductivity"},
+                                   {"name": "Sintering"}],
+                     [{"source": "Sintering", "target": "ionic conductivity", "predicate": "improves"},
+                      {"source": "LLZO", "target": "ionic conductivity", "predicate": "has property"}])
+    confirmed = KnowledgeContext(card.node_id, card.storage_path, state=card.state, confirmed=True)
+    run(confirmed, knowledge.knowledge_review, operation="publish", draft_id=one["id"])
+    two = run(card, knowledge.knowledge_draft_manage, operation="create", source_ids=[second])["draft"]
+    run(card, knowledge.knowledge_save, draft_id=two["id"], source_id=second,
+        entities=[{"name": "Hot pressing"}], relations=[])
+
+    found = run(card, knowledge.knowledge_lookup, terms=["li7la3zr2o12", "pressing", "nothing-here"], draft_id=two["id"])
+    assert found["in_draft"] == [{"name": "Hot pressing", "aliases": [], "matched": ["pressing"], "predicates": []}]
+    assert found["published"] == [{"name": "LLZO", "aliases": ["Li7La3Zr2O12"], "matched": ["li7la3zr2o12"],
+                                   "predicates": ["has_property"]}]
+    assert found["predicates"] == [{"predicate": "has_property", "count": 1}, {"predicate": "improves", "count": 1}]
+
+    # The extract prompt for the second draft points at the published names its text mentions.
+    prompt = run(card, knowledge.knowledge_extract_prompt, source_id=second, draft_id=two["id"])
+    assert prompt["published"] == [{"name": "LLZO", "aliases": ["Li7La3Zr2O12"]}]
+    assert prompt["existing"] == [{"name": "Hot pressing", "aliases": []}]
+
+
+def test_an_audit_reviews_a_draft_against_the_published_graph_and_logs_what_it_applied(card):
+    first, _ = ingest_document(card, filename="a.md")
+    second, _ = ingest_document(card, "# B\n\nLLZO again.", "b.md")
+    one = _knowledge(card, first, [{"name": "Li7La3Zr2O12", "aliases": ["garnet"]}, {"name": "ionic conductivity"}],
+                     [{"source": "Li7La3Zr2O12", "target": "ionic conductivity", "predicate": "has property"}])
+    confirmed = KnowledgeContext(card.node_id, card.storage_path, state=card.state, confirmed=True)
+    run(confirmed, knowledge.knowledge_review, operation="publish", draft_id=one["id"])
+    two = _knowledge(card, second, [{"name": "LLZO", "aliases": ["Li7La3Zr2O12"]}, {"name": "Ionic conductivities"},
+                                    {"name": "Table 2"}, {"name": "sintering"}],
+                     [{"source": "LLZO", "target": "Ionic conductivities", "predicate": "exhibits", "evidence_level": 2},
+                      {"source": "sintering", "target": "Ionic conductivities", "predicate": "improves"},
+                      {"source": "sintering", "target": "Ionic conductivities", "predicate": "degrades"}])
+
+    # The published draft is not reviewable in place; the open one yields findings.
+    with pytest.raises(KnowledgeError):
+        run(card, knowledge.knowledge_audit_prompt, draft_id=one["id"])
+    prompt = run(card, knowledge.knowledge_audit_prompt, draft_id=two["id"])
+    assert prompt["revision"] == two["revision"] and "merge_concepts" in prompt["operations"]
+    stats = prompt["statistics"]
+    assert stats["isolated"] == ["Table 2"]
+    assert stats["contradictions"] == [{"a": "Ionic conductivities", "b": "sintering", "predicates": ["improves", "degrades"]}]
+    assert stats["published_matches"] == [{"draft_name": "LLZO", "published_name": "Li7La3Zr2O12", "published_aliases": ["garnet"]}]
+    assert prompt["draft"]["relations"][0]["snippet"] is None and len(prompt["draft"]["entities"]) == 4
+
+    applied = run(card, knowledge.knowledge_audit_apply, draft_id=two["id"], expected_revision=two["revision"], operations=[
+        {"op": "merge_concepts", "keep": "Li7La3Zr2O12", "drop": ["LLZO"], "reason": "published name"},
+        {"op": "rename_predicate", "from": "exhibits", "to": "has_property"},
+        {"op": "delete_relation", "source": "sintering", "predicate": "degrades", "target": "Ionic conductivities"},
+        {"op": "delete_concept", "name": "Table 2", "reason": "metadata"},
+        {"op": "delete_concept", "name": "nothing"},
+        {"op": "flag", "message": "check sintering"}])
+    assert applied["applied"] == 5 and applied["skipped"] == 1
+    draft = applied["draft"]
+    assert sorted(item["name"] for item in draft["entities"]) == ["Ionic conductivities", "Li7La3Zr2O12", "sintering"]
+    kept = next(item for item in draft["entities"] if item["name"] == "Li7La3Zr2O12")
+    assert kept["aliases"] == ["LLZO"] and kept["source_ids"] == [second]
+    assert {(item["source"], item["predicate"]) for item in draft["relations"]} == {
+        ("concept:li7la3zr2o12", "has_property"), ("concept:sintering", "improves")}
+    assert len(draft["review_log"]) == 1 and draft["review_log"][0]["before"] == {"concepts": 4, "relations": 3}
+    assert draft["review_log"][0]["after"] == {"concepts": 3, "relations": 2}
+    assert draft["review_log"][0]["skipped"][0]["op"] == "delete_concept"
+    assert draft["revision"] == two["revision"] + 1
+    with pytest.raises(ConflictingRevision):
+        run(card, knowledge.knowledge_audit_apply, draft_id=two["id"], expected_revision=two["revision"], operations=[])
+    with pytest.raises(KnowledgeError):
+        run(card, knowledge.knowledge_audit_apply, draft_id=two["id"], operations=[
+            {"op": "delete_concept", "name": name} for name in ("Li7La3Zr2O12", "Ionic conductivities", "sintering")])
+
+    # Publishing the reviewed draft joins the published node instead of duplicating it.
+    run(confirmed, knowledge.knowledge_review, operation="publish", draft_id=two["id"])
+    names = sorted(item["name"] for item in run(card, actions.graph, layer="literature")["entities"])
+    assert names == ["Ionic conductivities", "Li7La3Zr2O12", "ionic conductivity", "sintering"]
+    node = next(item for item in run(card, actions.graph, layer="literature")["entities"] if item["name"] == "Li7La3Zr2O12")
+    assert sorted(node["properties"]["aliases"]) == ["LLZO", "garnet"]
+
+
+def test_a_graph_review_rewrites_every_published_draft_and_rebuilds_the_layer_on_confirmation(card):
+    first, _ = ingest_document(card, filename="a.md")
+    second, _ = ingest_document(card, "# B\n\nLLZO again.", "b.md")
+    one = _knowledge(card, first, [{"name": "Li7La3Zr2O12"}, {"name": "ionic conductivity"}],
+                     [{"source": "Li7La3Zr2O12", "target": "ionic conductivity", "predicate": "has property"}])
+    two = _knowledge(card, second, [{"name": "LLZO"}, {"name": "ionic conductivity"}, {"name": "Figure 1"}],
+                     [{"source": "LLZO", "target": "ionic conductivity", "predicate": "exhibits"}])
+    with pytest.raises(KnowledgeError):  # nothing published yet
+        run(card, knowledge.knowledge_graph_audit_prompt)
+    confirmed = KnowledgeContext(card.node_id, card.storage_path, state=card.state, confirmed=True)
+    for draft in (one, two):
+        run(confirmed, knowledge.knowledge_review, operation="publish", draft_id=draft["id"])
+    assert run(card, actions.overview)["counts"]["entities"] == 4
+
+    prompt = run(card, knowledge.knowledge_graph_audit_prompt)
+    assert sorted(prompt["draft_ids"]) == sorted([one["id"], two["id"]])
+    assert prompt["draft"]["title"] == "Published knowledge" and len(prompt["draft"]["entities"]) == 4
+    assert prompt["statistics"]["isolated"] == ["Figure 1"]
+    assert {item["predicate"] for item in prompt["statistics"]["predicates"]} == {"has_property", "exhibits"}
+
+    operations = [{"op": "merge_concepts", "keep": "Li7La3Zr2O12", "drop": ["LLZO"], "reason": "acronym"},
+                  # A model that thinks aloud inside the field is trimmed, not refused.
+                  {"op": "rename_predicate", "from": "exhibits", "to": "has_property", "reason": "wait, " * 400},
+                  {"op": "delete_concept", "name": "Figure 1"},
+                  {"op": "delete_concept", "name": "nowhere"}]
+    # Rewriting published knowledge is gated like publishing: nothing moves without confirmation.
+    pending = run(card, knowledge.knowledge_graph_audit_apply, operations=operations)
+    assert pending["status"] == "confirmation_required" and "2 published draft(s)" in pending["reasons"][0]
+    assert run(card, actions.overview)["counts"]["entities"] == 4
+
+    result = run(confirmed, knowledge.knowledge_graph_audit_apply, operations=operations)
+    assert result["drafts"] == [two["id"]] and result["applied"] == 3
+    reviewed_log = run(card, knowledge.knowledge_drafts, operation="get", draft_id=two["id"])["draft"]["review_log"][0]
+    assert len(next(item for item in reviewed_log["operations"] if item["op"] == "rename_predicate")["reason"]) <= 300
+    assert result["skipped"] == [{"index": 3, "op": "delete_concept", "name": "nowhere",
+                                 "skipped": "no published draft holds that element"}]
+    assert result["graph"] == {"entities": 2, "relations": 1}
+    graph = run(card, actions.graph, layer="literature")
+    node = next(item for item in graph["entities"] if item["name"] == "Li7La3Zr2O12")
+    assert node["properties"]["aliases"] == ["LLZO"] and sorted(node["properties"]["source_ids"]) == sorted([first, second])
+    assert graph["relations"][0]["type"] == "has_property" and sorted(graph["relations"][0]["properties"]["source_ids"]) == sorted([first, second])
+    reviewed = run(card, knowledge.knowledge_drafts, operation="get", draft_id=two["id"])["draft"]
+    assert reviewed["status"] == "published" and [item["name"] for item in reviewed["entities"]] == ["Li7La3Zr2O12", "ionic conductivity"]
+    assert reviewed["review_log"][0]["scope"] == "graph" and reviewed["review_log"][0]["after"] == {"concepts": 2, "relations": 1}
+    assert run(card, knowledge.knowledge_drafts, operation="get", draft_id=one["id"])["draft"]["review_log"] == []
+
+    # Draft and graph ids still agree: unpublishing removes exactly the rewritten draft's claim.
+    run(card, knowledge.knowledge_review, operation="unpublish", draft_id=two["id"])
+    remaining = run(card, actions.graph, layer="literature")
+    assert sorted(item["name"] for item in remaining["entities"]) == ["Li7La3Zr2O12", "ionic conductivity"]
+    run(card, knowledge.knowledge_review, operation="unpublish", draft_id=one["id"])
+    assert run(card, actions.graph)["entities"] == []
+
+
+def test_a_name_query_returns_every_relation_touching_the_concept_with_names_and_statements(card):
+    """What the Lab assistant asks: "what does the base say about DPA-SSE and NEB?"."""
+    first, _ = ingest_document(card, "# Paper\n\nDPA-SSE and NEB.", "dpa.md")
+    draft = _knowledge(card, first,
+        [{"name": "DPA-SSE", "aliases": ["DPA SSE model"], "description": "A pre-trained deep potential for sulfide electrolytes."},
+         {"name": "Hopping barrier"}, {"name": "NEB", "aliases": ["nudged elastic band"]}, {"name": "Li7La3Zr2O12"}],
+        [{"source": "DPA-SSE", "target": "Hopping barrier", "predicate": "computes",
+          "description": "DPA-SSE computes the Li+ hopping barrier of the electrolyte.", "evidence_level": 2,
+          "snippet": "the hopping barrier computed with DPA-SSE"},
+         {"source": "NEB", "target": "DPA-SSE", "predicate": "used with",
+          "description": "NEB calculations are driven by DPA-SSE forces to find the migration path."},
+         {"source": "Li7La3Zr2O12", "target": "Hopping barrier", "predicate": "has property"}])
+    confirmed = KnowledgeContext(card.node_id, card.storage_path, state=card.state, confirmed=True)
+    run(confirmed, knowledge.knowledge_review, operation="publish", draft_id=draft["id"])
+
+    # One name, spelled loosely: the concept, both relations touching it, and the
+    # concepts on their other ends — each relation readable without joining ids.
+    found = run(card, actions.graph, names=["dpa sse"])
+    assert found["matched"] == 1 and found["truncated"] is False
+    assert [(item["name"], item["matched"]) for item in found["entities"]] == [
+        ("DPA-SSE", True), ("Hopping barrier", False), ("NEB", False)]
+    assert found["entities"][0]["aliases"] == ["DPA SSE model"] and found["entities"][0]["description"].startswith("A pre-trained")
+    statements = {(item["source_name"], item["predicate"], item["target_name"]): item for item in found["relations"]}
+    assert set(statements) == {("DPA-SSE", "computes", "Hopping barrier"), ("NEB", "used_with", "DPA-SSE")}
+    computes = statements[("DPA-SSE", "computes", "Hopping barrier")]
+    assert computes["statement"] == "DPA-SSE computes the Li+ hopping barrier of the electrolyte."
+    assert computes["evidence_level"] == 2 and computes["snippet"] == "the hopping barrier computed with DPA-SSE"
+    assert computes["source_ids"] == [first] and computes["properties"]["description"] == computes["statement"]
+
+    # Two names, one by alias: the relation between them comes back.
+    both = run(card, actions.graph, names=["DPA-SSE", "nudged elastic band"])
+    assert both["matched"] == 2
+    assert ("NEB", "used_with", "DPA-SSE") in {(r["source_name"], r["predicate"], r["target_name"]) for r in both["relations"]}
+
+    # A word in a statement finds the relation even when no concept carries that name.
+    hopping = run(card, actions.graph, relation_contains="migration path")
+    assert [(r["source_name"], r["target_name"]) for r in hopping["relations"]] == [("NEB", "DPA-SSE")]
+    assert sorted(item["name"] for item in hopping["entities"]) == ["DPA-SSE", "NEB"]
+
+    # The single-needle form keeps working and no longer drops one-sided relations.
+    legacy = run(card, actions.graph, name_contains="DPA-SSE")
+    assert len(legacy["relations"]) == 2
+    # Nothing matched: an honest empty answer, not a guess.
+    assert run(card, actions.graph, names=["graphene"]) == {"entities": [], "relations": [], "matched": 0, "truncated": False}
+    # An unfiltered query still lists everything, unflagged.
+    everything = run(card, actions.graph, layer="literature")
+    assert everything["matched"] is None and len(everything["entities"]) == 4 and len(everything["relations"]) == 3
+    assert all("matched" not in item for item in everything["entities"])
+    # Traversal reads the same way.
+    start = found["entities"][0]["id"]
+    walked = run(card, actions.graph, operation="traverse", entity_id=start)
+    assert {r["source_name"] for r in walked["relations"]} == {"DPA-SSE", "NEB"}
+    assert next(item for item in walked["entities"] if item["id"] == start)["matched"] is True
+
+
+def _hub_graph(card):
+    kb = client.open_client(card.node_id, card.storage_path)
+    entities = [{"type": "model", "name": "DPA-SSE", "aliases": ["DPA SSE"]},
+                {"type": "method", "name": "Nudged Elastic Band"},
+                {"type": "property", "name": "Li-ion migration barrier"},
+                {"type": "material", "name": "Assessed class"}]
+    entities += [{"type": "material", "name": f"Li{i}PS"} for i in range(60)]
+    relations = [{"source": "Nudged Elastic Band", "target": "Li-ion migration barrier", "type": "computes",
+                  "properties": {"description": "NEB computes the migration barrier."}},
+                 {"source": "DPA-SSE", "target": "Li-ion migration barrier", "type": "predicts"}]
+    relations += [{"source": "DPA-SSE", "target": f"Li{i}PS", "type": "trained_on"} for i in range(60)]
+    kb.graph.extract({"entities": entities, "relations": relations}, extractor=lambda payload: payload)
+
+
+def test_loose_names_acronyms_and_a_question_find_concepts_a_literal_substring_missed(card):
+    _hub_graph(card)
+
+    # A typed name may carry extra words, and an acronym finds the spelled-out concept.
+    found = run(card, actions.graph, names=["DPA-SSE model", "NEB"])
+    assert {e["name"] for e in found["entities"] if e["matched"]} == {"DPA-SSE", "Nudged Elastic Band"}
+    # A short acronym matches whole words only, not the middle of "Assessed".
+    assert {e["name"] for e in run(card, actions.graph, names=["SSE"])["entities"] if e["matched"]} == {"DPA-SSE"}
+
+    answer = run(card, actions.graph, query="What is the relation between DPA-SSE and NEB based on the graph?")
+    assert {e["name"] for e in answer["entities"] if e["matched"]} == {"DPA-SSE", "Nudged Elastic Band"}
+    # The 60-relation hub does not bury the evidence: the statement mentioning NEB leads.
+    assert answer["relations"][0]["predicate"] == "computes"
+    # And the answer says how the two concepts connect, through the shared barrier.
+    chain = answer["connections"][0]
+    assert chain["length"] == 2 and {chain["from"], chain["to"]} == {"DPA-SSE", "Nudged Elastic Band"}
+    assert [r["target_name"] for r in chain["relations"]].count("Li-ion migration barrier") == 2
+
+    assert run(card, actions.graph, query="graphene oxide") == {
+        "entities": [], "relations": [], "matched": 0, "truncated": False, "connections": []}
+
+
+def test_connect_returns_the_shortest_relation_chains_between_two_named_concepts(card):
+    _hub_graph(card)
+
+    linked = run(card, actions.graph, operation="connect", names=["DPA-SSE", "NEB"])
+    assert linked["connected"] is True and linked["resolved"] == [["DPA-SSE"], ["Nudged Elastic Band"]]
+    [path] = linked["paths"]
+    assert path["length"] == 2
+    assert [(r["source_name"], r["predicate"], r["target_name"]) for r in path["relations"]] == [
+        ("DPA-SSE", "predicts", "Li-ion migration barrier"),
+        ("Nudged Elastic Band", "computes", "Li-ion migration barrier")]
+    assert {"Li-ion migration barrier"} <= {e["name"] for e in linked["entities"]}
+
+    # Too shallow a walk, an unknown name and a wrong name count each say so plainly.
+    assert run(card, actions.graph, operation="connect", names=["DPA-SSE", "NEB"], max_depth=1)["connected"] is False
+    assert run(card, actions.graph, operation="connect", names=["DPA-SSE", "graphene"])["unresolved"] == ["graphene"]
+    with pytest.raises(KnowledgeError):
+        run(card, actions.graph, operation="connect", names=["DPA-SSE"])
+
+
+def test_unpublishing_one_draft_keeps_what_another_published_draft_asserts(card):
+    first, _ = ingest_document(card, filename="a.md")
+    second, _ = ingest_document(card, filename="b.md")
+    one = _knowledge(card, first, [{"type": "entity", "name": "Cu"}, {"type": "quantity", "name": "Hardness"}],
+                     [{"source": "Hardness", "target": "Cu", "type": "measured_by"}])
+    two = _knowledge(card, second, [{"type": "entity", "name": "Cu"}, {"type": "method", "name": "Annealing"},
+                                    {"type": "quantity", "name": "Hardness"}],
+                     [{"source": "Hardness", "target": "Cu", "type": "measured_by"},
+                      {"source": "Cu", "target": "Annealing", "type": "related_to"}])
+    card.confirmed = True
+    run(card, knowledge.knowledge_review, operation="publish", draft_id=one["id"])
+    run(card, knowledge.knowledge_review, operation="publish", draft_id=two["id"])
+    card.confirmed = False
+    assert run(card, actions.overview)["counts"]["layers"]["literature"] == {"entities": 3, "relations": 2}
+
+    run(card, knowledge.knowledge_review, operation="unpublish", draft_id=two["id"])
+    remaining = run(card, actions.graph, layer="literature")
+    assert {item["name"] for item in remaining["entities"]} == {"Cu", "Hardness"}
+    assert [item["type"] for item in remaining["relations"]] == ["measured_by"]
+
+    # Re-extracting from scratch empties the draft; a deleted draft is gone, its graph untouched.
+    replaced = run(card, knowledge.knowledge_save, draft_id=two["id"], source_id=second, replace=True,
+                   entities=[{"type": "concept", "name": "Fresh"}])["draft"]
+    assert [item["name"] for item in replaced["entities"]] == ["Fresh"]
+    run(card, knowledge.knowledge_draft_manage, operation="delete", draft_id=two["id"])
+    assert [d["id"] for d in run(card, knowledge.knowledge_drafts)["drafts"]] == [one["id"]]
+    assert run(card, actions.overview)["counts"]["entities"] == 2
 
 
 def test_graph_survives_a_client_restart(card):
@@ -572,56 +873,104 @@ def test_process_sources_runs_in_batch_and_skips_what_is_already_converted(card)
     assert len(pending["jobs"]) == 1 and pending["jobs"][0]["filename"] == "c.md"
 
 
-def test_drafts_and_the_graph_stay_scoped_to_the_group_that_built_them(card):
+def test_knowledge_drafts_and_the_graph_stay_scoped_to_the_group_that_built_them(card):
     default_source, _ = ingest_document(card, filename="default.md")
-    default_record = run(card, actions.sources)["sources"][0]["record_id"]
-
     alloys = run(card, actions.groups, operation="create", name="Alloys")["group"]
     result = run(card, actions.ingest, filename="alloy.md",
-                content_base64=base64.b64encode(DOCUMENT.encode()).decode(),
-                media_type="text/markdown", group_id=alloys["id"])
+                 content_base64=base64.b64encode(DOCUMENT.encode()).decode(),
+                 media_type="text/markdown", group_id=alloys["id"])
     processed = run(card, actions.process_sources, source_ids=[result["source"]["id"]])
     kb = client.open_client(card.node_id, card.storage_path)
     kb.jobs.wait(processed["jobs"][0]["job"]["id"], timeout=60)
-    alloy_record = run(card, actions.sources, group_id=alloys["id"])["sources"][0]["record_id"]
-
-    schema = run(card, actions.schemas, operation="create", name="Process graph",
-                definition=SCHEMA, system_prompt="Extract entities and relations.")["schema"]
-
-    def project(record_id, name):
-        data = {"entities": [{"type": "material", "name": name}], "relations": []}
-        return run(card, actions.save_projection, schema_id=schema["id"],
-                  record_id=record_id, data=data)["projection"]["id"]
-
-    default_projection = project(default_record, "Cu")
-    alloy_projection = project(alloy_record, "Steel")
+    alloy_source = result["source"]["id"]
 
     # Mixing groups in one draft is refused, so a published graph traces back to
     # exactly one group's sources.
     with pytest.raises(KnowledgeError):
-        run(card, actions.draft, operation="create",
-            projection_ids=[default_projection, alloy_projection])
+        run(card, knowledge.knowledge_draft_manage, operation="create",
+            source_ids=[default_source, alloy_source])
 
-    default_draft = run(card, actions.draft, operation="create",
-                        projection_ids=[default_projection])["draft"]
-    alloy_draft = run(card, actions.draft, operation="create",
-                      projection_ids=[alloy_projection])["draft"]
+    default_draft = _knowledge(card, default_source, [{"type": "entity", "name": "Cu"}])
+    alloy_draft = _knowledge(card, alloy_source, [{"type": "entity", "name": "Steel"}], group_id=alloys["id"])
+    assert alloy_draft["group_id"] == alloys["id"]
+    assert [d["id"] for d in run(card, knowledge.knowledge_drafts, group_id=alloys["id"])["drafts"]] == [alloy_draft["id"]]
+    assert len(run(card, knowledge.knowledge_drafts, all_groups=True)["drafts"]) == 2
 
-    confirmed = KnowledgeContext(card.node_id, card.storage_path, state=card.state,
-                                confirmed=True)
+    card.confirmed = True
     for built in (default_draft, alloy_draft):
-        run(card, actions.review, operation="submit", draft_id=built["id"], expected_revision=1)
-        run(confirmed, actions.review, operation="approve", draft_id=built["id"],
-            expected_revision=1)
+        run(card, knowledge.knowledge_review, operation="publish", draft_id=built["id"])
+    card.confirmed = False
 
     all_entities = run(card, actions.graph)["entities"]
     assert {item["name"] for item in all_entities} == {"Cu", "Steel"}
-
     default_group_id = run(card, actions.overview)["collection"]["id"]
-    scoped = run(card, actions.graph, group_id=default_group_id)["entities"]
-    assert {item["name"] for item in scoped} == {"Cu"}
-    scoped_alloy = run(card, actions.graph, group_id=alloys["id"])["entities"]
-    assert {item["name"] for item in scoped_alloy} == {"Steel"}
+    assert {item["name"] for item in run(card, actions.graph, group_id=default_group_id)["entities"]} == {"Cu"}
+    assert {item["name"] for item in run(card, actions.graph, group_id=alloys["id"])["entities"]} == {"Steel"}
+
+
+CONDUCTIVITY_SCHEMA = {
+    "type": "object", "required": ["material", "conductivity"],
+    "properties": {"material": {"type": "string"}, "conductivity": {"type": "number"},
+                   "temperature": {"type": "number"}},
+}
+PAPER = """# Solid electrolytes
+
+| Material | Conductivity (S/cm) | T (K) |
+|---|---|---|
+| LGPS | 0.012 | 298 |
+| LLZO | 0.0005 | 298 |
+"""
+
+
+def test_records_are_read_from_a_literature_source_with_a_schema_and_yield_insights(card):
+    source_id, _ = ingest_document(card, PAPER, "electrolytes.md")
+    schema = run(card, actions.schemas, operation="create", name="Ionic conductivity",
+                 definition=CONDUCTIVITY_SCHEMA, system_prompt="Read conductivities.")["schema"]
+    experiment = run(card, actions.schemas, operation="create", name="Run", definition=CONDUCTIVITY_SCHEMA,
+                     system_prompt="x", kind="experiment")["schema"]
+
+    prompt = run(card, actions.record_extract_prompt, schema_id=schema["id"], source_id=source_id)
+    assert prompt["system_prompt"] == "Read conductivities." and "LGPS" in prompt["markdown"]
+    assert prompt["filename"] == "electrolytes.md" and "one record per specimen" in prompt["instruction"]
+    # Only a literature schema reads sources; experiment schemas read uploads.
+    with pytest.raises(KnowledgeError):
+        run(card, actions.record_extract_prompt, schema_id=experiment["id"], source_id=source_id)
+
+    saved = run(card, actions.record_save, schema_id=schema["id"], source_id=source_id, records=[
+        {"name": "LGPS", "data": {"material": "LGPS", "conductivity": 0.012, "temperature": 298}},
+        {"name": "LLZO", "data": {"material": "LLZO", "conductivity": 0.0005, "temperature": 298}},
+        {"name": "bad", "data": {"material": "x"}, "note": "no value given"}])
+    assert saved["invalid"] == 1 and saved["source_id"] == source_id
+    assert all(r["bundle_id"] is None and r["sources"] == [{"source_id": source_id, "filename": "electrolytes.md"}]
+               for r in saved["records"])
+    assert run(card, actions.sources)["sources"][0]["records"] == 3
+    listed = run(card, actions.experiments, source_id=source_id, schema_id=schema["id"])["experiments"]
+    assert {r["name"] for r in listed} == {"LGPS", "LLZO", "bad"}
+
+    # Re-extracting replaces this source's drafts for this schema only.
+    run(card, actions.record_save, schema_id=schema["id"], source_id=source_id, replace_drafts=True,
+        records=[{"name": "LGPS", "data": {"material": "LGPS", "conductivity": 0.012, "temperature": 298}},
+                 {"name": "LLZO", "data": {"material": "LLZO", "conductivity": 0.0005, "temperature": 298}}])
+    listed = run(card, actions.experiments, source_id=source_id)["experiments"]
+    assert {r["name"] for r in listed} == {"LGPS", "LLZO"}
+    # An empty extraction is a valid "nothing here" answer.
+    assert run(card, actions.record_save, schema_id=schema["id"], source_id=source_id, records=[])["records"] == []
+
+    card.confirmed = True
+    for record in listed:
+        run(card, actions.experiment_review, operation="publish", record_id=record["id"])
+    card.confirmed = False
+
+    # Insights scope to the literature schemas when asked; the experiment-side default is unchanged.
+    with pytest.raises(KnowledgeError):
+        run(card, insights.insight_prompt)
+    prompt = run(card, insights.insight_prompt, schema_kind="literature")
+    assert prompt["schema_ids"] == [schema["id"]] and prompt["record_count"] == 2
+    assert run(card, insights.insights, operation="stats", schema_id=schema["id"])["statistics"]["records"] == 2
+    drafted = run(card, insights.insight_save, schema_id=schema["id"], insights=[
+        {"kind": "threshold", "title": "LGPS leads", "statement": "LGPS is 24x more conductive than LLZO.",
+         "fields": ["conductivity"], "evidence": [{"record_id": listed[0]["id"]}, {"record_id": listed[1]["id"]}]}])
+    assert drafted["insights"][0]["schema_id"] == schema["id"]
 
 
 EXPERIMENT_SCHEMA = {
