@@ -13,30 +13,39 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import logging
 import uuid
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from . import graph_search
+from . import embeddings, graph_search
 from .client import DEFAULT_COLLECTION, collection, open_client
 from .errors import KnowledgeError
 from .graph_store import LAYERS
 from .markdown import available_engines
 from .pipelines import PIPELINE_NAME, submit_markdown_job
 
+logger = logging.getLogger(__name__)
+
 MAX_RESULT_BYTES = 1024 * 1024
 MAX_UPLOAD_BYTES = 32 * 1024 * 1024
 MAX_MARKDOWN_CHARS = 200_000
 # ``vision_model`` is an OAW model reference ("oaw:model:..."), or "" for the OAW
 # default model; the OAW_VISION_* variables are the fallback when neither resolves.
+# ``embedding_model`` is the same kind of reference for graph search's semantic
+# channel, but "" means off: a chat default model cannot embed.
 DEFAULT_SETTINGS = {"collection_name": DEFAULT_COLLECTION, "pdf_engine": "auto",
-                    "mineru_base_url": "", "vision_model": ""}
+                    "mineru_base_url": "", "vision_model": "", "embedding_model": ""}
 ACTIVE_JOBS = {"QUEUED", "RUNNING", "PENDING", "RETRYING"}
 
 
 class Request(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+# Marks a request field the UI and CLI may pass but the agent's tool schema omits.
+AGENT_HIDDEN = {"agent_hidden": True}
 
 
 def settings_of(context):
@@ -167,6 +176,7 @@ class Settings(Request):
     pdf_engine: Literal["auto", "pymupdf4llm", "mineru", "text"] | None = None
     mineru_base_url: str | None = Field(default=None, max_length=500)
     vision_model: str | None = Field(default=None, max_length=200)
+    embedding_model: str | None = Field(default=None, max_length=200)
 
 
 def update_settings(context, arguments):
@@ -1065,17 +1075,26 @@ def experiment_review(context, arguments):
 class GraphQuery(Request):
     operation: Literal["query", "traverse", "connect"] = "query"
     # A question or keywords in plain words: concepts are found by name, alias or
-    # acronym anywhere in it, and relations are ranked by how well they fit.
+    # acronym anywhere in it, and relations are ranked by how well they fit — by
+    # words and, when the card has an embedding model, by meaning.
     query: str | None = Field(default=None, max_length=500)
     entity_id: str | None = None
-    entity_type: str | None = Field(default=None, max_length=200)
-    relation_type: str | None = Field(default=None, max_length=200)
+    # The fields below are for the graph map and the CLI; the agent only sees ``query``
+    # and ``names``, so there is no lexical-only knob for it to pick by mistake.
+    entity_type: str | None = Field(default=None, max_length=200, json_schema_extra=AGENT_HIDDEN)
+    relation_type: str | None = Field(default=None, max_length=200, json_schema_extra=AGENT_HIDDEN)
     # Concepts to look up, by name or alias; spacing and punctuation do not matter
     # ("dpa sse" finds "DPA-SSE"). ``name_contains`` is the single-needle form.
     names: list[str] = Field(default_factory=list, max_length=20)
-    name_contains: str | None = Field(default=None, max_length=200)
+    name_contains: str | None = Field(default=None, max_length=200, json_schema_extra=AGENT_HIDDEN)
     # A word to find in a relation's predicate, statement or snippet.
-    relation_contains: str | None = Field(default=None, max_length=200)
+    relation_contains: str | None = Field(default=None, max_length=200, json_schema_extra=AGENT_HIDDEN)
+    # The graph map's name filter passes false: a filter should not call a model.
+    semantic: bool = Field(default=True, json_schema_extra=AGENT_HIDDEN)
+    # The UI passes true to get every element's properties. The agent's view is compact
+    # and bounded (see ``_fit``): the host projects a tool result over ~8000 characters
+    # into a stub the model cannot read, which is worse than fewer relations.
+    full: bool = Field(default=False, json_schema_extra=AGENT_HIDDEN)
     # Hops to walk: 1 for traverse, 3 for connect, unless given.
     max_depth: int | None = Field(default=None, ge=1, le=5)
     direction: Literal["both", "out", "in"] = "both"
@@ -1085,6 +1104,11 @@ class GraphQuery(Request):
     # published from experiment records and the record/field nodes they cite.
     # Omitted: the whole graph, both layers.
     layer: Literal["literature", "experiment"] | None = None
+
+    def search_text(self):
+        """Everything the caller typed, as one string to search for."""
+        parts = [self.query or "", *self.names, self.name_contains or "", self.relation_contains or ""]
+        return " ".join(part.strip() for part in parts if part and part.strip())
 
 
 def _entity_json(entity, *, matched=None):
@@ -1115,11 +1139,72 @@ def _relation_json(relation, names):
 QUERY_ENTITIES = 10
 QUERY_RELATIONS = 30
 CONNECT_DEPTH = 3
+# The agent's compact result: fewer, shorter, and trimmed to fit the host's window.
+COMPACT_ENTITIES = 8
+COMPACT_RELATIONS = 12
+COMPACT_BYTES = 7000
+STATEMENT_CHARS = 240
+
+
+def _clip(text, limit):
+    return text if not isinstance(text, str) or len(text) <= limit else text[:limit - 1].rstrip() + "…"
+
+
+def _compact_entity(entity, matched):
+    properties = entity.properties or {}
+    item = {"name": entity.name, "type": entity.type, "matched": matched}
+    if matched:
+        # Only a matched concept's background and id (for traverse) are worth the space.
+        item["id"] = str(entity.id)
+        aliases = [a for a in properties.get("aliases") or [] if isinstance(a, str)]
+        if aliases:
+            item["aliases"] = aliases
+        if isinstance(properties.get("description"), str):
+            item["description"] = _clip(properties["description"], STATEMENT_CHARS)
+    return item
+
+
+def _compact_relation(relation, names):
+    properties = relation.properties or {}
+    item = {"source_name": names.get(str(relation.source_id)), "predicate": relation.type,
+            "target_name": names.get(str(relation.target_id))}
+    if isinstance(properties.get("description"), str):
+        item["statement"] = _clip(properties["description"], STATEMENT_CHARS)
+    if isinstance(properties.get("evidence_level"), int):
+        item["evidence_level"] = properties["evidence_level"]
+    sources = [v for v in properties.get("source_ids") or [] if isinstance(v, str)]
+    if sources:
+        item["source_ids"] = sources
+    return item
+
+
+def _compact_path(first, second, path, names):
+    return {"from": names[str(first)], "to": names[str(second)], "length": len(path),
+            "steps": [f"{names.get(str(r.source_id))} —{r.type}→ {names.get(str(r.target_id))}" for r in path]}
+
+
+def _fit(result, budget=COMPACT_BYTES):
+    """Drop the lowest-ranked relations, then unmatched concepts, until the JSON fits."""
+    def size():
+        return len(json.dumps(result, ensure_ascii=False, default=str).encode("utf-8"))
+    while size() > budget and len(result.get("relations", [])) > 1:
+        result["relations"].pop()
+        result["truncated"] = True
+    while size() > budget and any(not e.get("matched") for e in result.get("entities", [])):
+        index = max(i for i, e in enumerate(result["entities"]) if not e.get("matched"))
+        result["entities"].pop(index)
+        result["truncated"] = True
+    return result
 
 
 def _graph_result(entity_ids, by_id, relations, matched_ids, **extra):
-    """Entities (by id, once each) and relations as readable JSON, every edge resolvable by name."""
-    entities = [by_id[identifier] for identifier in dict.fromkeys(entity_ids) if identifier in by_id]
+    """Entities (matched ones first in the given order, then the rest by name) and
+    relations as readable JSON, every edge resolvable by name."""
+    ordered = [identifier for identifier in dict.fromkeys(entity_ids) if identifier in by_id]
+    matched = [identifier for identifier in ordered if identifier in matched_ids]
+    others = sorted((identifier for identifier in ordered if identifier not in matched_ids),
+                    key=lambda identifier: by_id[identifier].name.casefold())
+    entities = [by_id[identifier] for identifier in matched + others]
     names = {str(entity.id): entity.name for entity in entities}
     return _bounded({"entities": [_entity_json(e, matched=e.id in matched_ids) for e in entities],
                      "relations": [_relation_json(r, names) for r in relations], **extra})
@@ -1130,12 +1215,41 @@ def _path_json(first, second, path, names):
             "relations": [_relation_json(r, names) for r in path]}
 
 
-def _ranked_query(request, entities, relations, by_id):
+def _semantic_scores(context, kb, query, entities, relations):
+    """``({element: cosine}, status)`` from the card's embedding model. ``status`` is empty
+    when the model is off, and says why the answer fell back to words when it cannot be
+    used — an unreachable endpoint must not make the graph unsearchable."""
+    model = settings_of(context)["embedding_model"]
+    if not model:
+        return {}, {}
+    try:
+        connection = embeddings.connection_for(model, getattr(context, "resolve_model", None))
+        texts = embeddings.graph_texts(entities, relations)
+        vectors = embeddings.sync(kb.oaw_engine, texts, connection)
+        query_vector = embeddings.embed([query], connection)[0]
+        found = {}
+        for group in (entities, relations):
+            keyed = {str(item.id): item.id for item in group}
+            found.update({keyed[key]: score for key, score in embeddings.scores(
+                query_vector, {key: vectors[key] for key in keyed}).items()})
+    except Exception as error:  # an optional channel must never make the graph unsearchable
+        message = (str(error) or type(error).__name__)[:300]
+        logger.warning("knowledge_graph semantic channel off for this query (%s): %s", model, message)
+        _remember_index(context, last_error=message)
+        return {}, {"semantic": False, "semantic_error": message}
+    logger.info("knowledge_graph semantic channel: %s stood out of %d elements (%s)",
+                len(found), len(entities) + len(relations), model)
+    return found, {"semantic": True}
+
+
+def _ranked_query(request, entities, relations, by_id, needles=(), semantic=None):
     """A plain-words question: concepts found by name, alias or acronym anywhere in it,
     the relations that fit it best (those joining two named concepts first), and — when
     it names two or more concepts — the shortest paths between them."""
-    entity_scores, relation_scores = graph_search.search(entities, relations, request.query)
-    top = sorted(entity_scores, key=lambda identifier: -entity_scores[identifier])[:min(request.limit, QUERY_ENTITIES)]
+    entity_scores, relation_scores = graph_search.search(
+        entities, relations, request.search_text(), needles=needles, semantic=semantic)
+    top = sorted(entity_scores, key=lambda identifier: -entity_scores[identifier])
+    top = top[:min(request.limit, max(QUERY_ENTITIES, len(needles)))]
     by_relation = {r.id: r for r in relations}
     best = sorted(relation_scores, key=lambda identifier: -relation_scores[identifier])
     shown = [by_relation[identifier] for identifier in best[:min(request.limit * 5, QUERY_RELATIONS)]]
@@ -1151,10 +1265,20 @@ def _ranked_query(request, entities, relations, by_id):
     ids = list(top) + [i for r in shown for i in (r.source_id, r.target_id)]
     ids += [r.source_id for _, _, path in paths for r in path] + [r.target_id for _, _, path in paths for r in path]
     names = {str(identifier): by_id[identifier].name for identifier in ids if identifier in by_id}
-    result = _graph_result(ids, by_id, shown, set(top), matched=len(top),
-                           truncated=len(best) > len(shown))
-    result["connections"] = [_path_json(first, second, path, names) for first, second, path in paths]
-    return result
+    if request.full:
+        result = _graph_result(ids, by_id, shown, set(top), matched=len(top),
+                               truncated=len(best) > len(shown))
+        result["connections"] = [_path_json(first, second, path, names) for first, second, path in paths]
+        return result
+    top, shown = top[:COMPACT_ENTITIES], shown[:COMPACT_RELATIONS]
+    ordered = [i for i in dict.fromkeys(ids) if i in by_id]
+    others = sorted((i for i in ordered if i not in set(top)), key=lambda i: by_id[i].name.casefold())
+    return _fit(_bounded({
+        "entities": [_compact_entity(by_id[i], i in set(top)) for i in list(top) + others],
+        "relations": [_compact_relation(r, names) for r in shown],
+        "connections": [_compact_path(first, second, path, names) for first, second, path in paths],
+        "matched": len(top), "truncated": len(best) > len(shown),
+    }))
 
 
 def _connect(request, entities, relations, by_id):
@@ -1179,15 +1303,21 @@ def _connect(request, entities, relations, by_id):
     ids = [e.id for side in sides for e in side] + [
         i for _, _, _, _, path in found for r in path for i in (r.source_id, r.target_id)]
     names = {str(identifier): by_id[identifier].name for identifier in ids if identifier in by_id}
-    return _graph_result(ids, by_id, [], {e.id for side in sides for e in side},
-                         connected=bool(found), resolved=[[e.name for e in side] for side in sides],
-                         paths=[_path_json(first, second, path, names) for _, _, first, second, path in found])
-
-
-def _matches_relation(relation, needle):
-    properties = relation.properties or {}
-    haystacks = [relation.type] + [properties.get(key) for key in ("description", "snippet")]
-    return any(isinstance(text, str) and needle in text.casefold() for text in haystacks)
+    resolved = [[e.name for e in side] for side in sides]
+    if request.full:
+        return _graph_result(ids, by_id, [], {e.id for side in sides for e in side},
+                             connected=bool(found), resolved=resolved,
+                             paths=[_path_json(first, second, path, names) for _, _, first, second, path in found])
+    # Compact: each chain as readable steps, with every relation's statement once.
+    seen, relations = set(), []
+    for _, _, _, _, path in found:
+        for relation in path:
+            if relation.id not in seen:
+                seen.add(relation.id)
+                relations.append(_compact_relation(relation, names))
+    return _fit(_bounded({"connected": bool(found), "resolved": resolved,
+                          "paths": [_compact_path(first, second, path, names) for _, _, first, second, path in found],
+                          "relations": relations, "entities": []}))
 
 
 def graph(context, arguments):
@@ -1228,7 +1358,6 @@ def graph(context, arguments):
     if request.name_contains:
         needles.append(graph_search.phrase(request.name_contains))
     needles = [needle for needle in needles if needle]
-    relation_needle = request.relation_contains.strip().casefold() if request.relation_contains else ""
 
     all_entities = store.list_entities(type=request.entity_type, group_id=scope, layer=request.layer)
     by_id = {entity.id: entity for entity in all_entities}
@@ -1237,44 +1366,87 @@ def graph(context, arguments):
 
     if request.operation == "connect":
         return _connect(request, all_entities, all_relations, by_id)
-    if request.query and graph_search.phrase(request.query):
-        return _ranked_query(request, all_entities, all_relations, by_id)
 
-    if needles:
-        # Best-identified concepts first, so a cap keeps the ones the caller meant.
-        scores = {entity.id: max(graph_search.name_score(entity, needle) for needle in needles)
-                  for entity in all_entities}
-        matched = sorted((entity for entity in all_entities if scores[entity.id]),
-                         key=lambda entity: -scores[entity.id])
-    else:
-        matched = list(all_entities)
-    if relation_needle:
-        all_relations = [r for r in all_relations if _matches_relation(r, relation_needle)]
-        if not needles:
-            # A relation search alone: the concepts are whatever the found relations touch.
-            touched = {r.source_id for r in all_relations} | {r.target_id for r in all_relations}
-            matched = [entity for entity in all_entities if entity.id in touched]
-    matched_ids = {entity.id for entity in matched}
-    if needles or relation_needle:
-        # Every relation touching a matched concept, not only those between two of them.
-        all_relations = [r for r in all_relations if r.source_id in matched_ids or r.target_id in matched_ids]
+    # One search path. Whatever the caller typed — a question, concept names, a word
+    # from a statement — is searched by words and (when the card has an embedding
+    # model) by meaning, so no choice of parameter can bypass either.
+    search_text = request.search_text()
+    if graph_search.phrase(search_text):
+        semantic, status = ({}, {})
+        if request.semantic:
+            semantic, status = _semantic_scores(context, kb, search_text, all_entities, all_relations)
+        return {**_ranked_query(request, all_entities, all_relations, by_id, needles, semantic),
+                "search_text": search_text, **status}
 
-    shown = matched[:request.limit]
+    # No search at all: the plain listing the graph map loads.
+    shown = all_entities[:request.limit]
     shown_ids = {entity.id for entity in shown}
-    relations = [r for r in all_relations if r.source_id in shown_ids or r.target_id in shown_ids][:request.limit * 5]
-    # The concepts on the other end of each relation, so every edge is resolvable.
-    neighbour_ids = ({r.source_id for r in relations} | {r.target_id for r in relations}) - shown_ids
-    neighbours = [by_id[identifier] for identifier in neighbour_ids if identifier in by_id]
-    neighbours.sort(key=lambda entity: entity.name.casefold())
-    entities = shown + neighbours
-    names = {str(entity.id): entity.name for entity in entities}
-    searched = bool(needles or relation_needle)
+    relations = [r for r in all_relations if r.source_id in shown_ids and r.target_id in shown_ids][:request.limit * 5]
+    names = {str(entity.id): entity.name for entity in shown}
     return _bounded({
-        "entities": [_entity_json(e, matched=(e.id in shown_ids) if searched else None) for e in entities],
+        "entities": [_entity_json(e) for e in shown],
         "relations": [_relation_json(r, names) for r in relations],
-        "matched": len(shown) if searched else None,
-        "truncated": len(matched) > len(shown) or len(all_relations) > len(relations),
+        "matched": None,
+        "truncated": len(all_entities) > len(shown) or len(all_relations) > len(relations),
     })
+
+
+# ---------------------------------------------------------------- graph index
+
+
+class GraphIndex(Request):
+    operation: Literal["status", "build"] = "status"
+    group_id: str | None = None
+
+
+def _index_state(context):
+    stored = context.state.get()["value"] if context.state is not None else {}
+    saved = stored.get("semantic_index")
+    return dict(saved) if isinstance(saved, dict) else {}
+
+
+def _remember_index(context, **patch):
+    if context.state is not None:
+        context.state.update({"semantic_index": {**_index_state(context), **patch}})
+
+
+def graph_index(context, arguments):
+    """The semantic index behind graph search: which embedding model, how much of the
+    published graph it covers, and the last failure. ``build`` embeds everything that
+    is missing or stale now, so the first search is not the slow one."""
+    request = GraphIndex.model_validate(arguments)
+    kb = _client(context)
+    scope = _any_group(request.group_id)
+    store = kb.oaw_graph_store
+    entities = store.list_entities(group_id=scope)
+    relations = store.list_relations(group_id=scope)
+    texts = embeddings.graph_texts(entities, relations)
+    model = settings_of(context)["embedding_model"]
+    result = {"embedding_model": model or None, "model_id": None, "total": len(texts),
+              "embedded": 0, "pending": len(texts), "stale": 0, **_index_state(context)}
+    if not model:
+        return _bounded({**result, "enabled": False})
+    try:
+        connection = embeddings.connection_for(model, getattr(context, "resolve_model", None))
+        result["model_id"] = connection[2]
+        if request.operation == "build":
+            embeddings.sync(kb.oaw_engine, texts, connection)
+            _remember_index(context, last_error=None, built_at=_now())
+            result.update(_index_state(context))
+        result.update(embeddings.status(kb.oaw_engine, texts, connection[2]))
+    except Exception as error:
+        message = (str(error) or type(error).__name__)[:300]
+        _remember_index(context, last_error=message)
+        result["last_error"] = message
+        if result["model_id"]:
+            result.update(embeddings.status(kb.oaw_engine, texts, result["model_id"]))
+    return _bounded({**result, "enabled": True})
+
+
+def _now():
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat()
 
 
 # ---------------------------------------------------------------- jobs

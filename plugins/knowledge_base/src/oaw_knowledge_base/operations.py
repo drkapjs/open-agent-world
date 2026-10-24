@@ -30,7 +30,18 @@ class Operation:
         return self.tool_name is not None
 
     def input_schema(self) -> dict:
-        return self.model.model_json_schema()
+        """The request model's JSON schema minus the fields marked ``agent_hidden``
+        (see ``actions.AGENT_HIDDEN``): knobs the UI and CLI pass that an agent must
+        not be offered, so the tool surface stays one obvious path."""
+        schema = self.model.model_json_schema()
+        hidden = {name for name, field in self.model.model_fields.items()
+                  if isinstance(field.json_schema_extra, dict) and field.json_schema_extra.get("agent_hidden")}
+        if hidden:
+            schema["properties"] = {key: value for key, value in schema.get("properties", {}).items()
+                                    if key not in hidden and not (isinstance(value, dict) and value.get("agent_hidden"))}
+            if "required" in schema:
+                schema["required"] = [key for key in schema["required"] if key not in hidden]
+        return schema
 
 
 OPERATIONS: tuple[Operation, ...] = (
@@ -101,7 +112,9 @@ OPERATIONS: tuple[Operation, ...] = (
         tool_name="knowledge_insight_update",
         description="Edit one draft insight's kind, title, statement, fields, confidence, evidence or note, when a person asks for the change. Refuses published insights. Never publishes: that is the person's click."),
     Operation("graph", actions.graph, actions.GraphQuery, tool_name="knowledge_graph",
-        description="Query the published knowledge graph. For a question in plain words (\"what is the relation between X and Y\") pass query=<the question>: concepts are found by name, alias or acronym anywhere in it, the relations that fit best come first, and when it names two or more concepts the shortest paths between them come back as connections. To ask how exactly two concepts are connected pass operation=\"connect\" with names=[X, Y]; you get the shortest relation chains (max_depth hops, default 3) or connected=false. Otherwise pass names=[...] (one or more concept names; aliases count, spacing and punctuation do not matter) to get the matching concepts, the concepts they connect to, and every relation touching them — each relation already readable as source_name, predicate, target_name with the statement the source makes, its evidence_level and snippet. To answer \"what does the base say about X\" or \"about X and Y\", query names and read the relations' statements: they are the published claims; a concept's description is background only. relation_contains=<word> finds relations by a word in their predicate or statement when no concept carries the name; operation=\"traverse\" with an entity_id walks outward. An existing concept with no relations means the base holds no claim about it — report that rather than inferring one. Only human-published knowledge drafts and insights appear here; layer=\"literature\" narrows to the concepts and relations published from literature, layer=\"experiment\" to published insights with the records and fields they cite."),
+        description="Search the published knowledge graph — the only place published knowledge lives. Call it FIRST for any question about what this base knows, before knowledge_document_search. Pass query=<the question or key terms in plain words>; or names=[X] / names=[X, Y] for exact concept names (aliases and acronyms count; spacing and punctuation do not). Every form runs the same search: by words and, when the card has an embedding model, by meaning — the result's semantic field is true when meaning-based matching ran, false with semantic_error when it could not (then the answer is word-based only; say so). You get the best-fitting concepts (matched=true), the relations that fit the question ranked best first — each readable as source_name, predicate, target_name with the statement the source makes, evidence_level and snippet — and, when two or more concepts are named, connections: the shortest relation chains between them. The relations are the published claims; a concept's description is background only. operation=\"connect\" with names=[X, Y] returns only the chains between two concepts (max_depth hops, default 3) or connected=false; operation=\"traverse\" with an entity_id walks outward. An empty result or a concept with no relations means the base holds no published claim — report that rather than inferring one. Only human-published knowledge drafts and insights appear here; layer=\"literature\" narrows to what was published from documents, layer=\"experiment\" to published insights with the records and fields they cite."),
+    Operation("graph_index", actions.graph_index, actions.GraphIndex, tool_name="knowledge_graph_index",
+        description="The semantic index behind knowledge_graph: which embedding model the card uses (enabled=false when none), how many graph elements are embedded, pending or stale, and the last error. Call it with operation=\"status\" when asked whether meaning-based search is available or why a search said semantic=false; never answer that from memory. operation=\"build\" embeds what is missing now."),
     Operation("jobs", actions.jobs, actions.Jobs, tool_name="knowledge_jobs",
         description="Check markdown conversion jobs and their progress events. Poll this after an upload until the job reports COMPLETED before reading its markdown."),
     # No tool_name below this line: human-only, on every transport.
@@ -136,7 +149,7 @@ AGENT_OPERATIONS: tuple[Operation, ...] = tuple(item for item in OPERATIONS if i
 
 READ_ACTIONS = ("overview", "sources", "markdown", "search", "schemas", "knowledge_drafts",
                "knowledge_source_outline", "knowledge_lookup",
-               "experiments", "experiment_bundles", "insights", "graph", "jobs")
+               "experiments", "experiment_bundles", "insights", "graph", "graph_index", "jobs")
 # The literature pipeline: name a source's concepts into a knowledge draft a person
 # opened, project a source onto a schema as records, and edit a knowledge draft on
 # request. Insights over those records are the experiment half's tools, which take

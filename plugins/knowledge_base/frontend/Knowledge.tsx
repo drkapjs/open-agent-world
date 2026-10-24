@@ -87,7 +87,9 @@ export function KnowledgeSection({
 
   const loadGraph = useCallback(async (args: Record<string, unknown> = {}) => {
     const current = generation.current;
-    const result = await call("graph", { layer: "literature", limit: 500, ...groupFilter(), ...args });
+    // full: the map and the detail pane read each element's properties; the agent's
+    // compact view omits them to fit the host's tool-result window.
+    const result = await call("graph", { layer: "literature", limit: 500, full: true, ...groupFilter(), ...args });
     if (generation.current === current) setGraph(result as unknown as Graph);
   }, [call, groupFilter]);
 
@@ -95,7 +97,7 @@ export function KnowledgeSection({
     const current = ++generation.current;
     const [list, map] = await Promise.allSettled([
       call("knowledge_drafts", { operation: "list", limit: 200, ...groupArgs() }),
-      call("graph", { layer: "literature", limit: 500, ...groupFilter() }),
+      call("graph", { layer: "literature", limit: 500, full: true, ...groupFilter() }),
     ]);
     if (generation.current !== current) return;
     if (list.status === "fulfilled") setDrafts((list.value.drafts as KnowledgeDraft[]) ?? []);
@@ -563,7 +565,7 @@ export function KnowledgeSection({
       </div>}
       <form className="knowledge-formbar knowledge-graph-search" onSubmit={event => {
         event.preventDefault();
-        void perform(() => loadGraph(filter.trim() ? { name_contains: filter.trim() } : {}));
+        void perform(() => loadGraph(filter.trim() ? { name_contains: filter.trim(), semantic: false } : {}));
       }}>
         <input type="search" aria-label={t("Filter by name")} placeholder={t("Filter by name")} value={filter} disabled={busy}
           onChange={event => setFilter(event.target.value)} />

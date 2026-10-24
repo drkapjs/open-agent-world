@@ -869,6 +869,47 @@ it("stores the vision model as a card setting, blank for the OAW default model",
   expect(action.mock.calls.every(([, args]) => !JSON.stringify(args).includes("api_key"))).toBe(true);
 });
 
+it("stores the embedding model as a card setting, off by default", async () => {
+  const saved: Record<string, unknown>[] = [];
+  open(async (name, args) => {
+    if (name === "settings") { saved.push(args); return { settings: { collection_name: "Knowledge base",
+      pdf_engine: "auto", mineru_base_url: "", vision_model: "", embedding_model: (args.embedding_model as string) ?? "" } }; }
+    return undefined;
+  });
+  fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+  const region = within(await screen.findByRole("region", { name: "Settings" }));
+  const picker = await region.findByLabelText("Embedding model for graph search") as HTMLSelectElement;
+  expect(picker.value).toBe("");
+
+  fireEvent.change(picker, { target: { value: "oaw:model:model-1" } });
+  await waitFor(() => expect(saved).toContainEqual({ embedding_model: "oaw:model:model-1" }));
+  fireEvent.change(region.getByLabelText("Embedding model for graph search"), { target: { value: "" } });
+  await waitFor(() => expect(saved).toContainEqual({ embedding_model: "" }));
+});
+
+it("shows the semantic index behind graph search and builds it on request", async () => {
+  let embedded = 0;
+  const action = open(async (name, args) => {
+    if (name === "overview") return { ...overview(), settings: { collection_name: "Knowledge base", pdf_engine: "auto",
+      mineru_base_url: "", vision_model: "", embedding_model: "oaw:model:emb" } };
+    if (name === "graph_index") {
+      if (args.operation === "build") embedded = 23;
+      return { enabled: true, embedding_model: "oaw:model:emb", model_id: "qwen3.7-text-embedding", total: 23,
+        embedded, pending: 23 - embedded, stale: 0, last_error: embedded ? null : "Embedding model request failed (HTTP 400)" };
+    }
+    return undefined;
+  });
+  fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+  const panel = within(await screen.findByRole("group", { name: "Semantic index" }));
+  expect(await panel.findByText("qwen3.7-text-embedding: 0 of 23 graph elements embedded · 23 pending")).toBeTruthy();
+  expect(panel.getByRole("alert").textContent).toContain("HTTP 400");
+
+  fireEvent.click(panel.getByRole("button", { name: "Build index now" }));
+  expect(await panel.findByText("qwen3.7-text-embedding: 23 of 23 graph elements embedded")).toBeTruthy();
+  expect(panel.queryByRole("alert")).toBeNull();
+  expect(action).toHaveBeenCalledWith("graph_index", { operation: "build" }, undefined);
+});
+
 it("hides engineering settings and posts through the deployment bridge when deployed", async () => {
   const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({
     records: [{ id: "r1" }], invalid: 0, schema_id: "schema-1",

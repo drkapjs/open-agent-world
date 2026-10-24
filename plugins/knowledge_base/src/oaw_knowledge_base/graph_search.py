@@ -35,7 +35,9 @@ def phrase(text):
 
 
 def _content_tokens(text):
-    return [token for token in tokens(text) if token not in _STOP_WORDS]
+    # One-character tokens ("2" from "DPA-2") carry no meaning on their own; the
+    # full name still matches as a phrase.
+    return [token for token in tokens(text) if token not in _STOP_WORDS and len(token) > 1]
 
 
 def _contains(outer, inner):
@@ -111,26 +113,48 @@ def _text_hits(relation, query_tokens):
 
 
 def _ranks(scores):
+    """Competition ranking of the positive scores: equal scores share a rank, so a
+    channel that cannot tell sixty relations apart does not pretend to."""
     ordered = sorted((item for item in scores.items() if item[1] > 0), key=lambda item: -item[1])
-    return {key: position for position, (key, _) in enumerate(ordered, start=1)}
+    ranks, rank = {}, 0
+    for position, (key, score) in enumerate(ordered, start=1):
+        if position == 1 or score != ordered[position - 2][1]:
+            rank = position
+        ranks[key] = rank
+    return ranks
 
 
-def search(entities, relations, query):
+def search(entities, relations, query, *, needles=(), semantic=None):
     """``(entity_scores, relation_scores)`` for a free-text question, each ``{id: score}``
     holding only the positive ones. Relations are ranked by RRF over their endpoint
     match and their text match; a relation joining two matched concepts scores twice
-    on the first channel, which is what puts "X and Y" relations on top."""
+    on the first channel, which is what puts "X and Y" relations on top.
+
+    ``needles`` are names the caller typed explicitly (already ``phrase``d): they score
+    through ``name_score`` so "DPA-SSE" is a strong match even when the question text
+    is only those words. ``semantic`` is an optional ``{id: cosine}`` from an embedding
+    model, already cut to the elements that stand out. It adds a third relation channel
+    and surfaces concepts the words missed, scored below a name match so they never
+    trigger path-finding."""
+    semantic = semantic or {}
     query_phrase = phrase(query)
     query_tokens = _content_tokens(query)
-    entity_scores = {entity.id: score for entity in entities
-                     if (score := entity_query_score(entity, query_phrase, query_tokens)) > 0}
+    entity_scores = {}
+    for entity in entities:
+        score = entity_query_score(entity, query_phrase, query_tokens)
+        if needles:
+            score = max(score, max(name_score(entity, needle) for needle in needles))
+        if entity.id in semantic:
+            score = max(score, 1.0)
+        if score > 0:
+            entity_scores[entity.id] = score
     endpoint = {r.id: entity_scores.get(r.source_id, 0) + entity_scores.get(r.target_id, 0) for r in relations}
     text = {r.id: _text_hits(r, query_tokens) for r in relations}
-    endpoint_rank, text_rank = _ranks(endpoint), _ranks(text)
+    channels = [_ranks(endpoint), _ranks(text), _ranks({r.id: semantic.get(r.id, 0) for r in relations})]
     fused = {}
-    for identifier in set(endpoint_rank) | set(text_rank):
-        fused[identifier] = sum(1 / (RRF_K + ranks[identifier])
-                                for ranks in (endpoint_rank, text_rank) if identifier in ranks)
+    for ranks in channels:
+        for identifier, position in ranks.items():
+            fused[identifier] = fused.get(identifier, 0) + 1 / (RRF_K + position)
     return entity_scores, fused
 
 

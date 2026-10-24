@@ -122,6 +122,9 @@
 .knowledge-settings-fields small, .knowledge-settings-fields p { color: var(--ink-soft); font-size: 11px; line-height: 1.6; }
 .knowledge-agent-model, .knowledge-credential { display: flex; flex-direction: column; gap: 8px; }
 .knowledge-agent-model > span { font-size: 12px; font-weight: 500; }
+.knowledge-semantic-index { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-control, 6px); }
+.knowledge-semantic-index h5 { margin: 0; font-size: 12px; font-weight: 600; }
+.knowledge-semantic-index button { align-self: flex-start; }
 .knowledge-credential > label { position: relative; }
 .knowledge-secret-label { position: absolute; right: 0; top: 0; font-size: 10px; color: var(--knowledge-accent); }
 

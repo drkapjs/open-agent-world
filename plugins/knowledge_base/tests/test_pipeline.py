@@ -478,7 +478,9 @@ def test_a_name_query_returns_every_relation_touching_the_concept_with_names_and
 
     # One name, spelled loosely: the concept, both relations touching it, and the
     # concepts on their other ends — each relation readable without joining ids.
-    found = run(card, actions.graph, names=["dpa sse"])
+    # full=True is the UI's view with every property; the agent's compact view is
+    # covered by its own test below.
+    found = run(card, actions.graph, names=["dpa sse"], full=True)
     assert found["matched"] == 1 and found["truncated"] is False
     assert [(item["name"], item["matched"]) for item in found["entities"]] == [
         ("DPA-SSE", True), ("Hopping barrier", False), ("NEB", False)]
@@ -501,10 +503,11 @@ def test_a_name_query_returns_every_relation_touching_the_concept_with_names_and
     assert sorted(item["name"] for item in hopping["entities"]) == ["DPA-SSE", "NEB"]
 
     # The single-needle form keeps working and no longer drops one-sided relations.
-    legacy = run(card, actions.graph, name_contains="DPA-SSE")
+    legacy = run(card, actions.graph, name_contains="DPA-SSE", full=True)
     assert len(legacy["relations"]) == 2
     # Nothing matched: an honest empty answer, not a guess.
-    assert run(card, actions.graph, names=["graphene"]) == {"entities": [], "relations": [], "matched": 0, "truncated": False}
+    assert run(card, actions.graph, names=["graphene"]) == {
+        "entities": [], "relations": [], "matched": 0, "truncated": False, "connections": [], "search_text": "graphene"}
     # An unfiltered query still lists everything, unflagged.
     everything = run(card, actions.graph, layer="literature")
     assert everything["matched"] is None and len(everything["entities"]) == 4 and len(everything["relations"]) == 3
@@ -546,10 +549,10 @@ def test_loose_names_acronyms_and_a_question_find_concepts_a_literal_substring_m
     # And the answer says how the two concepts connect, through the shared barrier.
     chain = answer["connections"][0]
     assert chain["length"] == 2 and {chain["from"], chain["to"]} == {"DPA-SSE", "Nudged Elastic Band"}
-    assert [r["target_name"] for r in chain["relations"]].count("Li-ion migration barrier") == 2
+    assert all(step.endswith("→ Li-ion migration barrier") for step in chain["steps"])
 
     assert run(card, actions.graph, query="graphene oxide") == {
-        "entities": [], "relations": [], "matched": 0, "truncated": False, "connections": []}
+        "entities": [], "relations": [], "matched": 0, "truncated": False, "connections": [], "search_text": "graphene oxide"}
 
 
 def test_connect_returns_the_shortest_relation_chains_between_two_named_concepts(card):
@@ -559,16 +562,284 @@ def test_connect_returns_the_shortest_relation_chains_between_two_named_concepts
     assert linked["connected"] is True and linked["resolved"] == [["DPA-SSE"], ["Nudged Elastic Band"]]
     [path] = linked["paths"]
     assert path["length"] == 2
-    assert [(r["source_name"], r["predicate"], r["target_name"]) for r in path["relations"]] == [
+    assert path["steps"] == ["DPA-SSE —predicts→ Li-ion migration barrier",
+                             "Nudged Elastic Band —computes→ Li-ion migration barrier"]
+    assert [(r["source_name"], r["predicate"]) for r in linked["relations"]] == [
+        ("DPA-SSE", "predicts"), ("Nudged Elastic Band", "computes")]
+    # The UI's full view carries the relations and every endpoint in each path.
+    full = run(card, actions.graph, operation="connect", names=["DPA-SSE", "NEB"], full=True)
+    assert [(r["source_name"], r["predicate"], r["target_name"]) for r in full["paths"][0]["relations"]] == [
         ("DPA-SSE", "predicts", "Li-ion migration barrier"),
         ("Nudged Elastic Band", "computes", "Li-ion migration barrier")]
-    assert {"Li-ion migration barrier"} <= {e["name"] for e in linked["entities"]}
+    assert {"Li-ion migration barrier"} <= {e["name"] for e in full["entities"]}
 
     # Too shallow a walk, an unknown name and a wrong name count each say so plainly.
     assert run(card, actions.graph, operation="connect", names=["DPA-SSE", "NEB"], max_depth=1)["connected"] is False
     assert run(card, actions.graph, operation="connect", names=["DPA-SSE", "graphene"])["unresolved"] == ["graphene"]
     with pytest.raises(KnowledgeError):
         run(card, actions.graph, operation="connect", names=["DPA-SSE"])
+
+
+def _embedding_card(card, calls):
+    """A context whose embedding model is a fake: one axis for 'ionic conduction' words."""
+    from types import SimpleNamespace
+
+    def resolve(reference):
+        return SimpleNamespace(adapter="openai", base_url="http://embed.test", api_key="k", model_id="openai/emb")
+
+    state = MemorySettings({"settings": {"embedding_model": "oaw:model:emb"}})
+    return KnowledgeContext(card.node_id, card.storage_path, state=state, resolve_model=resolve)
+
+
+def _fake_embed(calls):
+    axis = ("conductor", "ionic", "transport")
+
+    def embed(texts, connection, **kwargs):
+        calls.append(list(texts))
+        return [[1.0 if any(word in text.lower() for word in axis) else 0.0, 0.1] for text in texts]
+    return embed
+
+
+def _semantic_graph(card):
+    kb = client.open_client(card.node_id, card.storage_path)
+    entities = [{"type": "material", "name": "LLZO", "description": "garnet-type lithium conductor"}]
+    entities += [{"type": "material", "name": f"Cu{i}"} for i in range(11)]
+    relations = [{"source": "LLZO", "target": "Cu0", "type": "doped_with"}]
+    relations += [{"source": f"Cu{i}", "target": f"Cu{i + 1}", "type": "alloyed_with"} for i in range(10)]
+    kb.graph.extract({"entities": entities, "relations": relations}, extractor=lambda payload: payload)
+    return kb
+
+
+def test_an_embedding_model_finds_a_concept_the_words_missed_and_only_embeds_what_changed(card, monkeypatch):
+    from oaw_knowledge_base import embeddings
+
+    kb = _semantic_graph(card)
+    calls = []
+    monkeypatch.setattr(embeddings, "embed", _fake_embed(calls))
+    question = "which material shows fast ionic transport?"
+
+    # Off by default: the words share nothing with the description, and the answer says nothing of embeddings.
+    off = run(card, actions.graph, query=question)
+    assert off["entities"] == [] and "semantic" not in off
+
+    ctx = _embedding_card(card, calls)
+    on = run(ctx, actions.graph, query=question)
+    assert on["semantic"] is True
+    assert [e["name"] for e in on["entities"] if e["matched"]] == ["LLZO"]
+    assert sum(len(batch) for batch in calls) == 23 + 1  # 12 concepts + 11 relations, then the question
+
+    # Unchanged elements are not embedded again; an edited description re-embeds exactly that concept.
+    calls.clear()
+    run(ctx, actions.graph, query=question)
+    assert calls == [[question]]
+    calls.clear()
+    llzo = next(e for e in kb.oaw_graph_store.list_entities() if e.name == "LLZO")
+    kb.oaw_graph_store.upsert_entity(llzo.model_copy(update={"properties": {
+        **llzo.properties, "description": "garnet-type lithium oxide, a fast ionic conductor"}}))
+    run(ctx, actions.graph, query=question)
+    assert len(calls) == 2 and len(calls[0]) == 1 and "fast ionic conductor" in calls[0][0]
+
+    # An unrelated question stands out from nothing, so it matches nothing.
+    assert run(ctx, actions.graph, query="graphene sheets")["entities"] == []
+
+
+def test_search_falls_back_to_words_and_says_why_when_the_embedding_model_cannot_be_used(card, monkeypatch):
+    from oaw_knowledge_base import embeddings
+
+    _semantic_graph(card)
+
+    def unreachable(texts, connection, **kwargs):
+        raise KnowledgeError("Embedding model request failed (HTTP 503)")
+
+    monkeypatch.setattr(embeddings, "embed", unreachable)
+    ctx = _embedding_card(card, [])
+    failed = run(ctx, actions.graph, query="LLZO")
+    assert failed["semantic"] is False and "HTTP 503" in failed["semantic_error"]
+    assert [e["name"] for e in failed["entities"] if e["matched"]] == ["LLZO"]
+
+    # No host model resolver (the standalone service) and a non-OpenAI connection are refused plainly.
+    bare = KnowledgeContext(card.node_id, card.storage_path, state=ctx.state)
+    assert "cannot resolve" in run(bare, actions.graph, query="LLZO")["semantic_error"]
+    wrong = KnowledgeContext(card.node_id, card.storage_path, state=ctx.state,
+                             resolve_model=lambda ref: __import__("types").SimpleNamespace(
+                                 adapter="anthropic", base_url="", api_key="k", model_id="claude"))
+    assert "OpenAI-compatible" in run(wrong, actions.graph, query="LLZO")["semantic_error"]
+
+    saved = run(card, actions.update_settings, embedding_model="oaw:model:emb")
+    assert saved["settings"]["embedding_model"] == "oaw:model:emb"
+
+    # Whatever else goes wrong inside the optional channel, the word-based answer still comes back.
+    def broken(texts, connection, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(embeddings, "embed", broken)
+    survived = run(ctx, actions.graph, query="LLZO")
+    assert survived["semantic"] is False and survived["semantic_error"] == "boom"
+    assert [e["name"] for e in survived["entities"] if e["matched"]] == ["LLZO"]
+
+
+def test_the_embeddings_request_batches_inputs_and_restores_their_order(monkeypatch):
+    import httpx
+    from oaw_knowledge_base import embeddings
+
+    seen = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        seen.append((str(request.url), body["model"], len(body["input"]), request.headers["authorization"]))
+        # A provider may answer out of order; ``index`` is the contract.
+        data = [{"index": i, "embedding": [float(len(text)), 0.0]} for i, text in enumerate(body["input"])]
+        return httpx.Response(200, json={"data": data[::-1]})
+
+    real = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+    texts = ["a" * n for n in range(1, 24)]
+    vectors = embeddings.embed(texts, ("http://embed.test/v1/", "k", "emb"))
+    assert [item[2] for item in seen] == [10, 10, 3] and seen[0][:2] == ("http://embed.test/v1/embeddings", "emb")
+    assert seen[0][3] == "Bearer k" and all(v == [1.0, 0.0] for v in vectors)
+
+    monkeypatch.setattr(httpx, "Client", lambda **kw: real(transport=httpx.MockTransport(
+        lambda request: httpx.Response(401, json={"error": {"message": "bad key"}})), **kw))
+    with pytest.raises(KnowledgeError, match="HTTP 401: bad key"):
+        embeddings.embed(["x"], ("http://embed.test", "k", "emb"))
+
+
+def test_every_lookup_form_runs_the_same_hybrid_search_so_no_parameter_bypasses_the_embedding_model(card, monkeypatch):
+    """The flaw: the assistant passed names=/name_contains= and semantic search never ran."""
+    from oaw_knowledge_base import embeddings
+
+    _semantic_graph(card)
+    calls = []
+    monkeypatch.setattr(embeddings, "embed", _fake_embed(calls))
+    ctx = _embedding_card(card, calls)
+
+    # names= : the typed name is a strong match AND the question is embedded.
+    by_name = run(ctx, actions.graph, names=["ionic transport"])
+    assert by_name["semantic"] is True and by_name["search_text"] == "ionic transport"
+    assert [e["name"] for e in by_name["entities"] if e["matched"]] == ["LLZO"]
+    assert calls[-1] == ["ionic transport"]
+    # name_contains= and relation_contains= : same path, same answer.
+    for form in ({"name_contains": "ionic transport"}, {"relation_contains": "ionic transport"}):
+        result = run(ctx, actions.graph, **form)
+        assert result["semantic"] is True and [e["name"] for e in result["entities"] if e["matched"]] == ["LLZO"]
+    # Mixed: names and a question are searched together.
+    mixed = run(ctx, actions.graph, query="which has ionic transport", names=["Cu3"])
+    assert mixed["search_text"] == "which has ionic transport Cu3"
+    assert {e["name"] for e in mixed["entities"] if e["matched"]} == {"Cu3", "LLZO"}
+
+    # The graph map's filter opts out: no model call, lexical only.
+    calls.clear()
+    plain = run(ctx, actions.graph, name_contains="ionic transport", semantic=False)
+    assert calls == [] and "semantic" not in plain and plain["matched"] == 0
+    # The unfiltered listing never embeds either.
+    listing = run(ctx, actions.graph)
+    assert calls == [] and listing["matched"] is None and len(listing["entities"]) == 12
+
+
+def test_the_agent_tool_schema_hides_the_lexical_knobs_but_the_ui_and_cli_may_still_pass_them():
+    from oaw_knowledge_base.operations import BY_NAME
+
+    schema = BY_NAME["graph"].input_schema()
+    assert {"query", "names", "operation", "entity_id", "max_depth", "layer", "group_id", "limit"} <= set(schema["properties"])
+    assert not {"name_contains", "relation_contains", "entity_type", "relation_type", "semantic"} & set(schema["properties"])
+    assert actions.GraphQuery.model_validate({"name_contains": "x", "semantic": False, "entity_type": "material"})
+    assert "name_contains" not in BY_NAME["search"].input_schema()["properties"]  # untouched models unaffected
+    assert BY_NAME["graph_index"].tool_name == "knowledge_graph_index"
+
+
+def test_the_semantic_index_reports_coverage_and_builds_on_request(card, monkeypatch):
+    from oaw_knowledge_base import embeddings
+
+    _semantic_graph(card)
+    calls = []
+    monkeypatch.setattr(embeddings, "embed", _fake_embed(calls))
+
+    # Off: nothing to report but the size of the graph.
+    off = run(card, actions.graph_index)
+    assert off["enabled"] is False and off["total"] == 23 and off["embedded"] == 0
+
+    ctx = _embedding_card(card, calls)
+    before = run(ctx, actions.graph_index)
+    assert before["enabled"] is True and before["model_id"] == "emb"
+    assert (before["embedded"], before["pending"], before["stale"]) == (0, 23, 0) and calls == []
+
+    built = run(ctx, actions.graph_index, operation="build")
+    assert (built["embedded"], built["pending"], built["stale"]) == (23, 0, 0) and built["built_at"]
+    assert sum(len(batch) for batch in calls) == 23
+    # A search afterwards embeds only the question.
+    calls.clear()
+    run(ctx, actions.graph, query="ionic transport")
+    assert calls == [["ionic transport"]]
+
+    # An edited description shows as stale until the next build.
+    kb = client.open_client(card.node_id, card.storage_path)
+    llzo = next(e for e in kb.oaw_graph_store.list_entities() if e.name == "LLZO")
+    kb.oaw_graph_store.upsert_entity(llzo.model_copy(update={"properties": {**llzo.properties, "description": "edited"}}))
+    assert run(ctx, actions.graph_index)["stale"] == 1
+
+    # A failing build keeps the last error for the Settings panel and the assistant.
+    def broken(texts, connection, **kwargs):
+        raise KnowledgeError("Embedding model request failed (HTTP 503)")
+
+    monkeypatch.setattr(embeddings, "embed", broken)
+    failed = run(ctx, actions.graph_index, operation="build")
+    assert "HTTP 503" in failed["last_error"] and failed["embedded"] == 22
+    assert "HTTP 503" in run(ctx, actions.graph_index)["last_error"]
+    # ...and a failed search records it the same way.
+    assert run(ctx, actions.graph, query="ionic transport")["semantic"] is False
+    # A model that cannot be resolved is a reported error, not a crash.
+    bare = KnowledgeContext(card.node_id, card.storage_path, state=ctx.state)
+    assert "cannot resolve" in run(bare, actions.graph_index)["last_error"]
+
+
+def test_a_cosine_floor_stops_a_tight_low_population_from_producing_hits():
+    from oaw_knowledge_base import embeddings
+
+    # Ten vectors clustered around cos 0.30 to the query, one at 0.40: two standard
+    # deviations above the mean, yet nothing a person would call related.
+    query = [1.0, 0.0]
+    population = {f"d{i}": [0.30, (1 - 0.30 ** 2) ** 0.5] for i in range(10)}
+    population["best"] = [0.40, (1 - 0.40 ** 2) ** 0.5]
+    assert embeddings.scores(query, population) == {}
+    assert list(embeddings.scores(query, population, floor=0.0)) == ["best"]
+    population["real"] = [0.80, 0.60]
+    assert list(embeddings.scores(query, population)) == ["real"]
+
+
+def test_the_agent_gets_a_compact_result_that_fits_the_host_window_however_big_the_graph(card):
+    """The host projects a tool result over ~8000 characters into a stub the model
+    cannot read; the assistant then reported "no results" for a full answer."""
+    kb = client.open_client(card.node_id, card.storage_path)
+    long_claim = "Fine-tuning uses the public DPA-2 pre-trained model as the foundation, " * 8
+    entities = [{"type": "concept", "name": "PFD-kit", "aliases": ["PFD toolkit"], "description": long_claim},
+                {"type": "concept", "name": "DPA-2", "description": long_claim}]
+    filler = "A long description of a workflow stage, unrelated to the question. " * 8
+    entities += [{"type": "concept", "name": f"Step {i}", "description": filler} for i in range(60)]
+    relations = [{"source": "PFD-kit", "target": f"Step {i}", "type": "uses",
+                  "properties": {"description": f"PFD-kit uses step {i}. " + long_claim, "snippet": long_claim,
+                                 "evidence_level": 2, "source_ids": [str(uuid.uuid4())]}} for i in range(60)]
+    relations.append({"source": "PFD-kit", "target": "DPA-2", "type": "fine_tunes",
+                      "properties": {"description": "PFD-kit fine-tunes DPA-2. " + long_claim, "evidence_level": 1}})
+    kb.graph.extract({"entities": entities, "relations": relations}, extractor=lambda payload: payload)
+
+    compact = run(card, actions.graph, query="Can I use PFD kit with DPA-2 model?")
+    encoded = json.dumps(compact, ensure_ascii=False).encode("utf-8")
+    assert len(encoded) <= actions.COMPACT_BYTES and compact["truncated"] is True
+    # The answer is still there: both concepts, the relation between them first, its path.
+    assert [e["name"] for e in compact["entities"] if e["matched"]] == ["PFD-kit", "DPA-2"]
+    first = compact["relations"][0]
+    assert (first["source_name"], first["predicate"], first["target_name"]) == ("PFD-kit", "fine_tunes", "DPA-2")
+    assert first["statement"].endswith("…") and len(first["statement"]) <= actions.STATEMENT_CHARS
+    assert compact["connections"][0]["steps"] == ["PFD-kit —fine_tunes→ DPA-2"]
+    # Compact means no duplicated property blobs, no snippets, no ids on neighbours.
+    assert all("properties" not in item and "snippet" not in item for item in compact["relations"])
+    assert all("id" in e for e in compact["entities"] if e["matched"])
+    assert all("id" not in e and "description" not in e for e in compact["entities"] if not e["matched"])
+
+    # The UI asks for the full view and gets properties back, uncapped by the window.
+    full = run(card, actions.graph, query="Can I use PFD kit with DPA-2 model?", full=True)
+    assert len(json.dumps(full).encode()) > actions.COMPACT_BYTES
+    assert full["relations"][0]["properties"]["evidence_level"] == 1 and full["entities"][0]["properties"]
 
 
 def test_unpublishing_one_draft_keeps_what_another_published_draft_asserts(card):

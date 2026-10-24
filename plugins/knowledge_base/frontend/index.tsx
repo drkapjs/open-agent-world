@@ -20,7 +20,9 @@ import { RecordGrid, RecordTable, flattenValues } from "./RecordView";
 import { RecordForm } from "./RecordForm";
 import "./style.css";
 
-type Settings = { collection_name: string; pdf_engine: string; mineru_base_url: string; vision_model: string };
+type Settings = { collection_name: string; pdf_engine: string; mineru_base_url: string; vision_model: string; embedding_model: string };
+type IndexStatus = { enabled: boolean; embedding_model: string | null; model_id: string | null; total: number;
+  embedded: number; pending: number; stale: number; last_error?: string | null; built_at?: string | null };
 type Group = { id: string; name: string; source_count: number; created_at: string; is_default: boolean };
 type Overview = { collection: { id: string; name: string }; groups: Group[]; settings: Settings;
   engines: string[]; counts: Record<string, number>; active_jobs: number };
@@ -269,6 +271,7 @@ export function Workspace({ host, card }: PluginViewProps) {
   const [notice, setNotice] = useState("");
   const [jobDetail, setJobDetail] = useState<{ job: Job; events: JobEvent[] }>();
   const [settings, setSettings] = useState<Settings>();
+  const [indexStatus, setIndexStatus] = useState<IndexStatus>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -743,7 +746,22 @@ export function Workspace({ host, card }: PluginViewProps) {
     const result = await call("settings", patch);
     setSettings(result.settings as Settings);
     await refresh();
+    await loadIndex();
   });
+
+  // The semantic index behind graph search: loaded when Settings opens and after any
+  // change to the embedding model, built on request so the first search is not slow.
+  const loadIndex = useCallback(async () => {
+    try { setIndexStatus(await call("graph_index", { operation: "status" }) as IndexStatus); }
+    catch { setIndexStatus(undefined); }
+  }, [call]);
+  const buildIndex = () => perform(async () => {
+    setIndexStatus(await call("graph_index", { operation: "build" }) as IndexStatus);
+  });
+  useEffect(() => {
+    if (!deployed && (category === "settings" || isDetached("settings"))) void loadIndex();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [category, deployed, loadIndex]);
 
   // Engineering-only: a deployment has no writable config at all, so this never
   // runs there — the Settings section that calls it is not even mounted when deployed.
@@ -751,7 +769,7 @@ export function Workspace({ host, card }: PluginViewProps) {
     await host.updateConfig({ default_model: value });
   });
 
-  const current = settings ?? { collection_name: "", pdf_engine: "auto", mineru_base_url: "", vision_model: "" };
+  const current = settings ?? { collection_name: "", pdf_engine: "auto", mineru_base_url: "", vision_model: "", embedding_model: "" };
   const currentSource = sources.find(item => item.id === selectedSource);
   const running = jobs.filter(job => ACTIVE.has(job.status));
   const groups = overview?.groups ?? [];
@@ -898,6 +916,29 @@ export function Workspace({ host, card }: PluginViewProps) {
         <p className="knowledge-meta">{(overview?.engines ?? []).includes("vision")
           ? t("Images convert through this model. Pick an OpenAI-compatible connection whose model can read images.")
           : t("No vision model resolves yet: choose one here, set a default model in OAW Settings, or add OAW_VISION_BASE_URL and OAW_VISION_API_KEY under Settings → Environment variables.")}</p>
+        {/* Graph search's semantic channel. Unlike the vision model there is no default
+            to fall back to — a chat model cannot embed — so "" means off and the graph
+            is searched by words alone. */}
+        <div className="knowledge-agent-model knowledge-vision-model">
+          <span>{t("Embedding model for graph search")}</span>
+          <ModelSelect label={t("Embedding model for graph search")} allowEmpty emptyLabel={t("Off — search by words only")}
+            value={current.embedding_model ?? ""}
+            onChange={value => void saveSettings({ embedding_model: value })} />
+        </div>
+        <p className="knowledge-meta">{t("Pick an OpenAI-compatible connection with an embedding model (one that serves /embeddings). Graph text — concept names, descriptions and relation statements — is sent to it when you search.")}</p>
+        {current.embedding_model && <div className="knowledge-semantic-index" role="group" aria-label={t("Semantic index")}>
+          <h5>{t("Semantic index")}</h5>
+          {!indexStatus ? <p className="knowledge-meta">{t("Checking…")}</p> : <>
+            <p className="knowledge-meta">{indexStatus.model_id
+              ? t("{v0}: {v1} of {v2} graph elements embedded", { v0: indexStatus.model_id, v1: indexStatus.embedded, v2: indexStatus.total })
+              : t("{v0} of {v1} graph elements embedded", { v0: indexStatus.embedded, v1: indexStatus.total })}
+              {indexStatus.pending ? ` · ${t("{v0} pending", { v0: indexStatus.pending })}` : ""}
+              {indexStatus.stale ? ` · ${t("{v0} stale", { v0: indexStatus.stale })}` : ""}</p>
+            {indexStatus.last_error && <p className="knowledge-error" role="alert">{t("Last error: {v0}", { v0: indexStatus.last_error })}</p>}
+            <button type="button" disabled={busy} onClick={() => void buildIndex()}>{t("Build index now")}</button>
+            <p className="knowledge-meta">{t("Searches keep the index up to date on their own; building it here makes the first search fast and shows whether the model works.")}</p>
+          </>}
+        </div>}
         <details className="knowledge-disclosure"><summary>{t("Available engines")}</summary>
           <p>{(overview?.engines ?? []).join(", ") || "—"}</p></details>
         </section>

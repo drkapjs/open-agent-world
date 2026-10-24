@@ -315,7 +315,7 @@ def test_a_saved_knowledge_legion_deploys_an_empty_working_base(client):
     overview = resource(client, copied["id"], "overview")
     assert overview["counts"]["sources"] == 0
     assert overview["settings"] == {"collection_name": "Knowledge base",
-                                    "pdf_engine": "auto", "mineru_base_url": "", "vision_model": ""}
+                                    "pdf_engine": "auto", "mineru_base_url": "", "vision_model": "", "embedding_model": ""}
     assert resource(client, keys["knowledge"], "overview")["counts"]["sources"] == 1
 
     group = next(node for node in copy.json()["nodes"] if node["type"] == "legion")

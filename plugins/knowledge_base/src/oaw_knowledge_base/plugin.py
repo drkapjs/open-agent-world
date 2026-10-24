@@ -80,7 +80,8 @@ DEPLOYMENT_FIELDS = {
     "insight_save": frozenset({"insights", "schema_ids", "warnings"}),
     "insight_update": frozenset({"insight"}),
     "insight_review": frozenset({"insights", "deleted", "status", "reasons", "message", "graph"}),
-    "graph": frozenset({"entities", "relations", "truncated"}),
+    "graph": frozenset({"entities", "relations", "truncated", "matched", "connections", "search_text",
+                        "semantic", "semantic_error"}),
     "jobs": frozenset({"jobs", "job", "events"}),
 }
 

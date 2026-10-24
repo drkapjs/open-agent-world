@@ -524,18 +524,39 @@ conversion, create/delete) is covered by
 | Knowledge extract | Read tools plus `knowledge_extract_prompt`, `knowledge_save`, `knowledge_update`, `knowledge_audit_prompt`, `knowledge_audit_apply`, `knowledge_record_extract_prompt`, `knowledge_record_save` |
 | Knowledge experiment | Read tools plus `knowledge_experiment_extract_prompt`, `knowledge_experiment_save`, `knowledge_experiment_update`, `knowledge_insight_prompt`, `knowledge_insight_save`, `knowledge_insight_update` |
 
-`knowledge_graph` answers "what does the base say about X (and Y)": `names=[...]`
-matches concepts by name or alias (spacing and punctuation aside) and returns them,
-the concepts they connect to and **every relation touching them**, each already
-readable as `source_name → predicate → target_name` with its statement, evidence
-level and snippet — the relations are the published claims, a concept's description
-is background. `query=<question>` takes a plain-words question and returns the
-best-fitting concepts and relations ranked (concepts are found by name, alias or
-acronym anywhere in it), plus the shortest paths between any two it names;
-`operation="connect"` with `names=[X, Y]` returns the shortest relation chains
-between two concepts (`max_depth`, default 3) or `connected: false`.
-`relation_contains` finds relations by a word in their predicate or
-statement; `traverse` walks outward from an entity id.
+`knowledge_graph` answers "what does the base say about X (and Y)" and is the first
+tool the Lab assistant calls for any question about the base. It has **one search
+path**: whatever is passed — `query=<question>`, `names=[...]` (name, alias or acronym;
+spacing and punctuation aside) or, from the UI and CLI, `name_contains` /
+`relation_contains` — is searched the same way: by words (name and acronym match,
+statement text) and, when the card has an embedding model, by meaning, fused with
+reciprocal-rank fusion. The result holds the best-fitting concepts (`matched: true`),
+the relations ranked best first — each readable as `source_name → predicate →
+target_name` with its statement, evidence level and snippet (the relations are the
+published claims; a concept's description is background) — and `connections`: the
+shortest relation chains between any two concepts the question names.
+`operation="connect"` with `names=[X, Y]` returns only those chains (`max_depth`,
+default 3) or `connected: false`; `traverse` walks outward from an entity id. The
+agent's tool schema exposes only `query` and `names`, so no lexical-only knob can be
+picked by mistake; the graph map's name filter passes `semantic: false` and stays
+lexical.
+
+Meaning-based matching is on when the card's **Settings → Embedding model for graph
+search** names an OpenAI-compatible embedding model (a connection from OAW's Models &
+connections that serves `/embeddings`). Every search then reports `semantic: true`, or
+`semantic: false` plus `semantic_error` when the model could not be used — the answer
+is still the word-based one. Concept and relation vectors live in the card's SQLite
+file (`oaw_kb_vectors`) and are brought up to date on each search (only changed
+elements are embedded); **Settings → Semantic index** shows coverage and the last error
+and can build the index up front, and `knowledge_graph_index` reports the same to the
+assistant. A hit must stand out from the rest of the graph (two standard deviations
+above the mean cosine) *and* clear an absolute floor (0.45, tuned on qwen3
+text-embedding), so an unrelated question matches nothing. The graph text is sent to
+the chosen endpoint. Empty means off, and a chat default model is never used for this.
+
+The Lab assistant's instruction is copied into the agent when the Lab Manager
+formation is created, so an existing formation keeps its old guidance: recreate it, or
+paste the current instruction from `preset.py` into the agent's system instruction.
 
 Uploading raw data (`ingest`, `experiment_ingest`), converting it (`process`),
 managing groups (`groups`), knowledge drafts (`knowledge_draft_manage`) and
