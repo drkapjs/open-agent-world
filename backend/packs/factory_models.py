@@ -65,10 +65,13 @@ def validate_value(field: InputField, value):
 
 
 class ButtonBinding(Model):
-    """Reserved routing data; no custom logic is executed by the current runtime."""
+    """Schema 3 interfaces resolve logic_id to a registered resource action.
+
+    Legacy Schema 2 recipes retain their inert custom-button behavior.
+    """
     mode: Mode
     element_id: str = Field(pattern=r"^[a-zA-Z][a-zA-Z0-9_-]{0,63}$")
-    logic_id: str = Field(pattern=r"^[a-zA-Z][a-zA-Z0-9_-]{0,63}$")
+    logic_id: str = Field(pattern=r"^[a-zA-Z][a-zA-Z0-9_./:-]{0,127}$")
 
 
 class FunctionDesign(Model):

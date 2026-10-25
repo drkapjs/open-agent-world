@@ -3,11 +3,13 @@ import { Download, Package, Plus, Printer as PrinterIcon, RefreshCw, Save, Share
 import { apiErrorMessage, worldApi } from '../api/client';
 import { finishLabel } from '../cards/cardFinish';
 import { FaceDesignerCanvas } from './FaceDesignerCanvas';
+import { FunctionControls } from './FunctionControls';
+import { PackIDE } from './PackIDE';
 import { faceStudio, MODE_LABELS } from './faceDesign';
 import { faceButtonTargets } from './faceButtons';
 import { CoreButtonWarnings } from './CoreButtonWarnings';
 import { useWorldStore } from '../state/worldStore';
-import { useNodeSurfaceStore } from '../state/nodeSurfaces';
+import { surfaceDraftKey, useNodeSurfaceStore } from '../state/nodeSurfaces';
 import { PackSurface } from '../shell/PackSurface';
 import { PACK_DESIGNS, PACK_PACKAGING } from '../shell/packDesign';
 import { exportedPackFile, MarketplacePublish, PACK_ID_PATTERN, PackIdGuidance } from '../shell/PackPublishing';
@@ -65,6 +67,11 @@ function ToolPreview({ id, children }: { id: string; children: ReactNode }) {
 }
 
 export function PackDesigner(props: PluginViewProps) {
+  if (props.level === 'workspace') return <PackIDE draftKey={surfaceDraftKey(props.card.id, 'pack-project')} />;
+  return <LegacyPackDesigner {...props} />;
+}
+
+function LegacyPackDesigner(props: PluginViewProps) {
   const editor = useEditor<PackDesign>(props), task = useTask(), { draft, change } = editor;
   const [opened, setOpened] = useState(false);
   const metadata = (key: keyof PackDesign['creator'], value: string) => change({ creator: { ...draft.creator, [key]: value } });
@@ -107,7 +114,6 @@ export function FunctionDesigner(props: PluginViewProps) {
   const inputs = useInputs(props.card.id);
   const linkedFace = inputs.context?.inputs.face?.config as FaceDesign | undefined;
   const buttons = linkedFace ? faceButtonTargets(linkedFace) : [];
-  const updateField = (index: number, patch: Partial<InputField>) => change({ fields: draft.fields.map((field, i) => i === index ? { ...field, ...patch } : field) });
   if (props.level === 'preview') return <ToolPreview id={props.card.id}><strong>{draft.fields.length} 个输入字段</strong><small>{draft.fields.map(field => field.label).join(' / ')}</small><p>{({ template: '文本模板', sum: '数值求和', multiply: '数值乘积', join: '内容拼接' })[draft.operation]}</p></ToolPreview>;
   return <Frame title="功能设计器" step="03 / 功能" task={task} level={props.level}>
     <p className="factory-hint">添加表单字段，再选择运行方式。模板使用 {'{{字段标识}}'} 插入内容。</p>
@@ -119,24 +125,7 @@ export function FunctionDesigner(props: PluginViewProps) {
       <p className="factory-hint">自定义按钮的逻辑挂载将在后续开放。当前运行按钮使用下方配置的功能。</p>
     </section>
     <div className="factory-function-editor"><div className="factory-controls">
-      {draft.fields.map((field, index) => <div className="factory-field-editor" key={index}>
-        <div className="factory-row"><label>字段标识<input maxLength={40} value={field.key} onChange={event => updateField(index, { key: event.target.value })} /></label>
-          <label>显示名称<input maxLength={80} value={field.label} onChange={event => updateField(index, { label: event.target.value })} /></label>
-          <button type="button" className="factory-icon-button" aria-label={`删除字段 ${index + 1}`} onClick={() => change({ fields: draft.fields.filter((_, i) => i !== index) })}><Trash2 size={15} /></button></div>
-        <div className="factory-row"><label>字段类型<select value={field.type} onChange={event => updateField(index, {
-          type: event.target.value as InputField['type'], default: event.target.value === 'number' ? 0 : event.target.value === 'boolean' ? false : '',
-        })}><option value="text">文本</option><option value="number">数值</option><option value="boolean">开关</option></select></label>
-          <FieldInput field={{ ...field, label: '默认值', required: false }} value={field.default} onChange={value => updateField(index, { default: value })} /></div>
-        <label className="factory-check"><input type="checkbox" checked={field.required} onChange={event => updateField(index, { required: event.target.checked })} />必填</label>
-      </div>)}
-      <button type="button" disabled={draft.fields.length >= 20} onClick={() => {
-        let index = draft.fields.length + 1; while (draft.fields.some(field => field.key === `field${index}`)) index++;
-        change({ fields: [...draft.fields, { key: `field${index}`, label: `字段 ${index}`, type: 'text', default: '', required: false }] });
-      }}><Plus size={14} />添加字段</button>
-      <label>运行方式<select value={draft.operation} onChange={event => change({ operation: event.target.value as FunctionDesign['operation'] })}>
-        <option value="template">填充文本模板</option><option value="sum">数值字段求和</option><option value="multiply">数值字段乘积</option><option value="join">按字段顺序拼接</option></select></label>
-      {draft.operation === 'template' && <label>输出模板<textarea rows={4} maxLength={10000} value={draft.template} onChange={event => change({ template: event.target.value })} /></label>}
-      {draft.operation === 'join' && <label>分隔符<input maxLength={100} value={draft.separator} onChange={event => change({ separator: event.target.value })} /></label>}
+      <FunctionControls value={draft} onChange={change} />
       <SaveButton editor={editor} task={task} />
     </div><div className="factory-test"><h4>功能试验台</h4><FunctionForm design={draft}
       run={async values => (await worldApi.factory<{ result: Scalar }>(props.card.id, 'try', { design: draft, values })).result} /></div></div>

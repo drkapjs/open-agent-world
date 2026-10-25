@@ -23,6 +23,8 @@ import { LibraryCard as PhysicalLibraryCard, LibraryCardPreview } from "./Librar
 import "./cardLibrary.css";
 import { startPalettePointerDrag } from "../palette/pointerDrag";
 import { isHosted } from '../auth/hostedSession';
+import { Modal } from '../components/Modal';
+import { PackIDE } from '../factory/PackIDE';
 
 type Tab = "packs" | "cards" | "store";
 const PAGE_SIZE = 30;
@@ -54,6 +56,8 @@ export function CardLibrary() {
   const [installAction, setInstallAction] = useState<HTMLDivElement | null>(null);
   const [inspectedPack, setInspectedPack] = useState<string | null>(null);
   const [packNotice, setPackNotice] = useState('');
+  const [showPackIDE, setShowPackIDE] = useState(false);
+  const [projectDirty, setProjectDirty] = useState(false);
   const installations = usePackInstallations(library.open && !hosted);
   const acceptInstallations = (value: PackInstallations) => {
     const removed = installations.state?.versions.some(previous => previous.selected
@@ -172,7 +176,7 @@ export function CardLibrary() {
       ["packs", t("Packs"), Archive], ["cards", t("Cards"), LibraryBig], ["store", t("Store"), Store],
     ] as const).filter(([id]) => !hosted || id !== 'store').map(([id, label, Icon]) => <button key={id} data-tutorial={`library-tab-${id}`} className={tab === id ? "is-active" : ""} aria-pressed={tab === id} onClick={() => { setTab(id); setReveal(null); setInspectedPack(null); }}>
       <Icon size={16} />{label}{id !== "store" && <small>{id === "packs" ? inventory.length : allCards.length}</small>}
-    </button>)}</nav><div className="library-tab-actions" ref={setInstallAction} /></div>
+    </button>)}</nav>{!hosted && <button className="secondary-button" onClick={() => setShowPackIDE(true)}>Pack IDE</button>}<div className="library-tab-actions" ref={setInstallAction} /></div>
     <div className="library-flow">{t("Open a pack")} <ChevronRight size={12} /> {t("Collect cards")} <ChevronRight size={12} /> {t("Build a deck")} <ChevronRight size={12} /> {t("Place in your world")}</div>
     {library.error ? <div className="library-error" role="alert">{library.error}<button onClick={() => void library.refresh()}>{t("Refresh")}</button></div> : null}
     {!snapshot ? <div className="library-empty">{library.error ? t("Your collection could not be loaded.") : t("Loading your collection…")}</div> :
@@ -254,5 +258,7 @@ export function CardLibrary() {
         </> : null}
         {tab === "store" && library.open ? <PackStore installations={installations.state} /> : null}
       </div>}
-  </dialog></>;
+  </dialog>{showPackIDE && <Modal title="Card Factory / Pack IDE" className="pack-ide-modal" portalHost={document.body} onClose={() => {
+    if (!projectDirty || window.confirm('Discard your unsaved project edits?')) setShowPackIDE(false);
+  }}><PackIDE onDirtyChange={setProjectDirty} /></Modal>}</>;
 }

@@ -10,11 +10,12 @@ export function overlayHost(origin: Element | null = document.activeElement): El
   return origin?.closest('dialog[open]') ?? document.querySelector('dialog.legion-workspace[open]') ?? document.body;
 }
 
-export function Modal({ title, children, actions, onClose, busy = false, className = '' }: {
+export function Modal({ title, children, actions, onClose, busy = false, className = '', portalHost }: {
   title: string; children: ReactNode; actions?: ReactNode; onClose: () => void; busy?: boolean; className?: string;
+  portalHost?: Element;
 }) {
   const id = useId(), panel = useRef<HTMLElement>(null);
-  const host = useRef(overlayHost());
+  const host = useRef(portalHost ?? overlayHost());
   const options = useRef({ onClose, busy }); options.current = { onClose, busy };
   useLayoutEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
