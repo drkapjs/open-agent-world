@@ -7732,5 +7732,12 @@
   "Retain": ["Retain", "保留"],
   "After restart": ["After restart", "重启后清理"],
   "Open in system folder": ["Open in system folder", "在系统文件夹中打开"],
-  "The workspace is not ready. Try again or contact your administrator.": ["The workspace is not ready. Try again or contact your administrator.", "工作区暂未就绪，请重试或联系管理员。"]
+  "The workspace is not ready. Try again or contact your administrator.": ["The workspace is not ready. Try again or contact your administrator.", "工作区暂未就绪，请重试或联系管理员。"],
+  "Publish on Marketplace": ["Publish on Marketplace", "发布到 Marketplace"],
+  "For Marketplace, use a namespace you are authorized to publish under, for example your-namespace.my-pack. Check your namespace on the Marketplace author website. Author names do not grant permission. Keep local.* IDs for local or offline exports.": ["For Marketplace, use a namespace you are authorized to publish under, for example your-namespace.my-pack. Check your namespace on the Marketplace author website. Author names do not grant permission. Keep local.* IDs for local or offline exports.", "投稿到 Marketplace 时，请使用你获授权的命名空间，例如 your-namespace.my-pack。可在 Marketplace 作者网站确认命名空间；填写作者名不会授予权限。本地或离线导出可继续使用 local.* ID。"],
+  "No valid Pack was exported. Check the Pack and export it again.": ["No valid Pack was exported. Check the Pack and export it again.", "未导出有效的卡包。请检查卡包后重新导出。"],
+  "Check and export the Pack first. On the website, sign in and select the saved .oawpack file yourself. Opening the page does not upload the file. Submission enters review; it does not immediately become public.": ["Check and export the Pack first. On the website, sign in and select the saved .oawpack file yourself. Opening the page does not upload the file. Submission enters review; it does not immediately become public.", "请先检查并导出卡包。在网站登录后，需手动选择已保存的 .oawpack 文件。打开页面不会上传文件。提交后进入审核，不会立即公开。"],
+  "To submit this Pack, replace its local.* ID with an ID under your authorized Marketplace namespace, then check and export again.": ["To submit this Pack, replace its local.* ID with an ID under your authorized Marketplace namespace, then check and export again.", "如需投稿，请将 local.* ID 改为你获授权的 Marketplace 命名空间下的 ID，然后重新检查并导出。"],
+  "Select this exported file on the website:": ["Select this exported file on the website:", "请在网站选择此导出文件："],
+  "If the page does not open, copy this address into your browser:": ["If the page does not open, copy this address into your browser:", "如果页面未打开，请复制此地址到浏览器："]
 }

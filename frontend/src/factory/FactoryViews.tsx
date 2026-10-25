@@ -10,6 +10,7 @@ import { useWorldStore } from '../state/worldStore';
 import { useNodeSurfaceStore } from '../state/nodeSurfaces';
 import { PackSurface } from '../shell/PackSurface';
 import { PACK_DESIGNS, PACK_PACKAGING } from '../shell/packDesign';
+import { exportedPackFile, MarketplacePublish, PACK_ID_PATTERN, PackIdGuidance } from '../shell/PackPublishing';
 import { FacePreview, FieldInput, FunctionForm } from './PrintedCardView';
 import type { PluginViewProps } from '../plugins/sdk';
 import type { LegionSummary, WorldCard } from '../types/world';
@@ -71,9 +72,10 @@ export function PackDesigner(props: PluginViewProps) {
   return <Frame title="卡包设计器" step="01 / 包装" task={task} level={props.level}>
     <div className="factory-design-grid"><div className="factory-controls">
       <label>卡包名称<input maxLength={120} value={draft.name} onChange={event => change({ name: event.target.value })} /></label>
-      <div className="factory-row"><label>Pack ID<input maxLength={100} value={draft.id} onChange={event => change({ id: event.target.value })} /></label>
+      <div className="factory-row"><label>Pack ID<input required maxLength={100} pattern={PACK_ID_PATTERN} value={draft.id} onChange={event => change({ id: event.target.value })} /></label>
         <label>版本<input maxLength={64} value={draft.version} onChange={event => change({ version: event.target.value })} /></label></div>
       <small>更新时保留 Pack ID，并递增版本号。</small>
+      <PackIdGuidance />
       <div className="factory-row"><label>包装<select value={draft.creator.packaging} onChange={event => metadata('packaging', event.target.value)}>
         {PACK_PACKAGING.map(value => <option key={value} value={value}>{PACK_DESIGNS[value].label}</option>)}</select></label>
         <label>主题色<input type="color" value={draft.creator.accent_color} onChange={event => metadata('accent_color', event.target.value)} /></label></div>
@@ -202,11 +204,12 @@ export function Packer(props: PluginViewProps) {
     props.host.draft?.set({ factory_options: { rows: params, includeContent } });
   }, [params, includeContent, props.host.draft]);
   const [selection, setSelection] = useState(''), [legions, setLegions] = useState<LegionSummary[]>([]);
-  const [inspection, setInspection] = useState<FactoryInspection>(), [file, setFile] = useState<File>();
+  const [inspection, setInspection] = useState<FactoryInspection>(), [exported, setExported] = useState<{ key: string; file: File }>();
   const cards = useWorldStore(state => state.cards), catalog = useWorldStore(state => state.catalog);
-  const signature = JSON.stringify({ config, inputs: inputs.context, params, includeContent, sources: config.items.map(item =>
+  const signature = JSON.stringify({ items: config.items, inputs: inputs.context, params, includeContent, sources: config.items.map(item =>
     item.kind === 'node' ? cards.find(card => card.id === item.id)?.revision : legions.find(legion => legion.id === item.id)?.revision) });
-  useEffect(() => { setInspection(undefined); setFile(undefined); }, [signature]);
+  const file = exported?.key === signature ? exported.file : undefined;
+  useEffect(() => { setInspection(undefined); setExported(undefined); }, [signature]);
   useEffect(() => { void worldApi.getLegions().then(setLegions).catch(() => {}); }, []);
   const choices: BasketItem[] = [...cards.filter(card => !card.ephemeral && (!card.type.startsWith('oaw.factory.') || card.type === 'oaw.factory.card') && catalog.node_types.find(type => type.id === card.type)?.templateable)
     .map(card => ({ id: card.id, name: card.name, kind: 'node' as const })),
@@ -218,11 +221,12 @@ export function Packer(props: PluginViewProps) {
     if (JSON.stringify(next) !== JSON.stringify(config)) await props.host.updateConfig(next);
   };
   const createExport = async () => {
+    setExported(undefined);
     await saveOptions();
     const result = await worldApi.factory<FactoryInspection>(props.card.id, 'inspect'); setInspection(result);
     if (!result.can_export) throw new Error('请先解决发布检查中的错误。');
     const blob = await worldApi.factory<Blob>(props.card.id, 'export');
-    return new File([blob], `${result.manifest.id}-${result.manifest.version}.oawpack`, { type: 'application/vnd.oaw.pack' });
+    return exportedPackFile(blob, result.manifest);
   };
   if (props.level === 'preview') return <ToolPreview id={props.card.id}><div className="factory-dropzone" data-factory-packer={props.card.id}>
     <Package size={18} /><strong>拖入卡牌 / Legion</strong><small>{config.items.length} 份素材</small></div></ToolPreview>;
@@ -254,8 +258,8 @@ export function Packer(props: PluginViewProps) {
     <label className="factory-check"><input type="checkbox" checked={includeContent} onChange={event => setIncludeContent(event.target.checked)} />包含素材中的初始文档、资源与共享状态</label>
     <small>默认只携带配置；勾选后请检查内容是否适合公开分享。</small>
     <div className="factory-actions"><button type="button" onClick={() => void task.perform(async () => { await saveOptions(); task.setMessage('打包设置已保存。'); })}><Save size={14} />保存设置</button>
-      <button type="button" disabled={!config.items.length} onClick={() => void task.perform(async () => { await saveOptions(); setInspection(await worldApi.factory(props.card.id, 'inspect')); })}>检查卡包</button>
-      <button type="button" disabled={!config.items.length} onClick={() => void task.perform(async () => { const exported = await createExport(); setFile(exported); downloadFile(exported); task.setMessage('已导出，可发布到自己的仓库或发送给朋友。'); })}><Download size={14} />导出 .oawpack</button></div>
+      <button type="button" disabled={!config.items.length} onClick={() => void task.perform(async () => { setExported(undefined); setInspection(undefined); await saveOptions(); setInspection(await worldApi.factory(props.card.id, 'inspect')); })}>检查卡包</button>
+      <button type="button" disabled={!config.items.length} onClick={() => void task.perform(async () => { const artifact = await createExport(); downloadFile(artifact); setExported({ key: signature, file: artifact }); task.setMessage('已导出，可发布到自己的仓库或发送给朋友。'); })}><Download size={14} />导出 .oawpack</button></div>
     {inspection && <div className="factory-review"><strong>{inspection.can_export ? '可以导出' : '需要修正'} · {inspection.entries.length} 份素材</strong>
       {inspection.issues.map((issue, index) => <p key={index} className={issue.severity === 'error' ? 'factory-error' : ''}>{issue.path}：{issue.message}</p>)}
       <small>依赖卡包</small><ul>{inspection.manifest.dependencies?.packs.map(dep => <li key={dep.id}>{dep.id} {dep.version}</li>)}</ul></div>}
@@ -264,5 +268,8 @@ export function Packer(props: PluginViewProps) {
         if (navigator.canShare?.({ files: [file] })) { await navigator.share({ files: [file], title: file.name }); task.setMessage('已完成分享。'); }
         else { downloadFile(file); task.setMessage('当前环境不支持系统分享，已下载文件，发送此文件即可。'); }
       })}><Share2 size={14} />分享文件</button></div>}
+    <p className="factory-hint">投稿前请在已连接的卡包设计器中设置授权命名空间下的 Pack ID，保存设计后重新检查并导出。</p>
+    <MarketplacePublish packId={inspection?.manifest.id ?? (inputs.context?.inputs.pack?.config as PackDesign | undefined)?.id ?? 'local.mycards'}
+      file={inspection?.can_export ? file : undefined} busy={task.busy} />
   </Frame>;
 }
