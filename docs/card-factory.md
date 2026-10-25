@@ -36,7 +36,16 @@ and arbitrary configuration from other plugins are preserved.
 Choose **Check Pack** to inspect dependencies and release findings, then
 **Export .oawpack** to check again and create an installable file. **Share File**
 uses the operating system's sharing interface when available; otherwise the
-browser downloads it. This edition does not publish to an online store.
+browser downloads it.
+
+For Marketplace submission, set the **Pack ID** in the connected Pack Designer
+to an ID under your authorized namespace (for example `your-namespace.my-cards`)
+and save the design before export. After a successful export, **Publish on
+Marketplace** opens the official author website in your browser. Sign in there
+and manually select the exported file; submission enters review, not immediate
+publication. The link sends no file or credentials. Copy the displayed address
+if the browser does not open. Keep `local.*` IDs for offline export and sharing.
+See the [submission workflow](creator-packs.md#submit-to-marketplace) for details.
 
 Recipients install the file through **Library → Packs → Install from file**
 and restart OAW. Packs containing only printed cards need no author-side

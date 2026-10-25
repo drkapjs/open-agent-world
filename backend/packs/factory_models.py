@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictFloat, Stri
 
 from backend.card_finishes import CardFinish
 from backend.plugins.tutorials import Tutorials, validate_tutorials
-from backend.packs.manifest import CreatorMetadata
+from backend.packs.manifest import CreatorMetadata, PACK_ID
 from backend.packs.face_design import FaceStudio, Mode
 
 Scalar = StrictStr | StrictBool | StrictInt | StrictFloat
@@ -149,7 +149,7 @@ class CardRecipe(Model):
 
 
 class PackDesign(Model):
-    id: str = Field(default="local.mycards", pattern=r"^[a-z][a-z0-9]*(?:\.[a-z][a-z0-9]*)+$", max_length=100)
+    id: str = Field(default="local.mycards", pattern=PACK_ID, max_length=100)
     name: str = Field(default="我的卡包", min_length=1, max_length=120)
     version: str = Field(default="0.1.0", max_length=64)
     creator: CreatorMetadata = Field(default_factory=CreatorMetadata)
