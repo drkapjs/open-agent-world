@@ -55,7 +55,8 @@ def test_workbench_artwork_is_served(client):
     response = client.get('/api/plugins/research.xrd/assets/workbench-cover')
     assert response.status_code == 200
     assert 'image/svg+xml' in response.headers['content-type']
-    assert b'FROM PATTERNS TO PHASES' in response.content
+    assert b'>XRD</text>' in response.content
+    assert response.content.count(b'<text ') == 1
 
 
 def test_sql_template_copies_configuration_not_private_rows(client):
