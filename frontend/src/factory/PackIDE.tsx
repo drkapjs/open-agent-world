@@ -1,6 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from 'react';
 import { ArrowLeft, Check, ChevronDown, Code2, Copy, Download, Eye, FileCode2, FolderOpen, Layers, Package, Plus, RefreshCw, Save, Settings2, X } from 'lucide-react';
 import { ApiError, apiErrorMessage, worldApi } from '../api/client';
+import { t, useLocale } from '../i18n';
 import { useWorldStore } from '../state/worldStore';
 import { useNodeSurfaceStore } from '../state/nodeSurfaces';
 import { exportedPackFile, MarketplacePublish, PACK_ID_PATTERN } from '../shell/PackPublishing';
@@ -41,6 +42,7 @@ function download(file: File) {
 }
 
 export function PackIDE({ onDirtyChange, onBusyChange, draftKey, onClose }: { onDirtyChange?: (dirty: boolean) => void; onBusyChange?: (busy: boolean) => void; draftKey?: string; onClose?: () => void }) {
+  useLocale();
   const [initial] = useState<Partial<EditorDraft>>(() => {
     const saved = draftKey && useNodeSurfaceStore.getState().drafts[draftKey];
     return saved ? JSON.parse(saved) as EditorDraft : {};
@@ -236,6 +238,7 @@ export function PackIDE({ onDirtyChange, onBusyChange, draftKey, onClose }: { on
   }}>
     <header className="pack-ide-header">
       <div className="pack-ide-brand">{project ? <button className="pack-ide-icon" aria-label="Back to projects" title="Back to projects" disabled={busy} onClick={leaveProject}><ArrowLeft size={17} /></button> : <Package size={21} />}<div><h2>{project?.name ?? 'Pack IDE'}</h2><span>{project ? `${project.distribution_id} / ${project.version}` : 'Card Factory'}</span></div></div>
+      <span className="pack-ide-experimental" title={t('Visual authoring is still in development.')}>{t('Experimental')}</span>
       {project && <div className="pack-ide-toolbar"><span className={`pack-ide-save-state ${dirty ? 'is-dirty' : ''}`} role="status">{busy ? `${task}...` : external ? 'Disk conflict' : dirty ? 'Unsaved changes' : 'All changes saved'}</span>
         <button aria-label="Save" title={saveReason} disabled={busy || !dirty || !!external} onClick={() => void perform(save, 'Saving')}><Save size={14} />Save</button>
         <button title={dirty ? 'Save changes before checking' : 'Validate project files'} disabled={busy || dirty || !!external} onClick={() => void perform(runCheck, 'Checking')}><Check size={14} />Check</button>
@@ -245,14 +248,14 @@ export function PackIDE({ onDirtyChange, onBusyChange, draftKey, onClose }: { on
           const file = exportedPackFile(blob, { id: project.distribution_id, version: project.version }); download(file); setArtifact(file); setNotice(`Built ${file.name}. Install it from the Pack Library.`);
         }, 'Building archive'); }}><Download size={14} />Build / Export</button>
         <button className="pack-ide-icon" aria-label="Build settings" title="Build settings" aria-pressed={panel === 'build'} onClick={() => setPanel(panel === 'build' ? undefined : 'build')}><Settings2 size={15} /></button></div>}
-      {onClose && <button className="pack-ide-icon" aria-label="Close Pack IDE" title="Back to Library" disabled={busy} onClick={onClose}><X size={17} /></button>}
+      {onClose && <button className="pack-ide-icon" aria-label="Close Pack IDE" title="Close Pack IDE" disabled={busy} onClick={onClose}><X size={17} /></button>}
     </header>
     {error && <div className="pack-ide-message factory-error" role="alert"><strong>{task ? `${task} failed. ` : ''}</strong>{error}<button aria-label="Dismiss error" onClick={() => setError('')}><X size={13} /></button></div>}
     {notice && <div className="pack-ide-message" role="status">{notice}<button aria-label="Dismiss notification" onClick={() => setNotice('')}><X size={13} /></button></div>}
     {external && <div className="pack-ide-conflict" role="alert"><div><strong>Files changed externally</strong><span>Your edits are preserved. Compare files before reloading.</span><button onClick={() => { if (window.confirm('Reload from disk and discard your unsaved edits?')) accept(external, true); }}>Reload from disk</button></div>
       <details><summary>Compare with disk</summary>{external.files.filter(file => project?.files.find(old => old.path === file.path)?.sha256 !== file.sha256).map(file => <div key={file.path}><code>{file.path}</code>{file.editable && <button onClick={() => void perform(async () => { const current = await worldApi.readPackProjectFile(external.id, file.path); setDiskContent(previous => ({ ...previous, [file.path]: current.content })); })}>Compare {file.path}</button>}{diskContent[file.path] !== undefined && <div className="pack-ide-diff"><pre aria-label={`Draft ${file.path}`}>{buffers[file.path]?.content ?? '(no local edits)'}</pre><pre aria-label={`Disk ${file.path}`}>{diskContent[file.path]}</pre></div>}</div>)}{project?.files.filter(file => !external.files.some(current => current.path === file.path)).map(file => <p key={file.path}>Deleted: <code>{file.path}</code></p>)}</details>
     </div>}
-    {!project ? <div className="pack-ide-launcher"><div className="pack-ide-launch-main"><span className="pack-ide-eyebrow">CREATE WITH CARDS</span><h3>From an idea to a working Pack.</h3><p>Design your card, connect its behavior, and build it here.</p>
+    {!project ? <div className="pack-ide-launcher"><div className="pack-ide-launch-main"><span className="pack-ide-eyebrow">PACK IDE</span><h3>{t('Visual Pack authoring')}</h3><p>{t('Visual authoring is still in development.')}</p>
       <nav className="pack-ide-launch-tabs" aria-label="Project action"><button aria-pressed={launcher === 'new'} onClick={() => setLauncher('new')}><Plus size={16} />New project</button><button aria-pressed={launcher === 'open'} onClick={() => setLauncher('open')}><FolderOpen size={16} />Open project</button></nav>
       {launcher === 'new' ? <form className="pack-ide-launch-form" onSubmit={event => { event.preventDefault(); void perform(async () => accept(await worldApi.createPackProject({ name, distribution_id: distributionId, ...(directory ? { directory } : {}), ...(legacyId ? { design: { ...initialInterface({ id: '', label: name, kind: 'declarative', design: null, design_path: null }), face: legacyCards.find(card => card.id === legacyId)!.config.face as CardInterface['face'], function: legacyCards.find(card => card.id === legacyId)!.config.function as CardInterface['function'] } } : {}) }), true), 'Creating project'); }}>
         <label>Project name<input autoFocus value={name} required maxLength={120} disabled={busy} onChange={event => { const next = event.target.value; setName(next); if (!customId) { const slug = next.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60) || 'my-pack'; setDistributionId(`local.${/^[a-z]/.test(slug) ? slug : `card-${slug}`}`); } }} /></label>

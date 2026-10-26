@@ -1,9 +1,12 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { worldApi } from '../api/client';
 import { PackIDE, initialInterface } from './PackIDE';
-import { useNodeSurfaceStore } from '../state/nodeSurfaces';
+import { PackDesigner } from './FactoryViews';
+import type { PluginViewProps } from '../plugins/sdk';
+import { useLocale } from '../i18n';
+import { surfaceDraftKey, useNodeSurfaceStore } from '../state/nodeSurfaces';
 import type { PackProject, ProjectCard } from './projectTypes';
 
 vi.mock('./SourceEditor', () => ({ createSourceEditorSession: () => new Map(), default: ({ content, onChange }: { content: string; onChange: (value: string) => void }) => <textarea aria-label="Source code" value={content} onChange={event => onChange(event.target.value)} /> }));
@@ -75,6 +78,32 @@ it('retains unsaved source edits when a Factory workspace closes and reopens', a
   screen.unmount();
   const reopened = render(<PackIDE draftKey="pack-ide-test-draft" />);
   expect((reopened.getByRole('textbox', { name: 'Source code' }) as HTMLTextAreaElement).value).toBe('retained_draft = True\n');
+});
+
+it('opens the experimental IDE as a secondary Factory tool and retains both packaging and project drafts', async () => {
+  const key = surfaceDraftKey('pack-ide-test-factory', 'pack-project');
+  const props = { level: 'workspace', card: { id: 'pack-ide-test-factory', config: {
+    id: 'team.example', name: 'Packaging', version: '0.1.0',
+    creator: { packaging: 'standard', accent_color: '#617b66', author: '', description: '', preparation: '', example: '', expected_result: '' },
+  } }, host: { updateConfig: vi.fn() } } as unknown as PluginViewProps;
+  const screen = render(<PackDesigner {...props} />);
+  expect(screen.queryByRole('region', { name: 'Pack IDE' })).toBeNull();
+  fireEvent.change(screen.getByLabelText('卡包名称'), { target: { value: 'Packaging draft' } });
+  screen.getByText('Developer tools').closest('details')!.open = true;
+  fireEvent.click(screen.getByRole('button', { name: 'Pack IDE Experimental' }));
+  const ide = within(screen.getByRole('dialog', { name: 'Pack IDE' }));
+  fireEvent.click(ide.getByRole('button', { name: 'Create project' }));
+  fireEvent.click(await ide.findByRole('button', { name: 'src/behavior.py' }));
+  fireEvent.change(await ide.findByRole('textbox', { name: 'Source code' }), { target: { value: 'factory_draft = True\n' } });
+  act(() => useLocale.getState().setLocale('zh-CN'));
+  expect(ide.getByText('实验性').title).toBe('可视化开发仍在开发中。');
+  act(() => useLocale.getState().setLocale('en'));
+  fireEvent.click(ide.getByRole('button', { name: 'Close Pack IDE' }));
+  expect((screen.getByLabelText('卡包名称') as HTMLInputElement).value).toBe('Packaging draft');
+  fireEvent.click(screen.getByRole('button', { name: 'Pack IDE Experimental' }));
+  expect((screen.getByRole('textbox', { name: 'Source code' }) as HTMLTextAreaElement).value).toBe('factory_draft = True\n');
+  screen.unmount();
+  useNodeSurfaceStore.getState().setDraft(key, '');
 });
 
 it('preserves a dirty source buffer when another editor changes disk and pauses saves', async () => {

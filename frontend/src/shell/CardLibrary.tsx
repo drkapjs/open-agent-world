@@ -177,7 +177,7 @@ export function CardLibrary() {
       ["packs", t("Packs"), Archive], ["cards", t("Cards"), LibraryBig], ["store", t("Store"), Store],
     ] as const).filter(([id]) => !hosted || id !== 'store').map(([id, label, Icon]) => <button key={id} data-tutorial={`library-tab-${id}`} className={tab === id ? "is-active" : ""} aria-pressed={tab === id} onClick={() => { setTab(id); setReveal(null); setInspectedPack(null); }}>
       <Icon size={16} />{label}{id !== "store" && <small>{id === "packs" ? inventory.length : allCards.length}</small>}
-    </button>)}</nav>{!hosted && <button className="secondary-button" onClick={() => setShowPackIDE(true)}>Pack IDE</button>}<div className="library-tab-actions" ref={setInstallAction} /></div>
+    </button>)}</nav><div className="library-tab-actions" ref={setInstallAction} /></div>
     <div className="library-flow">{t("Open a pack")} <ChevronRight size={12} /> {t("Collect cards")} <ChevronRight size={12} /> {t("Build a deck")} <ChevronRight size={12} /> {t("Place in your world")}</div>
     {library.error ? <div className="library-error" role="alert">{library.error}<button onClick={() => void library.refresh()}>{t("Refresh")}</button></div> : null}
     {!snapshot ? <div className="library-empty">{library.error ? t("Your collection could not be loaded.") : t("Loading your collection…")}</div> :
@@ -259,7 +259,10 @@ export function CardLibrary() {
         </> : null}
         {tab === "store" && library.open ? <PackStore installations={installations.state} /> : null}
       </div>}
-  </dialog>{showPackIDE && <Modal title="Card Factory / Pack IDE" className="pack-ide-modal" portalHost={document.body} busy={projectBusy} onClose={() => {
+    {!hosted && <details className="library-developer-tools"><summary>{t('Developer tools')}</summary>
+      <button className="library-text-button" onClick={() => setShowPackIDE(true)}>Pack IDE <span className="pack-ide-experimental" title={t('Visual authoring is still in development.')}>{t('Experimental')}</span></button>
+    </details>}
+  </dialog>{showPackIDE && <Modal title="Pack IDE" className="pack-ide-modal" portalHost={document.body} busy={projectBusy} onClose={() => {
     if (!projectDirty || window.confirm('Discard your unsaved project edits?')) setShowPackIDE(false);
   }}><PackIDE onDirtyChange={setProjectDirty} onBusyChange={setProjectBusy} onClose={() => {
     if (!projectDirty || window.confirm('Discard your unsaved project edits?')) setShowPackIDE(false);

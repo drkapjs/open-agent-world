@@ -5,6 +5,8 @@ import { finishLabel } from '../cards/cardFinish';
 import { FaceDesignerCanvas } from './FaceDesignerCanvas';
 import { FunctionControls } from './FunctionControls';
 import { PackIDE } from './PackIDE';
+import { Modal } from '../components/Modal';
+import { t, useLocale } from '../i18n';
 import { faceStudio, MODE_LABELS } from './faceDesign';
 import { faceButtonTargets } from './faceButtons';
 import { CoreButtonWarnings } from './CoreButtonWarnings';
@@ -67,11 +69,17 @@ function ToolPreview({ id, children }: { id: string; children: ReactNode }) {
 }
 
 export function PackDesigner(props: PluginViewProps) {
-  if (props.level === 'workspace') return <PackIDE draftKey={surfaceDraftKey(props.card.id, 'pack-project')} />;
-  return <LegacyPackDesigner {...props} />;
+  useLocale();
+  const [showIDE, setShowIDE] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const closeIDE = () => setShowIDE(false);
+  return <><LegacyPackDesigner {...props} onOpenIDE={() => setShowIDE(true)} />
+    {showIDE && <Modal title="Pack IDE" className="pack-ide-modal" busy={busy} onClose={closeIDE}>
+      <PackIDE draftKey={surfaceDraftKey(props.card.id, 'pack-project')} onBusyChange={setBusy} onClose={closeIDE} />
+    </Modal>}</>;
 }
 
-function LegacyPackDesigner(props: PluginViewProps) {
+function LegacyPackDesigner(props: PluginViewProps & { onOpenIDE: () => void }) {
   const editor = useEditor<PackDesign>(props), task = useTask(), { draft, change } = editor;
   const [opened, setOpened] = useState(false);
   const metadata = (key: keyof PackDesign['creator'], value: string) => change({ creator: { ...draft.creator, [key]: value } });
@@ -95,6 +103,9 @@ function LegacyPackDesigner(props: PluginViewProps) {
       edition={draft.creator.author || '卡包工厂'} cards={[]} count={null} opened={opened} label="预览包装" sealLabel="预览包装" onClick={() => setOpened(!opened)} />
       <small>点击包装预览开合</small></div></div>
     <SaveButton editor={editor} task={task} /><p className="factory-hint">保存后，将此卡连接到打包器。</p>
+    <details className="factory-developer-tools"><summary>{t('Developer tools')}</summary>
+      <button type="button" onClick={props.onOpenIDE}>Pack IDE <span className="pack-ide-experimental" title={t('Visual authoring is still in development.')}>{t('Experimental')}</span></button>
+    </details>
   </Frame>;
 }
 

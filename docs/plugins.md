@@ -63,7 +63,13 @@ Plugin-specific documentation can remain in its own package or repository. These
 
 ## Developing a plugin
 
-Plugin API 1.39 adds [Pack IDE visual resources](developers/pack-ide.md): a
+For full Python/React Card Apps, use an external IDE or Coding Agent with the
+public SDKs and [developer guides](developers/index.md), then
+[build and package](pack-distribution.md) the source as `.oawpack`.
+The optional visual Pack IDE (Design / Function / Code) is experimental and
+still in development; traditional Factory card production tools remain separate.
+
+Plugin API 1.39 adds [Pack IDE visual resources (Experimental workflow)](developers/pack-ide.md): a
 `[designs]` mapping binds structured card presentation to existing resource
 actions. The IDE, external editors and authorized Agents share ordinary Schema 3
 source files. Visual changes preserve handwritten Python and custom frontend

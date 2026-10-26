@@ -66,3 +66,6 @@
 
 /* Dense authored forms scroll instead of collapsing controls below a usable height. */
 .authoring-card .factory-artwork[data-print-proof] .factory-face-fields { grid-auto-rows: minmax(3.6em, 1fr); }
+.factory-developer-tools { margin-top:16px; border-top:1px solid var(--line); padding-top:10px; color:var(--muted); font-size:12px; }
+.factory-developer-tools summary { cursor:pointer; }
+.factory-developer-tools button { margin-top:8px; background:transparent; border:0; }

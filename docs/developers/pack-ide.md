@@ -1,7 +1,15 @@
-# Pack IDE: one source project
+# Pack IDE (Experimental): one source project
 
-Open **Pack & Card Library → Pack IDE** to create a visual Card project or open
-an existing Schema 3 source directory. Design, Function, Code and external
+The unified **Design / Function / Code** workspace and visual logic editing are
+experimental and still in development. For full Python/React Card Apps, the
+recommended path is an external IDE or Coding Agent using the public SDKs and
+[developer guides](index.md), then the standard [build and packaging workflow](../pack-distribution.md).
+The visual IDE is optional.
+
+Open the Factory **Pack Designer → Developer tools → Pack IDE (Experimental)**.
+It is also available under **Pack & Card Library → Developer tools** at the
+bottom of the Library, including when the Factory Pack is not installed.
+Create a visual Card project or open an existing Schema 3 source directory. Design, Function, Code and external
 editors all work on that directory. The IDE does not recover source from a
 compiled `.oawpack`.
 
@@ -132,8 +140,13 @@ Never use a production profile to test unreviewed code.
 
 ## Compatibility and verification boundaries
 
-Existing Factory devices and saved designs remain available as advanced graph
-interactions. Existing Schema 2 content Packs use their existing consumer path.
+The experimental designation applies to the visual Pack IDE, not the Factory
+or traditional card production tools. The Face Designer's card faces, paper,
+process layers, decorations and finished proofs remain available, along with
+packaging, printing and saved designs. Opening the Pack Designer shows its
+packaging controls; the IDE is a secondary tool. Its existing workspace draft
+key retains project edits when the IDE closes and reopens.
+Existing Schema 2 content Packs use their existing consumer path.
 The new direct project workflow emits Schema 3; Schema 1 stays unsupported.
 The installer, ownership model and Marketplace authentication are unchanged.
 

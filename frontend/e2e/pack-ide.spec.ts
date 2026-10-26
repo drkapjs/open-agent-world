@@ -20,8 +20,9 @@ test.beforeEach(async ({ page, request }) => {
 async function openIDE(page: Page) {
   await page.goto('/');
   await page.getByRole('button', { name: 'Open Pack and Card Library' }).click({ timeout: 90000 });
-  await page.getByRole('button', { name: 'Pack IDE', exact: true }).click();
-  const ide = page.getByRole('dialog', { name: 'Card Factory / Pack IDE', exact: true });
+  await page.getByText('Developer tools', { exact: true }).click();
+  await page.getByRole('button', { name: 'Pack IDE Experimental', exact: true }).click();
+  const ide = page.getByRole('dialog', { name: 'Pack IDE', exact: true });
   await expect(ide).toBeVisible();
   return ide;
 }
@@ -56,6 +57,34 @@ async function installPack(page: Page, artifact: string) {
   await library.getByRole('button', { name: 'Install Pack', exact: true }).click();
   return library;
 }
+
+test('Factory opens the experimental IDE over its existing packaging workspace', async ({ page, request }) => {
+  const response = await request.post('/api/nodes', { data: { type: 'oaw.factory.pack', position: { x: 400, y: 200 } } });
+  expect(response.status()).toBe(201);
+  const card = await response.json();
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Fit view', exact: true }).click();
+  await page.locator(`[data-card-id="${card.id}"]`).getByRole('button', { name: '打开编辑器', exact: true }).click();
+  const workspace = page.locator(`[data-workspace-node-id="${card.id}"]`);
+  await expect(page.locator(`[data-card-id="${card.id}"]`)).toHaveCSS('width', '1020px');
+  // Match the Factory suite: let React Flow measure the expanded workspace before fitting it.
+  await page.waitForTimeout(300);
+  await page.getByRole('button', { name: 'Fit view', exact: true }).click();
+  await expect.poll(async () => (await workspace.boundingBox())!.width).toBeLessThan(1400);
+  await expect(workspace.getByLabel('卡包名称', { exact: true })).toBeVisible();
+  await workspace.getByLabel('卡包名称', { exact: true }).fill('Packaging draft');
+  await workspace.getByText('Developer tools', { exact: true }).click();
+  await workspace.getByRole('button', { name: 'Pack IDE Experimental', exact: true }).click();
+  const ide = page.getByRole('dialog', { name: 'Pack IDE', exact: true });
+  await expect(ide).toBeVisible();
+  await expect(ide.getByText('Experimental', { exact: true })).toBeVisible();
+  await expect(ide.getByLabel('Project name', { exact: true })).toBeEditable();
+  await screenshot(page, 'factory-experimental-entry');
+  await page.keyboard.press('Escape');
+  await expect(ide).not.toBeVisible();
+  await expect(workspace.getByLabel('卡包名称', { exact: true })).toHaveValue('Packaging draft');
+  await expect(workspace).toBeVisible();
+});
 
 test('no-code author creates a card, edits its live surface, tests, builds and installs; disk conflicts preserve drafts', async ({ page, request }) => {
   test.setTimeout(120000);
@@ -297,7 +326,7 @@ test('custom TSX stays editable and its installed component retains real behavio
   await expect.poll(async () => (await (await request.get('/api/catalog')).json()).node_types.some(
     (node: { id: string }) => node.id === 'example.notes')).toBe(true);
   expect((await request.post('/api/nodes', { data: { type: 'example.notes', config: { message: 'Custom frontend retained' } } })).status()).toBe(201);
-  await page.getByRole('button', { name: 'Pack IDE', exact: true }).click();
+  await page.getByRole('button', { name: 'Pack IDE Experimental', exact: true }).click();
   await openSourceProject(ide, source);
   await ide.getByRole('button', { name: 'Preview', exact: true }).click();
   await ide.getByLabel('Use installed card', { exact: true }).check();

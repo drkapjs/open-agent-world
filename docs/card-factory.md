@@ -7,6 +7,10 @@ open it in **Library → Packs** and place its workbench on the canvas. The
 workbench contains five connected devices; you can also place and connect
 individual devices.
 
+Pack Designer also offers **Developer tools → Pack IDE (Experimental)** for
+visual Pack development. That experimental workflow is separate from the card
+production tools below; see the [recommended SDK development path](developers/index.md).
+
 ## Design and print
 
 1. **Pack Designer** sets the Pack ID, name, version, author, description,
