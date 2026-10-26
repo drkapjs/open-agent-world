@@ -22,16 +22,18 @@ Reuse named dependency groups explicitly between a Pack engine and Sandbox;
 Sandbox does not inherit the entire host environment. The Library shows source,
 loaded version and per-environment readiness separately. See the
 [source declaration and diagnostics guide](pack-distribution.md#source-declaration-and-schema-3)
-for `doctor`, `build-project` and compatibility with older Packs.
+for `doctor`, `build-project` and preserving runtime identities. Pack archives
+support Schema 2 content and Schema 3 code only; Schema 1 is rejected.
 
 `scripts/install-plugins.py` reads each declared Pack without importing it,
 prepares its shared adapter
 libraries and install-time environments using the same managed providers as
 archive installation. Schema 3 source discovery needs no editable package install;
 desktop assembly still installs adapter code into its target directory. MatCreator's native worker uses its declared private
-Python environment; XRD prepares its scientific worker on first use. Existing
-undeclared plugins retain their legacy `open_agent_world.setup` hook. Discovery
-does not run setup hooks or download dependencies, and `--dry-run` does neither.
+Python environment; XRD prepares its scientific worker on first use.
+`open_agent_world.setup` hooks are no longer executed. Declare preparation in
+`oaw.pack.toml`; Python plugin factories remain supported. Discovery does not
+download dependencies, and `--dry-run` does not prepare environments.
 
 The Library previews removal and checks world objects, dependent Packs, Agent
 runtimes and active work. Source Pack uninstall changes this profile's enrollment
@@ -60,6 +62,18 @@ introduced in Plugin API 1.27.
 Plugin-specific documentation can remain in its own package or repository. These links are a directory, not a requirement to copy all plugin content into OAW's docs. Plugin API 1.26 adds optional [progressive tutorials and offline documents](developers/progressive-tutorials.md) on card and Pack definitions.
 
 ## Developing a plugin
+
+For full Python/React Card Apps, use an external IDE or Coding Agent with the
+public SDKs and [developer guides](developers/index.md), then
+[build and package](pack-distribution.md) the source as `.oawpack`.
+The optional visual Pack IDE (Design / Function / Code) is experimental and
+still in development; traditional Factory card production tools remain separate.
+
+Plugin API 1.39 adds [Pack IDE visual resources (Experimental workflow)](developers/pack-ide.md): a
+`[designs]` mapping binds structured card presentation to existing resource
+actions. The IDE, external editors and authorized Agents share ordinary Schema 3
+source files. Visual changes preserve handwritten Python and custom frontend
+slots; new visual-only projects use the same Schema 3 builder and installer.
 
 Plugin API 1.37 adds [declarative cards](developers/declarative-packs.md) using
 Schema 3 contributions compiled into the existing registry. Passive cards can

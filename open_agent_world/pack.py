@@ -2,14 +2,11 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 from pathlib import Path
 import re
 import shutil
 from uuid import uuid4
-from zipfile import ZIP_DEFLATED, ZipFile
-import io
 
 from backend.packs.archive import inspect_archive
 from backend.packs.manifest import PackManifest
@@ -34,39 +31,18 @@ def init_project(directory: Path) -> Path:
     return directory
 
 
-def build(source: Path, output: Path) -> Path:
-    """Package already-built artifacts, never import the Pack or run build hooks."""
-    source = source.resolve()
-    files = {}
-    for path in sorted(source.rglob('*')):
-        if path.is_symlink() or not path.resolve().is_relative_to(source):
-            raise ValueError("Pack input must not contain symlinks")
-        if path.is_file():
-            name = path.relative_to(source).as_posix()
-            if name != 'checksums.json':
-                files[name] = path.read_bytes()
-    files['checksums.json'] = json.dumps({name: hashlib.sha256(data).hexdigest() for name, data in files.items()}, indent=2).encode()
-    buffer = io.BytesIO()
-    with ZipFile(buffer, 'w', ZIP_DEFLATED) as archive:
-        for name, data in files.items():
-            archive.writestr(name, data)
-    data = buffer.getvalue()
-    inspect_archive(data, check_host_libraries=False)
-    if output.exists():
-        raise ValueError("Output already exists; choose a new artifact path")
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_bytes(data)
-    return output
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
     initializer = commands.add_parser('init', help='Create an independent Schema 3 project from the Notes template')
     initializer.add_argument('directory', type=Path)
-    builder = commands.add_parser('build')
-    builder.add_argument('source', type=Path)
-    builder.add_argument('output', type=Path)
+    initializer.add_argument('--visual', action='store_true', help='Create a visual Card project without a frontend build step')
+    project = commands.add_parser('project', help='Inspect and edit the same source files used by Pack IDE; never imports source code')
+    project.add_argument('operation', choices=('inspect', 'read', 'write'))
+    project.add_argument('source', type=Path)
+    project.add_argument('--path', help='Project-relative source file')
+    project.add_argument('--content-file', type=Path, help='UTF-8 replacement text for write')
+    project.add_argument('--expected-sha256', help='Required existing hash for write; omit only to create a new file')
     project_builder = commands.add_parser('build-project', help='Package a declared source project using prebuilt artifacts')
     project_builder.add_argument('source', type=Path)
     project_builder.add_argument('output', type=Path)
@@ -105,9 +81,28 @@ def main():
             command.add_argument('id')
     args = parser.parse_args()
     if args.command == 'init':
-        print(init_project(args.directory))
-    elif args.command == 'build':
-        print(build(args.source, args.output))
+        if args.visual:
+            from backend.packs.projects import scaffold
+            scaffold(args.directory.resolve(), args.directory.name)
+            print(args.directory.resolve())
+        else:
+            print(init_project(args.directory))
+    elif args.command == 'project':
+        from backend.packs.projects import inspect_project, read_file, write_file
+        source = args.source.resolve(strict=True)
+        if not (source / 'oaw.pack.toml').is_file() or not (source / 'pyproject.toml').is_file():
+            parser.error('project requires a Schema 3 source directory')
+        if args.operation == 'inspect':
+            result = inspect_project(source)
+        elif not args.path:
+            parser.error('--path is required for project read/write')
+        elif args.operation == 'read':
+            result = read_file(source, args.path)
+        elif args.content_file is None:
+            parser.error('--content-file is required for project write')
+        else:
+            result = write_file(source, args.path, args.content_file.read_text(encoding='utf-8'), args.expected_sha256)
+        print(json.dumps(result, indent=2, ensure_ascii=False))
     elif args.command == 'build-project':
         from backend.packs.build import build_project
         print(build_project(args.source, args.output, backend_wheel=args.backend_wheel,
