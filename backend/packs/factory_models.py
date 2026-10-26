@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictFloat, Stri
 
 from backend.card_finishes import CardFinish
 from backend.plugins.tutorials import Tutorials, validate_tutorials
-from backend.packs.manifest import CreatorMetadata, PACK_ID
+from backend.packs.metadata import CreatorMetadata, PACK_ID
 from backend.packs.face_design import FaceStudio, Mode
 
 Scalar = StrictStr | StrictBool | StrictInt | StrictFloat
