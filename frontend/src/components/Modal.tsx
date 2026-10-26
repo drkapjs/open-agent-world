@@ -20,9 +20,12 @@ export function Modal({ title, children, actions, onClose, busy = false, classNa
   useLayoutEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
     const element = panel.current!;
-    const focusable = () => Array.from(element.querySelectorAll<HTMLElement>('button:not(:disabled), a[href], input:not(:disabled), textarea:not(:disabled), [tabindex="0"]'));
+    const focusable = () => Array.from(element.querySelectorAll<HTMLElement>('button:not(:disabled), a[href], input:not(:disabled), textarea:not(:disabled), select:not(:disabled), summary, [tabindex="0"]')).filter(item => item.getClientRects().length > 0);
     (element.querySelector<HTMLElement>('[data-autofocus]') ?? focusable()[0] ?? element).focus();
     const key = (event: KeyboardEvent) => {
+      // Embedded editors own Tab indentation and Escape (completion/find panels).
+      // Escape then Tab is CodeMirror's standard keyboard escape from its editor.
+      if ((event.key === 'Tab' || event.key === 'Escape') && event.target instanceof Element && event.target.closest('[data-editor-keys]')) return;
       if (event.key === 'Escape') {
         event.preventDefault(); event.stopPropagation();
         if (!options.current.busy) options.current.onClose();

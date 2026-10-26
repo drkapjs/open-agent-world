@@ -127,7 +127,7 @@ def write_file(root: Path, name: str, content: str, expected_sha256: str | None)
         return {'path': name, 'content': content, 'sha256': _digest(data)}
 
 
-def _python_interfaces(root: Path, entries: list[dict]) -> tuple[dict[str, dict], list[dict]]:
+def _python_interfaces(root: Path, entries: list[dict], diagnostics: list[dict]) -> tuple[dict[str, dict], list[dict]]:
     """Best-effort literal interfaces, deliberately not Python evaluation."""
     cards, relationships = {}, []
     for entry in entries:
@@ -135,7 +135,13 @@ def _python_interfaces(root: Path, entries: list[dict]) -> tuple[dict[str, dict]
             continue
         try:
             tree = ast.parse(read_file(root, entry['path'])['content'])
-        except (SyntaxError, ValueError):
+        except SyntaxError as exc:
+            diagnostics.append({'severity': 'error', 'path': entry['path'],
+                                'line': exc.lineno or 1, 'column': exc.offset or 1,
+                                'message': exc.msg})
+            continue
+        except ValueError as exc:
+            diagnostics.append({'severity': 'error', 'path': entry['path'], 'message': str(exc)})
             continue
         constants: dict[str, set[str]] = {}
         for node in ast.walk(tree):
@@ -180,6 +186,31 @@ def _python_interfaces(root: Path, entries: list[dict]) -> tuple[dict[str, dict]
     return cards, relationships
 
 
+def _source_diagnostic(root: Path, error: Exception) -> dict:
+    """Locate declaration/design failures without executing project code."""
+    import tomllib
+    from backend.packs.interfaces import CardInterface
+    diagnostic = {'severity': 'error', 'message': str(error)}
+    documents = {}
+    for name in ('pyproject.toml', 'oaw.pack.toml'):
+        try:
+            documents[name] = tomllib.loads(read_file(root, name)['content'])
+        except (ValueError, OSError) as exc:
+            location = re.search(r'at line (\d+), column (\d+)', str(exc))
+            return {**diagnostic, 'path': name, **({'line': int(location[1]), 'column': int(location[2])} if location else {})}
+    designs = documents['oaw.pack.toml'].get('designs', {})
+    for name in designs.values() if isinstance(designs, dict) else ():
+        if not isinstance(name, str):
+            continue
+        try:
+            CardInterface.model_validate(json.loads(read_file(root, name)['content']))
+        except json.JSONDecodeError as exc:
+            return {**diagnostic, 'path': name, 'line': exc.lineno, 'column': exc.colno}
+        except (ValueError, OSError):
+            return {**diagnostic, 'path': name}
+    return diagnostic
+
+
 def inspect_project(root: Path) -> dict:
     entries = files(root)
     diagnostics, spec = [], None
@@ -189,8 +220,8 @@ def inspect_project(root: Path) -> dict:
             raise ValueError('Open a Schema 3 source project containing oaw.pack.toml')
     except (ValueError, OSError, KeyError) as exc:
         spec = None
-        diagnostics.append({'severity': 'error', 'message': str(exc)})
-    python_cards, relationships = _python_interfaces(root, entries)
+        diagnostics.append(_source_diagnostic(root, exc))
+    python_cards, relationships = _python_interfaces(root, entries, diagnostics)
     cards = []
     if spec is not None:
         import tomllib
@@ -204,6 +235,7 @@ def inspect_project(root: Path) -> dict:
             design = spec.designs[identifier].model_dump(mode='json') if design_path else None
             cards.append({**row, 'id': identifier, 'name': row.get('name') or row.get('label') or identifier,
                           'label': row.get('name') or row.get('label') or identifier,
+                          'source_path': python_cards.get(identifier, {}).get('source_path'),
                           'kind': 'python' if spec.entrypoints else 'declarative',
                           'design_path': design_path, 'design': design,
                           'actions': [{'id': design.get('action', 'run')}] if not spec.entrypoints and design

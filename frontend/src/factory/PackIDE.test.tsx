@@ -6,7 +6,8 @@ import { PackIDE, initialInterface } from './PackIDE';
 import { useNodeSurfaceStore } from '../state/nodeSurfaces';
 import type { PackProject, ProjectCard } from './projectTypes';
 
-vi.mock('./FaceDesignerCanvas', () => ({ FaceDesignerCanvas: () => <p>Visual editor</p> }));
+vi.mock('./SourceEditor', () => ({ createSourceEditorSession: () => new Map(), default: ({ content, onChange }: { content: string; onChange: (value: string) => void }) => <textarea aria-label="Source code" value={content} onChange={event => onChange(event.target.value)} /> }));
+vi.mock('./PackVisualEditor', () => ({ PackVisualEditor: ({ design, onChange }: { design: import('./projectTypes').CardInterface; onChange: (value: import('./projectTypes').CardInterface) => void }) => <><label>Output template<input value={design.function.template} onChange={event => onChange({ ...design, function: { ...design.function, template: event.target.value } })} /></label><label>Operation<select value={design.function.operation} onChange={event => onChange({ ...design, function: { ...design.function, operation: event.target.value as 'sum' } })}><option value="template">Template</option><option value="sum">Sum</option></select></label><input aria-label="Field type" /></> }));
 const card: ProjectCard = { id: 'team.example.card', label: 'Example', kind: 'declarative', design_path: 'designs/card.json', design: null };
 const design = initialInterface(card);
 design.function = { fields: [{ key: 'name', label: 'Name', type: 'text', default: 'World', required: false }], operation: 'template', template: 'Hello {{name}}', separator: '\n' };
@@ -29,6 +30,17 @@ async function opened() {
   await screen.findByRole('button', { name: 'Function' });
   return screen;
 }
+
+it('creates a valid default ID for names starting with numbers and retains an explicitly chosen namespace', async () => {
+  const screen = render(<PackIDE />);
+  fireEvent.change(screen.getByLabelText('Project name'), { target: { value: '2026 Notes' } });
+  expect((screen.getByLabelText('Pack ID') as HTMLInputElement).value).toBe('local.card-2026-notes');
+  fireEvent.change(screen.getByLabelText('Pack ID'), { target: { value: 'team.notes' } });
+  fireEvent.change(screen.getByLabelText('Project name'), { target: { value: 'Renamed Notes' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Create project' }));
+  await screen.findByRole('button', { name: 'Function' });
+  expect(worldApi.createPackProject).toHaveBeenCalledWith({ name: 'Renamed Notes', distribution_id: 'team.notes' });
+});
 
 it('saves validated visual logic with the loaded project revision, leaving handwritten source untouched', async () => {
   const write = vi.spyOn(worldApi, 'writePackProjectFile');
@@ -79,6 +91,46 @@ it('preserves a dirty source buffer when another editor changes disk and pauses 
   expect(write).not.toHaveBeenCalled();
 });
 
+it('discards the old conflict when returning to the project launcher', async () => {
+  vi.spyOn(window, 'confirm').mockReturnValue(true);
+  const screen = await opened();
+  fireEvent.click(screen.getByRole('button', { name: 'src/behavior.py' }));
+  fireEvent.change(await screen.findByRole('textbox', { name: 'Source code' }), { target: { value: 'draft = True\n' } });
+  vi.mocked(worldApi.getPackProject).mockResolvedValue({ ...project, revision: 'b'.repeat(64) });
+  fireEvent(window, new Event('focus'));
+  await screen.findByText('Files changed externally');
+  fireEvent.click(screen.getByRole('button', { name: 'Back to projects' }));
+  expect(screen.queryByText('Files changed externally')).toBeNull();
+  expect(screen.getByRole('button', { name: 'Create project' })).toBeTruthy();
+});
+
+it('opens real Python implementation by default and saves edits from closed tabs', async () => {
+  const write = vi.spyOn(worldApi, 'writePackProjectFile').mockImplementation(async (_id, file) => ({ path: file.path, content: file.content, sha256: 'b'.repeat(64) }));
+  const screen = await opened();
+  fireEvent.click(screen.getByRole('button', { name: 'Code' }));
+  const editor = await screen.findByRole('textbox', { name: 'Source code' });
+  expect((editor as HTMLTextAreaElement).value).toContain('handwritten = True');
+  fireEvent.change(editor, { target: { value: 'changed = True\n' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Close src/behavior.py' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Design' }));
+  fireEvent.click(screen.getByRole('button', { name: 'src/behavior.py' }));
+  expect((screen.getByRole('textbox', { name: 'Source code' }) as HTMLTextAreaElement).value).toBe('changed = True\n');
+  fireEvent.click(screen.getByRole('button', { name: 'Close src/behavior.py' }));
+  fireEvent.keyDown(screen.getByRole('region', { name: 'Pack IDE' }), { key: 's', ctrlKey: true });
+  await screen.findByText('Project files saved.');
+  expect(write).toHaveBeenCalledWith('project', { path: 'src/behavior.py', content: 'changed = True\n', expected_sha256: hash });
+});
+
+it('opens failing diagnostics automatically and links the actual source', async () => {
+  vi.mocked(worldApi.checkPackProject).mockResolvedValue({ ok: false, level: 'static', diagnostics: [{ severity: 'error', message: 'Python syntax error: expected colon', path: 'src/behavior.py', line: 3, column: 8 }] });
+  const screen = await opened();
+  fireEvent.click(screen.getByRole('button', { name: 'Check' }));
+  const diagnostic = await screen.findByRole('button', { name: /Python syntax error: expected colon/ });
+  fireEvent.click(diagnostic);
+  await screen.findByRole('textbox', { name: 'Source code' });
+  expect(screen.getByRole('tab', { name: 'behavior.py' }).getAttribute('aria-selected')).toBe('true');
+});
+
 it('only offers the publishing handoff after a checked export and invalidates it on an edit', async () => {
   const build = vi.spyOn(worldApi, 'buildPackProject').mockResolvedValue(new Blob(['schema3'], { type: 'application/vnd.oaw.pack' }));
   vi.stubGlobal('URL', { createObjectURL: vi.fn(() => 'blob:pack'), revokeObjectURL: vi.fn() });
@@ -88,6 +140,7 @@ it('only offers the publishing handoff after a checked export and invalidates it
   fireEvent.click(screen.getByRole('button', { name: 'Check' }));
   await waitFor(() => expect((screen.getByRole('button', { name: 'Build / Export' }) as HTMLButtonElement).disabled).toBe(false));
   fireEvent.click(screen.getByRole('button', { name: 'Build / Export' }));
+  fireEvent.click(await screen.findByText('Publish this version'));
   await screen.findByRole('link', { name: 'Publish on Marketplace' });
   expect(build).toHaveBeenCalledOnce();
   expect(build).toHaveBeenCalledWith('project', { expected_revision: hash });

@@ -99,6 +99,7 @@ def test_add_card_and_mixed_interface_discovery(projects, tmp_path):
     mixed = projects.open(str(root))
     assert mixed['cards'][0]['kind'] == 'python'
     assert mixed['cards'][0]['actions'] == [{'id': 'analyze_structure'}]
+    assert mixed['cards'][0]['source_path'] == 'src/oaw_example_analysis_card/__init__.py'
 
 
 def test_declarative_version_updates_both_declarations_without_touching_design(projects):
@@ -192,8 +193,34 @@ def test_invalid_source_remains_editable_with_actionable_diagnostics(projects):
     check = projects.check(snapshot['id'])
     assert not check['ok'] and check['level'] == 'static'
     assert check['diagnostics'][0]['severity'] == 'error'
+    assert check['diagnostics'][0]['path'] == 'oaw.pack.toml'
     write_file(root, 'oaw.pack.toml', manifest['content'], changed['sha256'])
     assert projects.check(snapshot['id'])['ok']
+
+
+def test_python_syntax_diagnostic_blocks_build_without_importing_source(projects):
+    snapshot = projects.create('Syntax')
+    root = Path(snapshot['path'])
+    source = "raise RuntimeError('must not execute')\ndef broken(:\n    pass\n"
+    write_file(root, 'src/actions.py', source, None)
+    checked = projects.check(snapshot['id'])
+    assert not checked['ok']
+    assert checked['diagnostics'] == [{'severity': 'error', 'path': 'src/actions.py',
+                                       'line': 2, 'column': 12, 'message': 'invalid syntax'}]
+    assert read_file(root, 'src/actions.py')['content'] == source
+    with pytest.raises(ValueError, match='Resolve the project diagnostics'):
+        projects.build(snapshot['id'], checked['revision'])
+
+
+def test_invalid_design_json_has_a_navigable_source_location(projects):
+    snapshot = projects.create('Broken design')
+    root = Path(snapshot['path'])
+    design = read_file(root, 'designs/card.json')
+    write_file(root, design['path'], '{\n  "face":\n}', design['sha256'])
+    checked = projects.check(snapshot['id'])
+    assert not checked['ok']
+    diagnostic = checked['diagnostics'][0]
+    assert (diagnostic['path'], diagnostic['line'], diagnostic['column']) == ('designs/card.json', 3, 1)
 
 
 def test_host_api_reuses_pack_request_gate_and_rejects_unopened_paths(client):

@@ -57,6 +57,7 @@ export function CardLibrary() {
   const [inspectedPack, setInspectedPack] = useState<string | null>(null);
   const [packNotice, setPackNotice] = useState('');
   const [showPackIDE, setShowPackIDE] = useState(false);
+  const [projectBusy, setProjectBusy] = useState(false);
   const [projectDirty, setProjectDirty] = useState(false);
   const installations = usePackInstallations(library.open && !hosted);
   const acceptInstallations = (value: PackInstallations) => {
@@ -258,7 +259,9 @@ export function CardLibrary() {
         </> : null}
         {tab === "store" && library.open ? <PackStore installations={installations.state} /> : null}
       </div>}
-  </dialog>{showPackIDE && <Modal title="Card Factory / Pack IDE" className="pack-ide-modal" portalHost={document.body} onClose={() => {
+  </dialog>{showPackIDE && <Modal title="Card Factory / Pack IDE" className="pack-ide-modal" portalHost={document.body} busy={projectBusy} onClose={() => {
     if (!projectDirty || window.confirm('Discard your unsaved project edits?')) setShowPackIDE(false);
-  }}><PackIDE onDirtyChange={setProjectDirty} /></Modal>}</>;
+  }}><PackIDE onDirtyChange={setProjectDirty} onBusyChange={setProjectBusy} onClose={() => {
+    if (!projectDirty || window.confirm('Discard your unsaved project edits?')) setShowPackIDE(false);
+  }} /></Modal>}</>;
 }
