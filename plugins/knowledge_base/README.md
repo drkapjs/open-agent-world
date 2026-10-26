@@ -145,10 +145,12 @@ ever shows.
 1. **Sources** — organize documents into **groups** (create, rename or delete one
    from **Manage groups** beside the group selector), then add PDF,
    markdown, text, CSV, TSV, Excel (`.xlsx`), image or JSON files up to 32 MiB each.
-   Uploading never converts a file on its own: select one or more sources and press
-   **Process** — alone or in a batch — to queue their markdown conversion. The
-   conversion jobs and their progress or failures live in this same section, right
-   below the source list, not in a tab of their own. Sources also holds full-text
+   Drop files onto the source area or choose **Add documents**. Each uploaded file
+   starts conversion automatically; the source row shows its status and offers
+   **Retry** after a failure. Existing pending files can still be processed alone
+   or in a batch. Detailed conversion jobs are available below the source list.
+   Ready documents offer **Read documents**, **Build knowledge**, and **Extract
+   records**; reading does not require a schema or a published graph. Sources also holds full-text
    **search** over every already-converted document — ranked, each result carrying
    the source filename and the heading it falls under, and a click jumps straight
    to that source. Click a converted source to read its formatted document (a
@@ -156,7 +158,9 @@ ever shows.
    switches to the raw text.
 2. **Knowledge** — the concept graph of your literature, with no schema to write.
    **New draft** picks one or more converted sources and opens a **knowledge
-   draft** over them; **Extract** reads each source a few sections at a time —
+   draft** over them. **Build knowledge** in Sources preselects your ready materials.
+   The draft's **Extract → Review → Publish** stages show actual source and review
+   progress, with the current action beside it. **Extract** reads each source a few sections at a time —
    through a connected Agent holding **Knowledge extract** when there is one, else
    one model call per chunk of sections (a short document is one call) — and names
    the concepts it is about and the relations it states between them. Nodes are
