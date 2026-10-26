@@ -290,12 +290,12 @@ export function Workspace({ host, card }: PluginViewProps) {
   // this is engineering-only anyway, so an empty list there is both correct and safe.
   const connectedCards = useConnectedCards(card.id, { direction: "incoming", relationshipPrefix: "knowledge.base.", trait: "core.agent" });
   const connectedAgents = deployed ? [] : connectedCards;
-  // Extraction is an Agent run: only an agent holding the experiment relationship
-  // can read the upload and save its records, so only those are offered.
-  const labAgents = useConnectedCards(card.id, { direction: "incoming", relationshipPrefix: "knowledge.base.experiment", trait: "core.agent" });
-  // The literature half: an agent holding the extract relationship names concepts
-  // into knowledge drafts and reads records out of sources.
-  const extractAgents = useConnectedCards(card.id, { direction: "incoming", relationshipPrefix: "knowledge.base.extract", trait: "core.agent" });
+  // Research grants both extraction paths; keep the narrower roles eligible too.
+  const researchAgents = useConnectedCards(card.id, { direction: "incoming", relationshipPrefix: "knowledge.base.research", trait: "core.agent" });
+  const experimentAgents = useConnectedCards(card.id, { direction: "incoming", relationshipPrefix: "knowledge.base.experiment", trait: "core.agent" });
+  const literatureAgents = useConnectedCards(card.id, { direction: "incoming", relationshipPrefix: "knowledge.base.extract", trait: "core.agent" });
+  const labAgents = [...new Map([...experimentAgents, ...researchAgents].map(agent => [agent.id, agent])).values()];
+  const extractAgents = [...new Map([...literatureAgents, ...researchAgents].map(agent => [agent.id, agent])).values()];
   const canRunAgents = !deployed && typeof host.runAgent === "function" && labAgents.length > 0;
   const canExtract = canRunAgents || !!selectedModel;
 

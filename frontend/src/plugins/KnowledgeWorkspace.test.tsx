@@ -356,6 +356,32 @@ it("opens a knowledge draft over a source and extracts it through the host bridg
   expect(await region.findByText(/Read 1 source\(s\) in 1 part\(s\) · 2 concepts added/)).toBeTruthy();
 });
 
+it.each(["extract", "research"])("extracts a literature draft through a %s agent", async access => {
+  useWorldStore.setState({
+    cards: [{ id: "card-1", type: "knowledge.base", name: "Knowledge" },
+      { id: "librarian", type: "agent", name: "Librarian" },
+      { id: "researcher", type: "agent", name: "Researcher" }] as unknown as WorldCard[],
+    edges: [{ id: "read", source: "librarian", target: "card-1", relationship: "knowledge.base.read" },
+      { id: "write", source: "researcher", target: "card-1", relationship: `knowledge.base.${access}` }] as unknown as WorldEdge[],
+  });
+  const runAgent = vi.fn(async () => undefined);
+  open(async name => {
+    if (name === "sources") return { sources: [CONVERTED] };
+    if (name === "knowledge_drafts") return { drafts: [{ ...DRAFT, entities: [], relations: [],
+      sources: [{ ...DRAFT.sources[0], extracted_at: null }] }] };
+    return undefined;
+  }, { host: { runAgent, getAgentInfo: vi.fn(async () => ({ status: "running" })) } });
+  fireEvent.click(await screen.findByRole("tab", { name: "Knowledge" }));
+  const region = within(await screen.findByRole("region", { name: "Knowledge" }));
+  fireEvent.click(await region.findByRole("button", { name: /Draft sintering\.md/ }));
+  fireEvent.click(await region.findByRole("button", { name: "Extract 1 unread source(s)" }));
+  await waitFor(() => expect(runAgent).toHaveBeenCalledTimes(1));
+  const [agentId, prompt] = runAgent.mock.calls[0] as unknown as [string, string];
+  expect(agentId).toBe("researcher");
+  expect(prompt).toContain("KNOWLEDGE EXTRACTION REQUEST");
+  expect(JSON.parse(prompt.split("\n")[2])).toMatchObject({ draft_id: "draft-1", source_ids: ["source-1"] });
+});
+
 it("reviews a knowledge draft through the host bridge and shows the applied operations", async () => {
   let reviewed = false;
   const entry = { at: "2026-09-24T00:00:00Z", actor: "user:desktop", before: { concepts: 3, relations: 2 }, after: { concepts: 2, relations: 1 },
@@ -500,13 +526,12 @@ const RECORD = { id: "record-x", group_id: "collection-1", schema_id: "schema-2"
 const EXPERIMENT_DEFINITION = { type: "object", required: ["sample_id"],
   properties: { sample_id: { type: "string" }, conductivity: { type: "number", description: "S/cm" } } };
 
-it("extracts records from an upload through a connected Lab assistant run, then publishes one on confirmation", async () => {
-  // The Lab assistant is connected with the experiment relationship; the Librarian
-  // (read only) is not offered for extraction.
+it.each(["experiment", "research"])("extracts records through a %s agent, then publishes on confirmation", async access => {
+  // Both writing roles can extract; the read-only Librarian cannot.
   useWorldStore.setState({
     cards: [{ id: "card-1", type: "knowledge.base", name: "Knowledge" }, { id: "lab", type: "agent", name: "Lab assistant" },
       { id: "librarian", type: "agent", name: "Librarian" }] as unknown as WorldCard[],
-    edges: [{ id: "e1", source: "lab", target: "card-1", relationship: "knowledge.base.experiment" },
+    edges: [{ id: "e1", source: "lab", target: "card-1", relationship: `knowledge.base.${access}` },
       { id: "e2", source: "librarian", target: "card-1", relationship: "knowledge.base.read" }] as unknown as WorldEdge[],
     catalog: TEST_CATALOG,
   });
